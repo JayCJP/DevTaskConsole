@@ -2,11 +2,16 @@
 
 > 开发任务管理站点 —— 把 TAPD、git worktree、CodeBuddy 实例、Harness 流程、GitLab MR、DevOps 构建部署、Bug 定时修复串成一条可视可控的闭环流水线。
 >
-> **版本 v2.3** · 2026-11-12 · 单机自用 · 本地服务 + 网页控制台
+> **版本 v2.8** · 2026-11-13 · 单机自用 · 本地服务 + 网页控制台
 > v2 变更：补入 GitLab 与 DevOps 两条通道，新增 M6 发布与部署模块，闭环「提测」环节。
 > v2.1 变更：新增技术栈选型；按评审 H1 修正环境核对为「四信号判定」；H2 / H3 标为开工前阻塞项。
 > **v2.2 变更（合并方案评审结论）**：① 交付顺序重排为「精简 MVP + 扩展」双轨，MVP 收敛到 20 条；② 新增 M7 收件箱模块与「聚合器先行」架构决策；③ Phase 4-6 期间发布写操作改为硬禁用；④ 补齐评审遗漏项 G1-G5（站点鉴权、失败恢复、磁盘成本、度量、统一快照时刻）；⑤ 新增第 11 节交互模式采纳决策摘要（29 条）。
 > **v2.3 变更**：第 11 节由摘要升级为**完整决策记录**——29 条模式逐条补齐「结论 / 依据 / 落地 / 验收」（不抄类为「替代做法」），规格本身即可直接照着实现。内容与用户导出的决策快照一致，无改判。
+> **v2.4 变更（历史版本，入口后由 v2.5 修正）**：曾按 `/harness start` / `/harness fixbugs` 描述开发与缺陷修复入口，并移除站点自建的 Bug 状态机。
+> **v2.5 变更**：按当前 `start` / `tapd-bug-cron` skill 更新入口、同一 storyId 多轮与定时任务职责；终态自动归档并启动下一轮列为 cron skill 待增强能力，本版不修改插件或 README。
+> **v2.6 变更**：确认每个 TAPD Story 使用一个由控制台后端监督的长期 CodeBuddy `--serve` 服务；服务按需启动、端口持久映射，cron owner 与每轮 Job 分离，并补齐代理、安全边界、服务恢复及删除规则。终态自动归档/重启仍是插件/skill 待增强能力。
+> **v2.7 变更**：前端原子 CSS 从 UnoCSS 改为 Tailwind CSS；明确 cron task 与持久 owner session 的一对一关系、每次触发与 StoryRound session 的边界，以及多任务场景的映射和生命周期管理。
+> **v2.8 变更**：补充站点公共框架、七个主导航页面的信息布局、窄屏基础降级和布局验收标准；连接自检与配置作为主导航外的工具页。
 
 ---
 
@@ -14,8 +19,8 @@
 
 **它不是又一个项目管理工具，而是你现有工具链的「驾驶舱」。**
 
-TAPD 仍是需求与缺陷的唯一信源，Harness 仍是开发流程的唯一状态机，tapd-bug-fix-cron 仍是修复流程的唯一信源，GitLab 与 DevOps 仍是代码与发布的唯一信源。
-本站只做三件事：**聚合显示**（把散在六处的状态拼成一屏）、**代为执行**（把你现在手敲的命令变成按钮）、**守住边界**（不越过各工具已有的铁律）。
+TAPD 仍是需求与缺陷的唯一信源，Harness 是需求开发与缺陷修复的唯一流程状态机，`tapd-bug-cron` skill 负责创建查询/修复 scheduled task，GitLab 与 DevOps 仍是代码与发布的唯一信源。
+每个 TAPD Story 映射一个由控制台后端监督的长期 CodeBuddy 服务；服务仅在首次 CodeBuddy/cron 操作时启动，轮次 Job 与 cron owner 分离。本站只做三件事：**聚合显示**（把散在六处的状态拼成一屏）、**代为执行**（把你现在手敲的命令变成按钮）、**守住边界**（不越过各工具已有的铁律）。
 
 ### 明确不做
 
@@ -23,7 +28,7 @@ TAPD 仍是需求与缺陷的唯一信源，Harness 仍是开发流程的唯一�
 |---|---|
 | 自建需求/缺陷数据库并双向同步 | TAPD 是信源，双写必然打架。站点只缓存快照 |
 | 自己实现一套开发流程状态机 | Harness 的 `e2e-state.json` 已经是了，重复造会互相污染 |
-| 自己实现 Bug 分析修复逻辑 | `tapd-bug-fix-cron` 的三模式 + 锁 + 指纹已经很完整，站点只做入口与展示 |
+| 自己实现 Bug 分析修复逻辑 | 通过 `/start fixbugs <storyId>` 进入 Harness 7 Phase 流程；站点只提供启动入口与状态展示 |
 | 代替 AI 改 `e2e-state.json` / `dev-pass.json` | Harness 铁律，站点同样遵守，只读 |
 | 自动 git commit / push / 依赖变更 | 与现有安全边界一致，改动只留工作区 |
 | **默认自动触发 pre / prod 发布** | 生产发布必须人来拍板，站点默认只开放 dev / test |
@@ -32,38 +37,40 @@ TAPD 仍是需求与缺陷的唯一信源，Harness 仍是开发流程的唯一�
 
 ---
 
-## 1. 现状还原：你现在的工作流（v2 闭环版）
+## 1. 方案目标流程：Harness 驱动的需求与缺陷闭环
 
 ```mermaid
 flowchart TD
     A["领导在 TAPD 分配需求"] --> B["理解需求<br/>确定涉及哪些仓库"]
     B --> C["create-workspace<br/>git worktree + npm install + graphify"]
-    C --> D["启动 CodeBuddy 实例"]
-    D --> E["/harness start<br/>Phase 0→3"]
-    E --> F{"后端接口<br/>是否就绪？"}
-    F -->|"前端先行"| G["前端先开发"]
-    G --> H["后端给出接口文档"]
-    H --> I["再次 start<br/>接口对齐"]
-    F -->|"已就绪"| J["正常开发"]
-    I --> K["Phase 4：提交分支<br/>GitLab 创建 MR → dev"]
-    J --> K
-    K --> L["确认 MR 已合并"]
-    L --> M["Phase 5：知识库更新"]
-    M --> N["Phase 6：DevOps 构建<br/>env=dev, build_other=dev"]
-    N --> O["部署 → 拿到部署 URL"]
+    C --> D["首次 CodeBuddy / cron 操作<br/>后端按需启动或接管 Story 服务"]
+    D --> E["控制台按 Story / StoryRound<br/>创建独立 CodeBuddy Job"]
+    E --> F["Harness dispatch 自动调度<br/>run 模式 · Phase 0→6"]
+    F --> G{"需求输入 / 接口文档<br/>是否齐备？"}
+    G -->|"否 / 被阻塞"| H["补充 story-input.json<br/>按 Harness skill 刷新输入"]
+    H --> I["Harness 重新判门控<br/>按提示从合法 Phase 继续"]
+    G -->|"是"| J["Harness dispatch 自动执行<br/>Phase 2-6 + 门控 / fix-loop"]
+    I --> J
+    J --> K["开发审查 → 提交 + MR<br/>知识库更新 → 构建部署"]
+    K --> O["部署 → 拿到部署 URL"]
     O --> P["提测（test 环境构建+部署）"]
     P --> Q["测试提 Bug 到 TAPD"]
-    Q --> R["定时任务<br/>tapd-bug-fix-cron 模式1/2"]
-    R --> S{"有待人工确认？"}
-    S -->|"是"| T["模式3 手动解冻"]
-    S -->|"否"| U["修复完成 → 回写 TAPD"]
-    T --> U
-    U --> V{"测试 reopened？"}
-    V -->|"是"| W["★ 四信号判定<br/>未入库 / 未合流 / 环境滞后"]
-    W -->|"命中任一"| X["假复现：先补齐链路<br/>不改代码"]
-    W -->|"全部排除"| Y["真没修好 / 新问题<br/>重新分析"]
-    X --> P
-    Y --> R
+    Q --> R["Harness tapd-bug-cron skill<br/>创建并配置定时任务"]
+    R --> S{"任务模式"}
+    S -->|"只查"| T["cron owner 查询 TAPD 并报告"]
+    S -->|"查询+修复"| U["cron owner 查询匹配 Bug"]
+    U --> V{"有匹配 Bug？"}
+    V -->|"否"| N["等待下一计划周期"]
+    V -->|"是"| W{"当前 Story 状态？"}
+    W -->|"未终态"| X
+    W -->|"terminal"| Y["（待增强）归档 round-N<br/>复用 storyId 启动新 fixbugs Job"]
+    W -->|"无当前轮，直接启动（目标行为）"| Z
+    Y --> Z["新建本轮 Job 并发送<br/>/start fixbugs <storyId>"]
+    Z --> AA["Harness fixbugs<br/>完整 7 Phase + 门控 / fix-loop"]
+    AA --> N
+    T --> N
+    X --> N
+    N --> U
 ```
 
 ### 痛点（站点要解决的具体问题）
@@ -75,12 +82,12 @@ flowchart TD
 | P3 | 多个 CodeBuddy 实例分不清谁是谁 | 靠窗口标题和记忆 | 发错指令、看错输出 |
 | P4 | 定时任务列表全是泛称，认不出属于哪个需求 | 已知坑 #28 | 改错任务、重复建任务 |
 | P5 | 改轮询间隔要删了重建 | 手工 | 容易留下两条任务并行跑 |
-| P6 | 「待人工确认」的 Bug 停下来后没有回流入口 | 模式 3 要在对话里手动跑 | 阻塞项积压，忘记处理 |
-| P7 | 前端先行、后端接口后到，需要二次 start | 手动改 `story-input.json` + `--refresh-input` | 漏掉回填导致门控不生效 |
-| P8 | 不知道定时任务上一轮到底干了什么 | 翻 `reports/*.md` | 出问题才发现 |
+| P6 | Harness 阻塞项不易发现和回复 | 需要切回对应 CodeBuddy 实例查看 | 阻塞项积压，忘记处理 |
+| P7 | 前端先行、后端接口后到，需要补充输入并继续流程 | 手动改 `story-input.json` 后还要按 Harness skill 刷新输入、重判门控 | 漏掉回填导致门控不生效 |
+| P8 | 不知道定时任务上一轮到底干了什么 | 翻 CodeBuddy 执行记录与 Harness Story 产物 | 出问题才发现 |
 | **P9** | **MR 建了没合、卡在 Phase 4 不知道** | **翻 GitLab** | **流程停滞，误以为在开发** |
 | **P10** | **构建成功没有、部署到哪个环境了** | **翻 DevOps 平台** | **提测时说不清版本** |
-| **P11** | **reopened 到底是没修好还是环境没更新** | **人工比对 commit，最高频假复现** | **反复改代码做无用功** |
+| **P11** | **reopened 到底是没修好还是环境没更新** | **人工跨 TAPD、工作区、MR 与构建记录排查** | **反复切换工具，可能重复修复** |
 | **P12** | **多仓库需求要逐个构建再手工收集制品 URL 批量发布** | **手工复制 file_url** | **易漏应用、易发错环境** |
 | **P13** | **DevOps 会话过期后 403，不知道是凭据问题还是平台挂了** | **看报错猜** | **排查浪费时间** |
 
@@ -100,7 +107,7 @@ flowchart TD
 | 多根工作区文件 | `<工作区名>.code-workspace` |
 | 工作区初始化脚本 | `~/.codebuddy/skills/create-workspace/scripts/create-workspace.ps1` |
 | Harness 插件 | `~/.codebuddy/harness-marketplace/plugins/harness/` |
-| Bug 修复 skill | `~/.codebuddy/skills/tapd-bug-fix-cron/` |
+| Harness 定时缺陷 skill | `~/.codebuddy/harness-marketplace/plugins/harness/skills/tapd-bug-cron/` |
 | MCP 配置 | `~/.codebuddy/mcp.json`（TAPD / GitLab / Devops / Figma / Playwright） |
 | DevOps MCP 源码与文档 | `D:\other\devops\`（`PROJECT_INTRODUCTION.md` / `mcp-server.js` / `devops-api.js`） |
 
@@ -117,15 +124,12 @@ flowchart TD
 │   ├── code-review.json        # Phase 3 产出
 │   ├── open-questions.json     # 待确认项（confirmation 才是放行依据）
 │   ├── scope-amendments.json   # 范围外改动
-│   └── repos.json              # 多仓库映射（primary + repos）
+│   ├── repos.json              # 多仓库映射（primary + repos）
+│   ├── bug-list.json           # Harness fixbugs 产出的缺陷状态与回写凭证
+│   ├── {需求标题}_bug分析报告.md # Harness 需求分析师的 Bug 分析报告
+│   └── archive/<round-N>/      # ★ 已归档轮次；同 storyId 保留开发/修复历史
 ├── scheduled_tasks.json        # ★ 定时任务 {tasks:[{id,cron,prompt,expiresAt,...}]}
 ├── scheduled_task_executions.json  # ★ 执行记录
-├── bug-fix/                    # ★ Bug 工作台
-│   ├── .lock                   # 执行锁 {roundId,startedAt,sessionHint}
-│   ├── todo-list.md            # 跨轮进度唯一信源
-│   ├── analysis/<bug_id>.md    # 含「## 待决问题」「## 人工确认结论」
-│   ├── team/<bug_id>/
-│   └── reports/<时间戳>.md
 └── teams/
 ```
 
@@ -138,8 +142,17 @@ flowchart TD
 
 ### 2.3 CodeBuddy HTTP API（能力已覆盖，无需自造）
 
-启动：`codebuddy --serve --port 8080`
-鉴权：每个请求必带 `X-CodeBuddy-Request: 1`；凭据用 `Authorization: Bearer <password>` 或 `X-Access-Token`，密码在 `~/.codebuddy/settings.json`。
+**服务拓扑与启动**：每个 TAPD Story 对应一个长期 CodeBuddy HTTP 服务，端口稳定；工作区创建时不启动服务，首次 CodeBuddy 或 cron 操作时由控制台后端惰性启动。每个 StoryRound 的 run/fixbugs 执行创建独立 Job/session，复用该 Story 服务的 endpoint/port；cron owner session 与这些轮次 Job 分离。服务启动命令：
+
+```powershell
+codebuddy --serve --host 127.0.0.1 --port <port> --permission-mode bypassPermissions --auth none
+```
+
+不要用 `codebuddy daemon start` 分配 Story 端口：该命令为幂等调用，只返回既有 daemon，不能据此取得独立的每 Story 端口。`--serve` 进程由控制台后端监督，不交给 daemon supervisor。已在本机 CLI 验证多个不同端口的 `codebuddy --serve` 服务可并行运行。
+
+**生命周期与端口**：后端持久化 Story 与服务实例映射、端口、cwd、PID/健康状态及 cron owner。后端启动时按映射对原端口做健康检查，接管存活服务，否则在同一端口启动；意外故障最多重试 3 次，间隔依次为 5s / 15s / 30s，仍失败则标记服务失败并通知。浏览器关闭不影响服务；终态/归档也不停止服务，必须由用户显式手动停止。端口从 60200 起分配，可配置范围上限但不得高于 65535（默认上限 65535）；已分配端口持久保留，直到显式删除 Story 映射。冲突或耗尽时报错，不得改写映射或复用保留端口。
+
+**HTTP 转发与安全边界**：浏览器只向控制台后端发请求，由后端按 `instanceId`/Story 映射代理到 `http://127.0.0.1:<port>/api/v1/...`；浏览器不得直接选择或访问 CodeBuddy 端口。上游每个请求发送 `X-CodeBuddy-Request: 1`。本设计明确使用 `--auth none`，不配置密码或 Bearer/X-Access-Token；该 Header 只是请求标记，不是认证。任何本机进程都可能访问对应服务的执行、文件等 API，属于已接受的本机信任边界，不能把 loopback 或该 Header 描述为认证保护。
 
 | 站点动作 | 接口 |
 |---|---|
@@ -152,13 +165,15 @@ flowchart TD
 | 暂停 / 重启 / 删除 | `POST /jobs/:id/stop` / `POST /jobs/:id/respawn` / `DELETE /jobs/:id` |
 | 重命名 | `PATCH /api/v1/jobs/:id/name` `{name}` |
 | 可恢复会话 | `GET /jobs/resumable?cwd=` → `POST /jobs/resume` `{sessionId}` |
-| 定时任务列表/新建 | `GET\|POST /api/v1/scheduled-tasks?sessionId=xxx` |
+| 定时任务列表 | `GET /api/v1/scheduled-tasks?sessionId=xxx`（新建由 Harness skill 负责） |
 | **改间隔 / 启停** | `PATCH /api/v1/scheduled-tasks/:id` `{cron}` / `{enabled:false,sessionId}` |
 | 删除任务 / 执行记录 | `DELETE /scheduled-tasks/:id` / `GET /scheduled-tasks/:id/executions` |
 | 会话列表 | `GET /api/v1/sessions?cwd=*` |
 | 内嵌终端 | `POST /api/v1/pty` → `GET /pty/:id/output`(SSE) → `POST /pty/:id/input/send` |
 | 读文件 / 列目录 / 监听 | `GET /files/download?path=` / `POST /fs/list` / `POST /fs/watch`(SSE) |
 | 健康与资源 | `GET /api/v1/health` / `GET /api/v1/metrics`（含 instances: cwd/pid/rssMib） |
+
+以上均为后端代理至 Story 对应服务的上游 API；浏览器请求使用控制台自身路由和 `instanceId`，不暴露或接受上游端口选择。
 
 **实例生命周期字段**：`state`(working/blocked/done/failed/stopped)、`status`(busy/waiting/idle/stopped)、`tempo`(active/idle/blocked)、`alive`、`settled`。
 历史实例判定 = `settled===true && alive===false`。`webUrl` 仅在本机 loopback 有监听时非空。
@@ -271,7 +286,10 @@ flowchart LR
         CACHE["本地缓存 SQLite/JSON"]
     end
     subgraph External["被编排的对象"]
-        CB["CodeBuddy 网关<br/>127.0.0.1:8080"]
+        SUP["CodeBuddy 服务监督器<br/>按 TAPD Story 映射端口"]
+        CB["每 Story 一个 CodeBuddy --serve<br/>127.0.0.1:<port>"]
+        JOB["StoryRound Job/session<br/>复用 Story 服务"]
+        OWNER["专属 cron owner<br/>agentId / sessionId"]
         TAPD["api.tapd.cn"]
         GL["gitlab.vzan.com/api/v4"]
         DO["devops.vzan.com"]
@@ -281,22 +299,26 @@ flowchart LR
     UI <-->|"同源，无 CORS"| API
     API --> AGG --> CACHE
     API --> EXE
-    AGG -->|"令牌只在后端"| CB
+    API -->|"instanceId / Story 映射代理"| SUP
+    SUP --> CB
+    CB --> JOB
+    OWNER -->|"cron 触发时经后端 dispatch"| API
     AGG --> TAPD
     AGG --> GL
     AGG --> DO
     AGG -->|"只读状态文件"| FS
     EXE -->|"后台长任务"| PS
-    EXE --> CB
 ```
+
+**启动 / 恢复顺序**：首次 CodeBuddy 或 cron 动作触发后端 `ensureStoryService`：读取 Story 映射；若无映射则从 60200 起分配并持久化端口与 cwd，再启动上述 `--serve` 命令；若已有映射则先在原端口健康检查并接管存活服务，否则仍在原端口启动。所有浏览器 API 经后端映射代理。后端进程启动时对已登记服务执行同一健康检查/接管流程。用户手动停止 Story 服务时自动暂停其 cron；恢复时先恢复 cron owner/agent/session，再重新启用任务。意外停机期间跳过已错过或排队的 cron，不补跑。
 
 ### 五条数据通道
 
 | 通道 | 用途 | 刷新策略 |
 |---|---|---|
 | **TAPD（走 MCP，见 10.2）** | 需求、Bug 数量与明细、迭代、版本 | 手动 + 定时（默认 5 分钟）+ 进入页面 |
-| **CodeBuddy API** | 实例列表/流/对话、定时任务 CRUD、终端 | SSE 长连 + 断线重连 + 30 秒轮询兜底 |
-| **本地文件**（只读） | Harness 阶段、bug-fix todo/analysis/reports、锁 | `fs.watch` + 变更即推 |
+| **CodeBuddy API** | 后端经 Story 映射代理实例列表/流/对话、定时任务 CRUD、终端；服务由后端监督 | SSE 长连 + 断线重连 + 30 秒轮询兜底 |
+| **本地文件**（只读） | Harness 阶段、Story 产物、活动流程标记 | `fs.watch` + 变更即推 |
 | **GitLab 直连** · v2 | MR 状态、审批、变更文件、分支与提交比对 | 手动 + 进入需求详情时 + Phase 4 期间加密 |
 | **DevOps 直连** · v2 | 应用/分支/构建记录、部署环境、制品 URL | 手动 + 构建中轮询（10 秒）+ 403 即停 |
 
@@ -305,8 +327,8 @@ flowchart LR
 | # | 决策 | 理由 |
 |---|---|---|
 | A1 | **前端由本地 Node 服务同源提供** | 彻底绕开 CORS 与混合内容问题；令牌不下发浏览器 |
-| A2 | **所有凭据只存后端**（运行时读取，不复制进代码库） | TAPD token、CodeBuddy 密码、GitLab PAT、DevOps 四件套均敏感 |
-| A3 | **单网关多 cwd 优先**，多网关作为可选 | jobs 支持 `cwd`，一个 `--serve` 可管多工作区；若习惯每需求单开，则维护端口注册表 |
+| A2 | **凭据只存后端；CodeBuddy 明确无密码认证** | TAPD token、GitLab PAT、DevOps 四件套均敏感；CodeBuddy 使用 `--auth none`，请求标记不构成认证，本机任意进程可访问其高权限 API |
+| A3 | **每个 TAPD Story 一个长期 CodeBuddy 服务** | Story 服务按需启动并固定端口；同一 Story 的多个 StoryRound Job/session 复用 endpoint，彼此隔离；后端负责监督、恢复与端口映射 |
 | A4 | **站点是编排层，不是状态机** | 状态以被编排方为准，缓存只用于展示与离线兜底 |
 | A5 | **长任务一律后台 + 进度上报** | npm install 1~3 分钟/仓库、graphify 20 秒~5 分钟/仓库、构建数分钟，不能用默认 120 秒超时 |
 | **A6** | **发布侧「读直连、写兜底」** | MR/构建状态直连 REST 实时读；创建 MR、触发构建默认由 Harness Phase 4/6 执行，站点手动触发需二次确认 |
@@ -314,6 +336,8 @@ flowchart LR
 | **A8** | **聚合器先行，渲染层可抛弃** · v2.2 | 先把六源状态聚合成统一 `state.json`，这是真正的资产。看板 / 收件箱 / 流水线都是它的投影，形态选错也能换，核心投入不浪费 |
 | **A9** | **收件箱为默认首屏** · v2.2 | 单人工具的核心问题是「现在该我做什么」。打开先看待决策项，需要全局时再切看板 |
 | **A10** | **发布写操作在 Phase 4-6 硬禁用** · v2.2 | 不是「建议兜底」而是硬规则，避免与发布助手竞态、避免用错 env/buildOther 污染门控 |
+| **A11** | **后端代理与服务监督** · v2.6 | 浏览器只给 `instanceId`/Story，由控制台后端代理上游 API；每 Story 服务由后端监督，终态或归档不自动停止，须显式手动停止 |
+| **A12** | **Story 服务端口持久保留** · v2.6 | 60200 起分配且不超过 65535；端口与 Story 映射同生命周期，映射显式删除前不释放；冲突/耗尽显式报错 |
 
 ---
 
@@ -333,12 +357,12 @@ flowchart LR
 | M1-6 | 四向关联 | 需求卡上直接看到：工作区路径、运行中实例数、cron 任务数与下次执行时间 |
 | M1-7 | 未关联工作区给「去初始化」入口 | 一键跳 M2 并预填需求信息 |
 | M1-8 | Bug 明细抽屉 | bug_id、标题、状态、处理人、创建时间、模块；`reopened` 打标并提示「需读评论」 |
-| M1-9 | 本地修复进度对照 | 并排 TAPD 状态与 `todo-list.md` 本地状态；**本地「已完成」+ TAPD `new` 标为「已修复待流转」而非异常** |
+| M1-9 | Harness 修复进度对照 | 并排展示 TAPD 状态与 Harness `bug-list.json` 中的分诊/回写状态；仅展示文件事实，不推导或写入流程状态 |
 | M1-10 | 全局搜索与筛选 | 按标题/ID、迭代、阶段、有无阻塞项筛选；`/` 聚焦 |
 | M1-11 | 数据新鲜度标识 | 每块显示「更新于 x 秒前」+ 手动刷新；失败降级显示缓存并标注 |
 | **M1-12** | **发布侧状态列** · v2 | 需求卡显示：MR 状态（未建/待合并/已合并）、最近构建号与结果、当前部署环境 |
 | **M1-13** | **全链路一条链** · v2 | 需求 → 工作区 → Phase → MR → 构建 → 部署 → 提测 → Bug，一屏看完，断点标红 |
-| **M1-14** | **链路断点告警** · v2.1 | 命中「未入库 / 未合流 / 环境滞后」任一信号时，在需求卡与 Bug 上同时打标（判定逻辑见第 6 节） |
+| **M1-14** | **链路断点告警** · v2.1 | 展示工作区改动、MR、构建与 Harness Phase 的状态差异作为诊断线索；不替代 Harness 判定或推进流程 |
 
 ### M2 · 工作区一键初始化
 
@@ -364,8 +388,8 @@ flowchart LR
 |---|---|---|
 | M3-1 | 实例列表 | `GET /jobs?all=1`，按工作区分组；显示 name、cwd、state、status、tempo、alive |
 | M3-2 | **命名规范** | 默认名 = `需求中文标题 · <用途>`，杜绝「实例1/实例2」 |
-| M3-3 | 启动实例 | 表单：cwd（必填）、prompt、agent、model、effort、permissionMode |
-| M3-4 | 快捷启动模板 | ① `/harness start <storyId> "<标题>"` ② `/harness fixbugs` ③ 自由对话 |
+| M3-3 | 启动实例 | 提供「需求开发」「Bug 修复」两个明确入口；选择后以 CodeBuddy job 调用 Harness skill，不直接调用内部状态机脚本 |
+| M3-4 | 快捷启动模板 | ① 需求开发：`/start` + storyId / 需求输入（当前 skill 推断 `run`，不使用未文档化的 `/start run`）；② Bug 修复：`/start fixbugs <storyId>`；③ 自由对话 |
 | M3-5 | **实时输出** | SSE 渲染；断线自动重连并回放尾部，不丢行 |
 | M3-6 | 历史回看 | `transcript`，未运行实例也能看历史（≤1000 行） |
 | M3-7 | 与实例对话 | `POST /jobs/:id/reply`，多行输入 + 快捷指令，发送即回显 |
@@ -373,33 +397,49 @@ flowchart LR
 | M3-9 | **多实例不串线** | 每实例独立 SSE 与滚动位置；切换不影响其他流 |
 | M3-10 | 阻塞态醒目提示 | `blocked` 高亮 + 顶部汇总「N 个实例等你回复」 |
 | M3-11 | 内嵌终端（可选） | PTY，与实例对话区分，不混用 |
-| M3-12 | **接口对齐二次启动** | 「补充接口文档 → 再次 start」：更新 `story-input.json` sources → `create-workflow.js <storyId> --refresh-input` → 再发 start。**必须提醒回填不可跳过** |
+| M3-12 | **接口对齐后继续流程** | 更新 `story-input.json` sources → 按当前 Harness start skill 刷新输入并重判门控 → 继续当前合法 Phase；不得重复创建 Story 或盲目再次 start。**必须提醒回填不可跳过** |
 | M3-13 | Harness 状态只读 | 绝不写 `e2e-state.json` / `dev-pass.json`；推进一律通过给实例发指令 |
 | M3-14 | 待确认项 surfaced | 读 `open-questions.json`，未 `confirmation` 的项上看板；**站点不替用户确认** |
 | **M3-15** | **Phase 4-6 联动** · v2 | 进入 Phase 4 提示「MR 待创建/待合并」并给 GitLab 直达；Phase 6 展示构建进度与部署 URL |
+| M3-16 | 同一 storyId 多模式轮次 | `run` / `fixbugs` 各轮模式固定；活动 Story 不允许切换模式；手动跨模式仅在当前轮终态后，经用户确认归档并用同一 storyId 新建目标模式轮次 |
+| **M3-17** | **Story 服务按需启动与轮次 Job 隔离** · v2.6 | 工作区创建不启动 CodeBuddy；首次 CodeBuddy 或 cron 操作时后端按 Story 映射惰性启动/接管固定端口服务。每个 TAPD Story 恰有一个长期服务；每个 StoryRound 有独立 Job/session，共用该服务 endpoint/port。浏览器只传 `instanceId`/Story，经后端代理，不可选择上游端口 |
+| **M3-18** | **服务监督、恢复与手动生命周期** · v2.6 | 后端监督每个 `--serve` 进程；后端重启时健康检查并接管存活进程，否则同端口重启。意外失败最多重试 3 次（5s/15s/30s），耗尽后标记 failed 并通知。关浏览器、Story terminal 或归档均不停止服务；仅显式手动停止会停止服务并自动暂停关联 cron，恢复时先恢复 cron owner/session 再启用 cron |
+| **M3-19** | **Story 服务映射与端口回收** · v2.6 | 端口从 60200 起，在配置范围内分配且上限≤65535（默认 65535）；映射保存端口并持续预留至映射显式删除，冲突/耗尽报错，不偷偷改映射或复用端口。删除须二次确认，先删除关联 scheduled task、再停止服务、最后移除映射并释放端口；若任务删除失败，保留映射/端口且报告失败，StoryRound 历史始终保留 |
 
 ### M4 · 定时任务管理
 
 | # | 需求 | 验收标准 |
 |---|---|---|
 | M4-1 | 任务列表 | 合并 API 与本地 `scheduled_tasks.json`；**首行显示需求中文标题** |
-| M4-2 | 模式标识 | 标注「模式1 只查」/「模式2 查+修」，模式2 用警示色 |
+| M4-2 | 任务类型标识 | 标注「只查」/「查询+修复」；意图不清默认只查，自动修复任务用警示色并展示完整副作用 |
 | M4-3 | **修改轮询间隔** | `PATCH {cron}`，不删不建；提供 20/30/60 分钟预设 |
 | M4-4 | **cron 避开 0 分与 30 分** | 20 分钟→`7,27,47 * * * *`；30 分钟→`11,41 * * * *`；60 分钟→`13 * * * *`；自定义时拦截含 0/30 分 |
 | M4-5 | 启用 / 暂停 | `PATCH {enabled:false,sessionId}`，暂停不删除 |
-| M4-6 | **同一需求只保留一个任务** | 创建前检测同 storyId（跨模式去重），命中则展示旧任务 id/cron/prompt 前 50 字，确认后才删 |
-| M4-7 | 创建任务 | 按模板**整段生成**，只替换占位，不局部 patch |
-| M4-8 | **模式2 二次确认** | 明确告知「自动改代码 + 写 TAPD 评论 + 改缺陷状态」，勾选后才提交 |
+| M4-6 | **同一需求只保留一个启用任务** | 每个 TAPD Story 最多一个启用 cron；创建前检测 Story 映射，命中则展示旧任务 id/cron/prompt 前 50 字；用户确认后才替换，避免并行 cron。每个 Story 同时最多一个 active StoryRound，轮次模式固定 |
+| M4-7 | 创建任务 | `tapd-bug-cron` skill 创建该 TAPD Story 唯一的 durable scheduled task，并绑定专属 `agentId`/cron-owner session；该 owner 与各 StoryRound Job/session 不同。站点不自拼 prompt 或直接 POST 创建 |
+| M4-8 | **修复任务一次性授权** | 创建「查询+修复」任务前确认完整副作用：代码修改、TAPD 评论/状态回写、7 Phase 后续提交/MR、知识库更新、dev 构建部署，以及终态归档并以同一 storyId 开启新轮；授权适用于后续各轮 |
 | M4-9 | 持久化与有效期 | 默认 `durable:true`，30 天；显示到期时间 |
-| M4-10 | `.gitignore` 提醒 | 提醒把 `.codebuddy/bug-fix/` 加入 gitignore，**不擅自修改** |
-| M4-11 | 执行记录 | API + 本地 executions json；每轮时间、结果、runId |
-| M4-12 | 轮次报告 | 直接渲染 `bug-fix/reports/<时间戳>.md` |
-| M4-13 | **执行锁状态** | 显示 `.lock` 存在与否、roundId、持续时长；≥90 分钟标「陈旧锁」；**站点不主动删锁** |
-| M4-14 | todo-list 可视化 | 解析成表格：bug_id / 本地状态 / 指纹 / 分类 / 解冻标记 |
-| M4-15 | **模式3 解冻入口** | 列出「待人工确认/已转后端/待联调」→ 展示 analysis 的「## 待决问题」→ 答案录入 → 交实例执行模式3 |
-| M4-16 | 解冻的边界 | 站点只收集答案并下发；**写回 analysis、改 todo、重算指纹由 skill 执行** |
-| M4-17 | 锁冲突提示 | 锁 <90 分钟时解冻按钮禁用，提示 roundId |
-| M4-18 | sessionId 绑定 | 为每个工作区维护会话映射，缺失时先 `GET /sessions?cwd=` 发现或创建 |
+| M4-10 | `.gitignore` 提醒 | 提醒把 `.codebuddy/` 加入 gitignore，**不擅自修改** |
+| M4-11 | 执行记录 | 展示 CodeBuddy API 返回的执行时间、结果与 runId |
+| M4-12 | 流程产物 | 按 Harness Story 展示 `bug-list.json` 与 `{需求标题}_bug分析报告.md` |
+| M4-13 | **Harness 活跃流程状态** | 只读展示 `.codebuddy/plans/.harness-active` 对应的 Story 与 Phase；站点不创建、清理或接管 Harness 状态 |
+| M4-14 | Bug 状态可视化 | 解析 Harness `bug-list.json`：bug_id / TAPD 状态 / 分诊分类 / 评论摘要 / 回写状态 |
+| M4-15 | **待确认项入口** | 展示 Harness `open-questions.json` 未确认项，并跳转到对应实例供用户回复；后续由 Harness 门控推进，站点不直接修改流程状态 |
+| M4-16 | 状态推进边界 | 站点只展示待确认项并向实例发送用户答复；**不写 Harness 状态文件或 Bug 流程产物** |
+| M4-17 | 活跃流程提示 | Harness 已有未终态 Story 时展示 Story / Phase；cron 按 Harness 规则跳过本轮并记录原因，不并发启动或切换模式 |
+| M4-18 | sessionId 绑定 | cron 使用 Story 映射中的专属 owner `agentId`/sessionId，不复用 StoryRound 会话；恢复服务时先恢复该 owner/session，再重新启用 scheduled task |
+| **M4-19** | **同 storyId 定时多轮** · v2.5（待增强） | 查询+修复模式每轮先查 TAPD：无匹配 Bug 时仅报告、不归档；有匹配 Bug 且当前 Story 未终态时跳过；有匹配 Bug 且当前轮已 terminal 时，目标行为是归档至 `archive/round-N/`，再以相同 storyId 新建独立 fixbugs Job 并发送 `/start fixbugs <storyId>`；无当前轮时直接启动。只查模式永不归档。归档成功但启动失败时保留归档、记录并报告失败；下个周期先重读 Harness 状态，再决定重试/跳过。**终态自动归档/重启及 dispatch 到新轮次 Job 当前均非已安装 `tapd-bug-cron` skill 能力，属于待增强插件/skill，不得视为现有行为** |
+| **M4-20** | **cron owner dispatch 与停机语义** · v2.6（目标行为；dispatch 待增强） | 每次匹配的查询+修复运行由专属 owner 经控制台后端 dispatch；后端在该 Story 服务上创建独立轮次 Job，再发送 `/start fixbugs <storyId>`。**此 dispatch-to-round-job 流程当前非已安装 `tapd-bug-cron` skill 能力，须作为待增强项实现，不是现有行为。**查询-only 只查询并报告。手动停止服务自动暂停 cron；非预期停机时跳过错过/排队的运行，不追赶补跑；Story terminal/归档不自动停服务 |
+| **M4-21** | **显式删除 Story 映射** · v2.6 | 二次确认后删除关联 scheduled task、停止 Story 服务、移除映射并释放端口；task 删除失败时不继续移除映射或释放端口并报告失败；删除操作不删除任何 StoryRound/archive 历史 |
+| **M4-22** | **cron 与 owner session 一对一** · v2.7 | 每个 scheduled task 绑定一个持久 owner `agentId`/`sessionId`；同一任务的多次触发复用 owner，不为每次触发新建 owner session。每个 Story 当前最多一个启用 cron，因此多个 Story 的 cron 分别有各自 owner session；同 Story 的第二个启用 cron 仍按 M4-6 替换确认规则处理。未来若放宽为同 Story 多个 cron，每个 task 仍独立绑定 owner，禁止多个 task 共用会话上下文 |
+
+**Cron session 管理原则**：
+- **owner session 是任务身份，不是单次执行记录**：由稳定的 `taskId → ownerAgentId/ownerSessionId` 关联；后端持久化映射，重启后按 `sessionId` 恢复，确认恢复成功后再启用 scheduled task。prompt 不依赖此前对话上下文。
+- **每次触发不额外创建 owner session**：执行时间、结果与 `runId` 记在 `Execution`；查询+修复由 owner dispatch 到独立的 `StoryRound` Job/session。各轮执行会话与 owner 分开，避免任务调度上下文和修复对话混在一起。
+- **多任务的数量边界**：多 Story 的定时任务意味着多个 owner session；本规格目前限制每个 Story 最多一个启用 cron。若未来确需同 Story 多任务，则是每个 task 一个 owner session，而不是一个 Story 共用一个 owner。
+- **启停与清理**：暂停保留 task-owner 绑定以便恢复；替换/删除 task 时先成功停用或删除旧 scheduled task，再解除活动绑定并将 owner 标记为归档。`Execution` 和 owner transcript 默认保留；只有用户显式确认后才清理 owner session。删除 task 失败要保留映射并报错，不能静默创建新 owner。删除 Story 映射仍遵循 M4-21，且不删除 StoryRound/archive 历史。
+
+**取舍**：每 cron 一个持久 owner session 能隔离任务上下文、清楚归属执行记录，也便于单独暂停、恢复和排障；代价是 session 数随 cron 数增长，需要持久化映射和明确清理流程。多个 cron 共用 session 可减少会话数量，但会增加上下文串扰、并发冲突和审计归因难度；每次触发都新建 session 则会造成会话膨胀、恢复与历史管理复杂，因此都不作为默认方案。
 
 ### M6 · 发布与部署 · v2 新增
 
@@ -416,27 +456,27 @@ flowchart LR
 | M6-9 | **构建冲突处理** | 提交前检查是否有进行中构建；命中「上一任务尚未完成」时给「查看进度 / 停止构建」入口，不盲目重试 |
 | M6-10 | 停止构建 | `get-build-stop`，二次确认，显示结果 |
 | M6-11 | **多应用批量发布** | 收集本需求各应用的 `file_url` → `get-deploy-multiple(urls, env, force, timeout)`；发布前逐项列出应用与制品，确认后才提交 |
-| M6-12 | **★ 环境滞后四信号判定**（v2.1 修正） | 对 `reopened` 的 bug 顺序检查四个信号：① 工作区有未提交改动 → 判「未入库」；② MR 未合并 → 判「未合流」；③ 最近成功构建早于修复完成时间 → 判「环境滞后」；④ 三者皆否才进 A/B/C 真分析。**不做 commit 比对**——cron 修复硬禁 git 写，改动只留工作区，不存在「修复提交」 |
+| M6-12 | **reopened 诊断线索** · v2.4 | 展示 TAPD 评论、工作区改动、MR 状态、Harness Phase 与最近构建记录及其更新时间；只提供人工诊断线索，不判定真假复现、不阻断或重跑 Harness |
 | M6-13 | 部署 URL 展示 | Phase 6 产出的部署地址挂在需求卡，一键打开对应环境 |
 | M6-14 | **凭据过期处理** | 403 时明确提示「DevOps 会话已过期」，给出从浏览器开发者工具重新获取四个值的指引；**熔断该通道停止轮询**，刷新后恢复 |
 | M6-15 | **特殊分支逻辑** | `live-h5-2` 按环境自动选分支（test→`origin/test_*`，dev→`origin/dev_*`，pre→`origin/pre2`）；站点复刻或透传，**不自己猜分支** |
-| M6-16 | **写操作硬边界** · v2.2 升级 | **Harness Phase 4-6 期间，站点所有发布写操作（触发构建 / 创建 MR / 批量发布 / 停止构建）直接禁用**，按钮置灰并提示「Harness 正在执行 Phase N，由发布助手负责」。仅当流程处于该区间之外（如 cron 修完 bug 需重新部署）才开放手动兜底，且需二次确认 + 审计 |
+| M6-16 | **写操作硬边界** · v2.2 升级 | **Harness Phase 4-6 期间，站点所有发布写操作（触发构建 / 创建 MR / 批量发布 / 停止构建）直接禁用**，按钮置灰并提示「Harness 正在执行 Phase N，由发布助手负责」。仅当流程处于该区间之外才开放手动兜底，且需二次确认 + 审计 |
 | M6-17 | 提测动作 | 「提测」= 选 test 环境构建 + 部署 + 本地标记；**是否回写 TAPD 状态待确认（R4）**，默认只标记不写 |
 
 ### M5 · 支撑能力
 
 | # | 需求 | 验收标准 |
 |---|---|---|
-| M5-1 | **连接自检页** | 逐项检测：CodeBuddy 网关可达/鉴权、TAPD token、**GitLab PAT**、**DevOps 会话（403 即判过期）**、工作区根可读写、脚本存在；每项给失败原因与修复建议 |
-| M5-2 | 配置管理 | 网关地址端口、TAPD workspace_id、处理人昵称、源/目标根、默认轮询周期、**GitLab 地址与目标分支**、**DevOps 分组与默认环境**；凭据掩码显示 |
+| M5-1 | **连接自检页** | 逐项检测：Story 服务映射/端口健康与后端监督状态（不做 CodeBuddy 密码鉴权）、TAPD token、**GitLab PAT**、**DevOps 会话（403 即判过期）**、工作区根可读写、脚本存在；每项给失败原因与修复建议 |
+| M5-2 | 配置管理 | CodeBuddy 端口分配起点与上限（上限≤65535）、TAPD workspace_id、处理人昵称、源/目标根、默认轮询周期、**GitLab 地址与目标分支**、**DevOps 分组与默认环境**；凭据掩码显示 |
 | M5-3 | **操作审计** | 所有写操作（建工作区、起实例、改 cron、删任务、下发指令、**触发构建、发布、停止构建**）记录时间、动作、参数、结果 |
 | M5-4 | 危险操作护栏 | 站点自身不执行 git 写与依赖变更；bash 型 job 下发命令时做关键字提示（commit/push/rm/install） |
 | M5-5 | 离线降级 | 任一通道不可达时显示缓存 + 明确「离线」标识，不白屏、不假报成功 |
 | M5-6 | 键盘效率 | `/` 搜索、`⌘K` 命令面板（跳需求/起实例/改 cron/触发构建）、`Esc` 关闭抽屉 |
-| **M5-7** | **站点自身鉴权** · v2.2（G1） | 后端聚合了 TAPD token + GitLab PAT + DevOps 会话 + CodeBuddy 密码，是本机最高权限点。绑 127.0.0.1 不等于安全——本机任何进程都能访问。启动时生成本地 token，前端首次访问注入，所有 `/api` 校验 |
+| **M5-7** | **站点自身鉴权** · v2.2（G1） | 后端聚合 TAPD token、GitLab PAT、DevOps 会话，并代理无密码认证的 CodeBuddy 高权限 API。绑 127.0.0.1 不等于安全；启动时生成控制台本地 token，前端首次访问注入，所有控制台 `/api` 校验。该 token 不会保护 CodeBuddy 上游端口，本机任何进程仍可访问其执行/文件 API |
 | **M5-8** | **长任务失败恢复** · v2.2（G2） | 每个长任务（npm install / graphify / 构建）落盘进度文件（阶段、已完成仓库、时间戳）。进程重启或中断后可从断点续跑，而不是从头重来。这是个人工具的生死线 |
 | **M5-9** | **磁盘占用可见** · v2.2（G3） | 看板显示各工作区占用（worktree + node_modules + graphify-out）。40+ 仓库 × N 个并行需求会迅速吃满磁盘。提供「归档 + 清理」引导，**不自动删除** |
-| **M5-10** | **效果度量** · v2.2（G4） | 第一版就记录：需求分配→提测时长、reopened 中假复现占比、每周手动操作次数。没有基线就无法判断这个站点值不值得继续投入 |
+| **M5-10** | **效果度量** · v2.2（G4） | 第一版就记录：需求分配→提测时长、reopened 诊断后的人工处理结果、每周手动操作次数。没有基线就无法判断这个站点值不值得继续投入 |
 | **M5-11** | **统一快照时刻** · v2.2（G5） | 五条通道刷新策略不同，看板会出现「TAPD 3 个 bug + 本地 5 个 + 构建 10 分钟前」的混合时刻。引入统一 `snapshotAt`，跨通道数据标注是否同一时刻，避免基于过期数据做决策 |
 
 ### M7 · 收件箱 · v2.2 新增（评审首推形态）
@@ -447,7 +487,7 @@ flowchart LR
 | # | 需求 | 验收标准 |
 |---|---|---|
 | M7-1 | 只聚合需要人决策的事项 | 五类：实例 blocked、Bug 待人工确认、reopened 打回、MR 待合并、构建失败；外加 DevOps 凭据临期预警。其余一律不进 |
-| M7-2 | 每项给出原因 + 一键动作 | 动作必须跳到**能真正解决它**的界面：去回复 / 回答并解冻 / 运行四信号 / 去看 MR / 看构建记录 |
+| M7-2 | 每项给出原因 + 一键动作 | 动作必须跳到**能真正解决它**的界面：去回复 Harness 实例 / 查看 reopened 诊断 / 去看 MR / 看构建记录 |
 | M7-3 | 处理即消失，可撤销 | 标记已处理后从列表移除，5 秒内可撤销；不做软删除堆积 |
 | M7-4 | 空态有明确文案 | 清空后显示「现在没有需要你决策的事」，而不是空白或「暂无数据」 |
 | M7-5 | 顶部四项统计 | 待决策数、高优先级数、实例运行中、今日已处理 |
@@ -465,13 +505,15 @@ flowchart LR
 | `Requirement` | storyId, title, tapdUrl, status, priority, owner, iterationId, iterationName, releaseId, bugTotal, bugNew, bugReopened, fetchedAt | TAPD |
 | `Iteration` | id, name, startdate, enddate, status | TAPD |
 | `Bug` | id, title, status, current_owner, severity, created, module, storyId | TAPD |
-| `BugLocal` | bugId, localStatus, fingerprint, category, unfreezeMark, blockedReason | `todo-list.md` |
+| `BugAnalysis` | bugId, triage, commentDigest, writeback, status | Harness `bug-list.json` |
 | `Workspace` | name, path, repos[], branch, baseBranch, workspaceFile, initStatus{}, createdAt | 本地扫描 + 脚本 |
-| `Instance` | jobId, name, cwd, state, status, tempo, alive, settled, sessionId, webUrl, storyId? | CodeBuddy |
-| `CronTask` | id, sessionId, cron, promptFirstLine, mode, enabled, durable, expiresAt, storyId, nextRun | CodeBuddy + 本地 json |
+| **`StoryService`** · v2.6 | tapdStoryId, harnessStoryId, serviceInstanceId, endpoint, port, cwd, pid, health, supervisorStatus, cronOwnerAgentId, cronOwnerSessionId, cronTaskId, reservedAt | 控制台持久映射 + 后端进程/健康检查 |
+| `Instance` | jobId, name, cwd, state, status, tempo, alive, settled, sessionId, webUrl, tapdStoryId, harnessStoryId, serviceInstanceId, round | Story 服务上的 CodeBuddy Job |
+| `CronTask` | id, ownerAgentId, ownerSessionId, cron, promptFirstLine, mode(query_only/query_fix), enabled, durable, expiresAt, tapdStoryId, harnessStoryId, nextRun | `tapd-bug-cron` skill + CodeBuddy |
 | `Execution` | cronId, startedAt, finishedAt, result, runId, reportPath | executions + API |
 | `PhaseState` | storyId, phase, status, phases{}, fixLoopCount | `e2e-state.json` |
-| `LockState` | workspacePath, exists, roundId, startedAt, ageMinutes, stale | `.lock` |
+| `HarnessActive` | storyId, phase, status | `.codebuddy/plans/.harness-active` + `e2e-state.json`（只读） |
+| `StoryRound` | storyId, round, mode(run/fixbugs), status, jobId, sessionId, serviceInstanceId, archivePath, startedAt, terminalAt | 当前 Story 状态 + CodeBuddy Job + `archive/round-N/`；归档历史持续保留 |
 | **`MergeRequest`** · v2 | iid, projectId, title, sourceBranch, targetBranch, state, mergeStatus, approvals, changesCount, webUrl, mergedAt | GitLab |
 | **`BuildRecord`** · v2 | id, app, group, number, branch, commitId, buildDate, succeed, durationTime, fileUrl, operator | DevOps |
 | **`Deployment`** · v2 | env, app, commitId, buildNumber, deployedAt, url | DevOps + Phase 6 产出 |
@@ -480,60 +522,63 @@ flowchart LR
 | **`Snapshot`** · v2.2 | snapshotAt, channels{id:{fetchedAt,ok,stale}}, reqs[], bugs[], jobs[], crons[], builds[], mrs[] | 聚合器产出，三视图共用 |
 | **`JobProgress`** · v2.2 | jobId, kind(install/graphify/build), stage, doneRepos[], startedAt, updatedAt, resumable | 长任务落盘，支持断点续跑 |
 | **`DiskUsage`** · v2.2 | workspacePath, worktreeBytes, nodeModulesBytes, graphifyBytes, totalBytes, scannedAt | 本地扫描 |
-| **`Metric`** · v2.2 | storyId, assignedAt, testedAt, reopenCount, falseReopenCount, manualOps | 站点自产，用于效果度量 |
+| **`Metric`** · v2.2 | storyId, assignedAt, testedAt, reopenCount, reopenOutcomes[], manualOps | 站点自产；reopenOutcomes 记录用户确认的诊断结论 |
 
-**关联主键**：`storyId` 是主线。工作区通过 `plans/<storyId>/` 反查，实例通过 `cwd` + 命名约定，cron 通过映射表，**MR 通过 `source_branch=feat/<工作区名>`，构建通过 `AppMapping`**。
+**关联主键**：稳定的 Harness `storyId` 是流程主线，与 TAPD `storyId` 分开存映射。一个 StoryService mapping 持久关联 TAPD storyId / Harness storyId / serviceInstanceId、endpoint/port、cwd、PID/health、专属 cron owner agent/session/task；端口在 mapping 显式删除前一直 reserved。每个 StoryRound 独立关联其 Job/session 与服务。工作区通过 `plans/<storyId>/` 反查；同一 storyId 下按轮保存 `run` / `fixbugs` 历史，映射删除不删除这些归档；**MR 通过 `source_branch=feat/<工作区名>`，构建通过 `AppMapping`**。
 
-> ⚠️ 两个脆弱关联：① cron 无 storyId 字段，只能靠 prompt 首行标题 → **必须维护 `storyId ↔ cronId` 映射表**；② 仓库名与 DevOps 应用名不一定一致 → **必须维护 `AppMapping`，首次人工确认**。
+> ⚠️ 两个脆弱关联：① cron 无 storyId 字段，**必须通过 StoryService mapping 维护 TAPD/Harness storyId ↔ owner/task ID 关系，不得依赖 prompt 标题**；② 仓库名与 DevOps 应用名不一定一致 → **必须维护 `AppMapping`，首次人工确认**。
 
 ---
 
 ## 6. 状态机
 
-### 需求生命周期（v2 闭环）
+### 需求生命周期（稳定 storyId，多轮模式固定）
 
 ```
-待理解 → 范围已确认 → 工作区就绪 → 开发中(Phase 0-3)
-                                    ├─ 待接口对齐 ──┐
-                                    └──────────────┘
-       → MR待合并(Phase 4) → 知识库更新(Phase 5) → 构建部署(Phase 6)
-       → 已提测 → Bug修复中 ⇄ 待人工确认 → 已完成 → 已归档
+需求输入 → Harness agent 指定并固定 storyId（与 TAPD ID 建映射）
+  ├─ Round N: run      → Phase 0-6 → terminal
+  └─ Round N: fixbugs  → Phase 0-6 → terminal
+                       ↓ 归档至同一 Story 的 archive/round-N/
+       下一轮按目标模式重启；run / fixbugs 不在轮内互相切换
 ```
+
+手动跨模式：当前轮 terminal 后提示并经用户确认归档，再用同一 storyId 启动目标模式。定时自动修复：只查模式永不归档；查询+修复无匹配 Bug 时报告且不归档，有匹配 Bug 但当前流程非终态时跳过；有匹配 Bug 且 terminal 时的目标行为是归档并以相同 storyId 新建 fixbugs Job（归档成功而启动失败则保留归档并报告，下周期重读状态）。**terminal 自动归档/重启及 dispatch 到新轮次 Job 当前未被已安装 `tapd-bug-cron` skill 支持，均为待增强能力，不是现有行为。**
+
+### Story 服务与 cron 生命周期
+
+```
+首次 CodeBuddy / cron 动作
+  → 后端读取 TAPD Story ↔ Harness storyId ↔ serviceInstanceId 映射
+  → 新 Story：分配并持久化端口（60200 起）；已有 Story：原端口健康检查/接管
+  → 后端启动并监督该 Story 唯一的 --serve 服务
+  → 用户操作创建 StoryRound 专属 Job/session；cron task 则由独立 owner agent/session 持有
+  → 匹配的查询+修复 cron 经后端 dispatch 创建新轮次 Job，发送 /start fixbugs <storyId>
+```
+
+显式手动停服务会先自动暂停 cron；恢复服务时恢复 owner/session 后再启用 cron。服务意外停机期间跳过错过及排队运行，不追赶补跑。terminal/归档不停止服务。显式删除 mapping 必须先删除关联 task、再停止服务、最后释放端口；task 删除失败时保留 mapping/端口，StoryRound 历史始终保留。
 
 ### Bug 双状态对照
 
-| TAPD 状态 | 本地 todo 状态 | 站点显示 | 是否重做 |
+| TAPD 状态 | Harness 缺陷记录 | 站点显示 | 流程处理 |
 |---|---|---|---|
-| new | 待分析 | 待处理 | 是 |
-| new | 进行中 | 修复中 | 指纹一致则继续 |
-| new | 已完成 | **已修复待流转** | 否（正常现象） |
-| new | 已转后端 / 待联调 | 已评论待后端 | 否 |
-| **reopened** | 任意 | **测试打回 · 需读评论 + 环境核对** | **是，强制读评论** |
-| 任意 | 待人工确认 | 阻塞 · 等你回答 | 否，走模式3 |
+| new | 未纳入当前 Story | 待处理 | 由用户启动 Harness fixbugs 或等待 cron |
+| new | `bug-list.json` 已记录 | 显示 Harness 分诊 / 回写结果 | 由 Harness 门控决定 |
+| **reopened** | Harness fixbugs 分析中 | **测试打回 · 展示评论摘要与分析进度** | 由 Harness fixbugs 决定 |
+| 任意 | `open-questions.json` 有未确认项 | 阻塞 · 等用户在 Harness 实例答复 | Harness 收到答复后继续 |
 
-### ★ reopened 的四信号判定（v2.1 修正，解决最高频假复现）
+### reopened 的诊断视图（只读）
 
-> **为什么不用 commit 比对**：`tapd-bug-fix-cron` 硬禁 git 写操作，cron 修完的改动**只留工作区、未提交**，GitLab 上不存在「修复提交」。
-> 真实链路是：cron 修复（未提交）→ 人工 commit/push → MR 合并 dev → 构建 → 部署 test。中间任何一步没做，环境就是旧的。
+> 需求开发与 Bug 修复均由 Harness 7 Phase 流程管理。定时任务触发 fixbugs 后，后续提交/MR、知识库更新与构建部署按 Harness Phase 4-6 执行；站点只读展示实际的工作区、MR 与构建状态，不假定修复一定未提交或一定已部署。
 
 ```
 reopened
- ├ 第1步 强制读 TAPD 评论（不比对指纹，正文通常没变）
- ├ 第2步 信号① 工作区有未提交改动？   ← git status --porcelain
- │        是 → 【未入库】提示先提交，不改代码
- ├ 第3步 信号② MR 未合并？            ← GitLab MR state
- │        是 → 【未合流】提示先合并
- ├ 第4步 信号③ 最近成功构建早于修复完成时间？ ← DevOps get-records + reports 时间戳
- │        是 → 【环境滞后】提示重新构建部署
- └ 第5步 三个信号都排除 → A/B/C 真分析
-          A 没修好（修复不完整/漏边界）
-          B 新问题（原修复仍有效，建议测试拆单）
-          C 需人工口径 → 登记待人工确认
+ ├ 展示 TAPD 评论与 Harness bug-list 中的 commentDigest
+ ├ 展示工作区未提交改动（git status）
+ ├ 展示 MR 合并状态与关联构建记录
+ └ 展示 Harness 当前 Story / Phase；由用户或 Harness fixbugs 决定后续处理
 ```
 
-**四个信号全部来自已有数据源，不需要新增接口，比 commit 比对更可靠也更简单。**
-
-> ⚠️ 信号③ 的精度受 H2 限制：DevOps 只能查构建记录，查不到「当前部署版本」。构建成功 ≠ 已部署，所以该信号只能给「**疑似**环境滞后」，界面必须标注推断性质。
+> ⚠️ DevOps 只能查构建记录，查不到「当前部署版本」。构建成功 ≠ 已部署，因此环境滞后只能作为疑似线索；该诊断视图不得取代 Harness 流程判断。
 
 ---
 
@@ -543,16 +588,18 @@ reopened
 |---|---|
 | 安全 | 凭据只存后端，前端永不见明文；服务只绑 `127.0.0.1`；所有写操作二次确认；**pre/prod 默认禁用** |
 | **站点鉴权** · v2.2 | 后端是本机最高权限聚合点，**必须有自己的本地 token**，不能因为绑了 loopback 就裸奔（G1） |
+| **CodeBuddy 上游信任边界** · v2.6 | 每 Story 服务按确认设计使用 `--auth none`；`X-CodeBuddy-Request: 1` 仅为请求标记，非认证。本机任意进程可访问执行/文件 API；控制台 token 与后端代理不改变此风险，不得声称上游已认证 |
 | 性能 | 看板首屏 <1s（走缓存）；SSE 推送 <1s；实例列表 100 个不卡 |
 | 长任务 | npm install / graphify / 构建均后台执行，超时 ≥600s，进度可见、可中断、可幂等重跑 |
+| **Story 服务可靠性** · v2.6 | 控制台后端监督每个 `--serve`；重启时同端口健康检查/接管；意外故障最多重试 3 次，间隔 5s/15s/30s，耗尽通知并标记 failed；浏览器关闭无影响 |
 | **失败恢复** · v2.2 | 每个长任务落盘进度，进程重启/中断后**从断点续跑**；SSE 断线重连后回放尾部不丢行（G2） |
 | 可靠性 | SSE 断线重连；文件监听失效降级轮询；**DevOps 403 熔断不空转**；任何外部失败都不假报成功 |
 | **数据一致性** · v2.2 | 三视图共享同一 `snapshotAt`；跨通道数据标注是否同一时刻；切视图不重新取数（G5） |
 | **磁盘** · v2.2 | 工作区占用可见；归档与清理分离，清理必须二次确认，不自动删（G3） |
-| **度量** · v2.2 | 记录分配→提测时长、假复现占比、手动操作次数，用于判断工具是否真的省时间（G4） |
+| **度量** · v2.2 | 记录分配→提测时长、reopened 诊断后的人工处理结果、手动操作次数，用于判断工具是否真的省时间（G4） |
 | 可观测 | 每块标注来源与更新时间；错误显示原始报错而非「操作失败」 |
-| 可维护 | 查询口径、cron 规则、提示词模板、应用映射集中配置 |
-| 边界 | 不写 Harness 状态文件；不删他人锁；不改指纹算法；不自动 git 写；**Phase 4-6 期间发布写操作硬禁用** |
+| 可维护 | 查询口径、cron 规则、Harness 启动提示词模板、应用映射集中配置 |
+| 边界 | 不写 Harness 状态文件或 Bug 流程产物；不自建修复锁/指纹/状态机；**Phase 4-6 期间发布写操作硬禁用** |
 
 ---
 
@@ -566,11 +613,11 @@ reopened
 
 | 阶段 | 内容 | 完成标志 |
 |---|---|---|
-| **A · 聚合器**（3-4 天） | ① Node 服务 + 本地 token 鉴权 + 连接自检页；② TAPD 走 MCP、GitLab/DevOps 走 REST，**全部只读**，含 403 熔断与离线降级；③ 本地状态扫描（`e2e-state.json` / `scheduled_tasks.json` / `bug-fix/`）+ chokidar；④ 产出统一快照 `state.json`（带 `snapshotAt`） | 一个 JSON 里能拿到六源状态；任一通道挂掉不影响其余 |
-| **B · 收件箱 + 看板**（2-3 天） | ⑤ **M7 收件箱全部 7 条**（默认首屏）；⑥ M1 精简六条：需求列表、Bug 徽标、阶段进度条、四向关联、搜索筛选、新鲜度标识；⑦ **M6-12 四信号判定（只读）** | 打开就知道「该我做什么」；reopened 能自动判链路断点 |
+| **A · 聚合器**（3-4 天） | ① Node 服务 + 本地 token 鉴权 + 连接自检页；② TAPD 走 MCP、GitLab/DevOps 走 REST，**全部只读**，含 403 熔断与离线降级；③ 本地状态扫描（`e2e-state.json` / `scheduled_tasks.json` / Harness Story 产物 / `.codebuddy/plans/.harness-active`）+ chokidar；④ 产出统一快照 `state.json`（带 `snapshotAt`） | 一个 JSON 里能拿到六源状态；任一通道挂掉不影响其余 |
+| **B · 收件箱 + 看板**（2-3 天） | ⑤ **M7 收件箱全部 7 条**（默认首屏）；⑥ M1 精简六条：需求列表、Bug 徽标、阶段进度条、四向关联、搜索筛选、新鲜度标识；⑦ **M6-12 reopened 诊断视图（只读）** | 打开就知道「该我做什么」；reopened 能查看关联诊断信息 |
 | **C · 三个按钮**（1-2 天） | ⑧ 起实例 + 发指令（M3-3 / M3-7 精简版）；⑨ 改 cron 间隔 + 启停（M4-3/4/5，PATCH 不删建）；⑩ ⌘K 命令面板 | 高频操作不用离开网页；改间隔不删建任务 |
 
-**MVP 明确不含**：工作区初始化表单、SSE 完整流、模式 3 解冻、发布写操作、审计、磁盘与度量。这些进扩展轨。
+**MVP 明确不含**：工作区初始化表单、SSE 完整流、Harness 阻塞项回复入口、发布写操作、审计、磁盘与度量。这些进扩展轨。
 
 ### 8.2 扩展轨（MVP 跑通后按依赖推进）
 
@@ -578,25 +625,25 @@ reopened
 |---|---|---|
 | **S3 实例管理完整** | SSE 实时流、多实例不串线、暂停/重启/恢复、接口对齐二次 start（M3 全部） | MVP-C |
 | **S4 工作区初始化** | 脚本编排、后台长任务 + 断点续跑、结果复核表、应用映射（M2 全部） | MVP-A |
-| **S5 定时任务完整** | 执行记录、todo-list 可视化、锁状态、模式 3 解冻（M4 全部） | **R18 实测通过** |
+| **S5 定时任务完整** | 执行记录、Harness fixbugs 产物与活动流程状态展示、待确认项跳转（M4 全部） | **按 R18 验收 Story 服务与 cron owner 生命周期** |
 | **S6 发布写操作** | 触发构建、批量发布、停止构建、提测动作、prod 护栏（M6 剩余） | **R16 / R17 确认通过** |
 | **S7 打磨** | 审计、磁盘占用、效果度量、失败恢复完善、离线降级、键盘导航 | 前面各阶段 |
 
-> **为什么四信号判定放进 MVP**：它只读已有数据、不需新增接口，却是收益最高的一条——每次 reopened 都能少做一轮无用功。
+> **为什么 reopened 诊断视图放进 MVP**：它只读已有数据、不需新增接口，可快速查看 Harness 已有产物与发布链路状态。
 >
-> ⚠️ **前置阻塞**：S5 依赖 R18 实测结论，S6 依赖 R16 / R17 确认结论，未确认前不要动这两块。MVP 不受这三项阻塞，可以立即开工。
+> ⚠️ **前置阻塞**：R18 的多 `--serve` 本机 CLI 验证已通过，拓扑与 cron owner 设计已确认；S5 实现仍须通过 R18 验收清单。S6 仍依赖 R16 / R17 确认，未确认前不要动发布写操作。MVP 不受这两项阻塞，可以立即开工。
 
 ---
 
-## 9. 风险与待确认
+## 9. 风险与验证
 
 | # | 问题 | 影响 | 建议 |
 |---|---|---|---|
-| R1 | **网关拓扑**：每需求单开 CodeBuddy，还是一个 `--serve` 管多个？ | 决定要不要做端口注册表 | 建议单网关多 cwd；已习惯多实例则做网关发现 + 注册 |
-| R2 | **sessionId 来源**：`scheduled-tasks` 必填 | 拿不到就建不了/改不了任务 | 先 `GET /sessions?cwd=` 发现；没有则起常驻会话并记住映射 |
+| R1 | **Story 服务拓扑** · v2.6（已确认） | 需固定端口映射并监督多个服务 | 每个 TAPD Story 一个长期 `--serve`；本机 CLI 已验证多端口服务可并行。禁止用 `codebuddy daemon start` 分配端口（其幂等行为返回现有 daemon）；按 M3-17/18 实现 |
+| R2 | **cron owner session 持久性** · v2.6 | scheduled task 绑定 `sessionId`；服务重启时 owner 不可丢 | Story mapping 持久化专属 `agentId`/owner session/task；恢复先恢复 owner/session，再重新启用任务，按 R18 验收 |
 | R3 | **TAPD token 权限**：能否读迭代/版本/评论 | 影响 M1-4、M4-15 | 自检页逐项探测，缺权限降级 |
 | R4 | **提测是否写回 TAPD** | 现有 skill 明确不自动改状态 | 建议遵守：只做本地标记 + 提醒，状态由人在 TAPD 改 |
-| R5 | **cron 与需求关联** | prompt 标题改了会失联 | 维护 `storyId ↔ cronId` 映射表 |
+| R5 | **cron 与 Story 关联** | prompt 标题改了会失联 | 由 Story mapping 保存 TAPD storyId/Harness storyId/service instance 与唯一 cron owner/task 关系，不依赖 prompt 标题 |
 | R6 | **多仓库需求** | Harness 有 `repos.json`，工作区多根 | M2 支持多仓库勾选；M1 展示 primary + repos |
 | R7 | **Figma / 原型链接** | `story-input.json` sources 决定是否触发硬门控 | M3-12 表单一并支持录入，避免漏填 |
 | R8 | **worktree 清理** | 需求完成后目录堆积 | 本期只做归档标记，删除走脚本 + 二次确认 |
@@ -606,12 +653,13 @@ reopened
 | **R12** | **构建冲突「上一任务尚未完成」** · v2 | 盲目重试会一直失败 | 提交前检查 + stop 入口 |
 | **R13** | **误发 prod** · v2 | 生产事故 | 默认禁用 + 显式解锁 + 二次确认 + 审计 |
 | **R14** | **GitLab PAT 权限范围** · v2 | 白名单外能力不可用 | 站点能力不得超出 `GITLAB_ALLOWED_TOOLS`；直连同样受 PAT 权限约束 |
-| **R15** | ~~修复提交如何确定~~ **已作废** · v2.1 | 原假设不成立：cron 硬禁 git 写，不存在修复提交 | 改为四信号判定（见第 6 节），无需确定修复提交 |
-| **R16** 🔴 | **DevOps 查不到「当前部署版本」** · 阻塞 | 7 个工具只有构建记录，无部署状态查询；构建成功 ≠ 已部署 | **开工前确认**平台是否有部署记录接口。没有则信号③ 只能给「疑似环境滞后」，界面标注推断 |
+| **R15** | ~~修复提交如何确定~~ **已调整** · v2.4 | 原方案假设 cron 改动始终留在工作区；Harness fixbugs 会按 7 Phase 流程推进，提交与发布状态以实际产物为准 | 不自行推断修复提交；聚合 Harness Story、GitLab MR 与 DevOps 构建事实 |
+| **R16** 🔴 | **DevOps 查不到「当前部署版本」** · 阻塞 | 7 个工具只有构建记录，无部署状态查询；构建成功 ≠ 已部署 | **开工前确认**平台是否有部署记录接口；没有则只能展示疑似环境滞后，不得表述为确定结论 |
 | **R17** 🔴 | **dev 与 test 的关系未定义** · 阻塞 | Harness Phase 6 用 `env=dev`，而提测写的是 `test` | **开工前确认**：dev 即测试环境？还是两套？按应用不同？不确认则发布链按钮全错 |
-| **R18** 🔴 | **多实例下 cron 的归属与存活** · 阻塞 | `scheduled-tasks` 绑定 sessionId，session 属于进程 | **开工前 30 分钟实测**：起两个实例各建一条 cron，关掉一个，看另一条是否仍跑。M4 的地基 |
+| **R18** | **服务/cron 生命周期验收** · v2.6 | 持久端口、进程接管、专属 owner 恢复、停机暂停与跳过 missed run 必须保持一致 | 本机 CLI 已实测多个不同端口的 `codebuddy --serve` 可并行；实现验收：① 使用精确启动参数且端口稳定；② 后端重启可健康检查/接管；③ 杀掉服务后仅重试 3 次并按 5/15/30s 间隔通知失败；④ 手动停止暂停 cron、恢复 owner/session 后重启 cron；⑤ 非预期停机不补跑；⑥ 映射删除失败时端口仍保留。`codebuddy daemon start` 不适用于多 Story 端口 |
+| **R19** | **CodeBuddy 无认证的本机风险** · v2.6（已接受） | 本机任意进程可能调用服务的执行/文件 API；请求 Header 不是认证 | 如实展示信任边界；不擅自增加密码认证；控制台代理仅用于映射与限制浏览器选端口，不宣称能隔离本机进程 |
 
-> 🔴 **R16 / R17 / R18 是开工前阻塞项**，未确认前不要动 M4 与 M6 的实现。其余风险可在开发中逐步收敛。
+> 🔴 **R16 / R17 仍是发布写操作的开工前阻塞项**。R18 拓扑与本机 CLI 验证已确认，但 M4 实现必须通过其生命周期验收；不再作为尚待决策的开工阻塞。其余风险可在开发中逐步收敛。
 
 ---
 
@@ -637,7 +685,7 @@ reopened
 | Web 框架 | **Fastify 5** | Schema 校验内置、SSE 直接写 `reply.raw`、pino 日志自带、TS 支持好 |
 | MCP 客户端 | **`@modelcontextprotocol/sdk`**（StdioClientTransport） | 复用 `mcp.json` 里的 TAPD server，**凭据只有一份、查询口径天然一致** |
 | HTTP 客户端 | **原生 fetch** | Node 22 内置，后端无需 axios |
-| 文件监听 | **chokidar** | Windows 上比 `fs.watch` 可靠；监听 `e2e-state.json` / `todo-list.md` / `.lock` |
+| 文件监听 | **chokidar** | Windows 上比 `fs.watch` 可靠；监听 `e2e-state.json` / Harness Story 产物 / `.codebuddy/plans/.harness-active` |
 | 子进程 | **`node:child_process` spawn pwsh** | 跑 `create-workspace.ps1`，流式收 stdout，超时自管（≥600s） |
 | 存储 | **v1：JSON 文件 + 内存 Map**；审计与历史用 **`node:sqlite`** | Node 22 自带 SQLite，零安装零运维；若嫌实验特性不稳，退 `better-sqlite3` |
 | 校验 | **zod** | 与 MCP server 同一套；放 shared 包，前后端共用推导类型 |
@@ -652,7 +700,7 @@ reopened
 | TAPD | **走 MCP** | 口径最复杂（`owner` 恒空、`id` 放 options、limit 截断、状态英文 key），复用已踩平的 skill 口径 |
 | GitLab | **直连 REST** | 接口标准简单，PAT 鉴权直接 |
 | DevOps | **直连 REST** | 7 个端点明确，Cookie + CSRF 直接拼 |
-| CodeBuddy | **直连网关 API** | 本来就是 HTTP |
+| CodeBuddy | **控制台后端代理 Story HTTP API** | 每 Story 一个由后端监督的 `--serve`；浏览器不直连、不选端口 |
 | 本地文件 | **直接读 + chokidar** | 只读 |
 
 ### 10.3 前端
@@ -663,11 +711,11 @@ reopened
 | UI 组件 | **Element Plus** | 项目里已在用，组件肌肉记忆直接复用；暗色密集风格用 CSS 变量覆盖 |
 | 状态 | **Pinia** | 已在用 |
 | 路由 | **vue-router** | 页面少，常规用法 |
-| 原子 CSS | **UnoCSS** | 密集自定义布局比 scoped CSS 快，与已有 auto-import 配置顺手 |
+| 原子 CSS | **Tailwind CSS** | 使用成熟的 utility-first 样式体系；与 Vue/Vite 配合，和 Element Plus 分工，不再引入 UnoCSS |
 | 实时流 | **原生 EventSource** | 需带鉴权头时改用 fetch + ReadableStream |
 | 长输出虚拟化 | **@tanstack/vue-virtual** | agent 输出上千行，不虚拟化会卡 |
 | 终端 | **xterm.js + addon-fit** | 接 CodeBuddy PTY 接口 |
-| Markdown | **markdown-it + shiki** | 渲染 bug-fix 的 reports / analysis |
+| Markdown | **markdown-it + shiki** | 渲染 Harness Bug 分析报告与 Story 产物 |
 | Diff | **diff2html** | 看 MR 变更，比 monaco 轻一个量级 |
 | 图表 | **echarts** | 已在用，做度量趋势 |
 
@@ -696,9 +744,9 @@ devtask-console/
 
 | 项 | 约定 |
 |---|---|
-| 开发 | Vite dev server proxy `/api` → Fastify |
+| 开发 | Vite dev server proxy `/api` → Fastify；Fastify 再按 Story 映射代理 CodeBuddy |
 | 生产 | Vite build → Fastify 静态托管，**同源，无 CORS** |
-| 端口 | **7788**（避开 CodeBuddy 的 8080 / 8321） |
+| 端口 | 控制台 **7788**；CodeBuddy Story 服务独立分配 **60200–65535**（范围上限可配置但不得超过 65535） |
 | 绑定 | **仅 127.0.0.1** |
 | 启动 | pm2（devops 项目已有 `start-pm2.bat`，熟）+ 开机自启 |
 | 类型契约 | shared 包 zod schema 推导，前后端不各写一份 interface |
@@ -717,36 +765,84 @@ devtask-console/
 
 ### 10.6 安全补充（按评审 G1）
 
-站点后端聚合了 TAPD token + GitLab PAT + DevOps 会话 + CodeBuddy 密码，**等于本机最高权限点**。绑 127.0.0.1 不等于安全——本机任何进程都能访问。
+站点后端聚合 TAPD token、GitLab PAT、DevOps 会话，并可通过 CodeBuddy 执行命令、读写文件，**等于本机最高权限点**。每个 CodeBuddy Story 服务都使用 `--auth none`，且监听 `127.0.0.1`；这只限制网络接口，不提供进程级访问控制。本机任何进程都可能访问其执行/文件 API。`X-CodeBuddy-Request: 1` 只是请求标记，不能当作认证；本设计不添加密码认证。控制台自己的 token 只保护控制台 API，不会改变此 CodeBuddy 上游风险。
 
 | 措施 | 说明 |
 |---|---|
-| 站点自身鉴权 | 启动时生成本地 token，前端首次访问注入；所有 `/api` 校验 |
+| 站点自身鉴权 | 启动时生成本地 token，前端首次访问注入；所有控制台 `/api` 校验 |
 | 凭据不落前端 | 前端只见掩码，明文永不下发 |
 | 凭据存储 | 优先运行时读 `mcp.json`；站点自有配置加密存储 |
 | 写操作审计 | 全部落 SQLite，含参数与结果 |
 | pre/prod 护栏 | 默认禁用，显式解锁 + 二次确认，解锁状态不持久化 |
+| CodeBuddy 信任边界 | 后端代理防止浏览器选端口，但不是上游认证；因明确采用 `--auth none`，本机任意进程可访问 loopback 服务，须接受为本机信任边界，不得宣传为已由 Header 或控制台 token 防护 |
 
-### 10.7 备选：零后端方案（保留可能性）
+### 10.7 历史备选：零后端方案（已否决）
 
-CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty` / `process` 全套——**它本身就是个后端**。
+CodeBuddy HTTP 服务已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty` / `process` 全套；本设计仍由控制台后端代理请求并监督按 Story 启动的服务。
 
-极端方案：纯静态前端直连网关，TAPD/GitLab/DevOps 通过起 job 调 MCP 查询。**零后端代码。**
+纯静态前端直连 CodeBuddy 的零后端方案不适用于 v2.6：它会暴露各 Story 端口选择并绕过控制台的 Story/instance 映射与服务监督。
 
-代价：需配 `CODEBUDDY_CODE_CORS_ORIGINS`、密码进浏览器、查询有延迟与额度消耗。
-
-**当前不采用**（凭据暴露与延迟是硬伤），但保留判断标准：**如果后续发现后端大部分代码只是在转发网关接口，就该重新考虑这个方案。**
+此处仅保留为已否决的历史备选，不是当前架构或可切换配置。
 
 ---
 
-## 11. 交互模式采纳决策 · v2.3 升级为完整记录
+## 11. 页面布局与交互模式决策
+
+### 11.1 页面信息架构与布局
+
+#### 页面与导航范围
+
+主导航固定为七项，顺序和键盘快捷键沿用 11.2 的决策：收件箱（默认首屏）、看板、流水线、实例、定时、发布、工作区。**连接自检与配置属于工具页**，从顶栏连接状态/设置入口进入，不占主导航名额；连接异常时可从状态提示直接跳转自检页。工具页沿用同一公共框架，不另建导航体系。
+
+#### 公共页面框架
+
+| 区域 | 布局职责 |
+|---|---|
+| 左侧导航 rail | 桌面端固定常驻，提供七个主页面入口与当前页标识；不随页面内容滚动。空间不足时可折叠为图标态 |
+| 顶栏 | 显示当前位置/面包屑、全局搜索与 `⌘K` 入口、统一快照时刻和通道健康状态；自检/配置从工具入口访问 |
+| 页面标题区 | 每页提供标题、简短说明、该页主操作及必要的筛选/视图切换；主操作位置保持稳定 |
+| 内容区 | 页面独立滚动，按该页任务选择列表、表格、时间线或对话布局；优先展示决策所需信息，不重复铺陈全量数据 |
+| 详情层 | 需求、Bug、MR 等对象的详情优先使用侧滑抽屉，保留来源列表的筛选、滚动位置和选中项；需要连续操作的实例对话留在实例页面主内容区 |
+| 全局浮层 | 命令面板、确认框和快捷动作覆盖在当前页面之上；关闭后恢复触发前的焦点与上下文 |
+
+#### 七个主页面结构
+
+| 页面 | 页面内容布局 | 主要交互与状态 |
+|---|---|---|
+| **收件箱** | 页首展示待决策数、高优先级数、运行中实例、今日已处理；主体按优先级展示待处理事项，每项呈现来源需求、原因、更新时间和能解决问题的动作 | 默认首屏。处理后从列表移除并提供 5 秒撤销；空态显示「现在没有需要你决策的事」。数据来自共享快照 |
+| **看板** | 页首为搜索、筛选和视图切换；主体为需求列表/卡片，显示标题、负责人/迭代、Harness 阶段、Bug 徽标及工作区、实例、cron、MR/构建等关联摘要 | 点需求打开侧滑详情；列表保持筛选和滚动位置。详情聚合关联 Bug、Harness、MR、构建和快捷入口；MVP 先做精简需求列表 |
+| **流水线** | 主体按需求展示端到端阶段链：需求/工作区 → Harness Phase → MR → 构建 → 部署/提测；每段标注状态、来源与更新时间，异常断点突出显示 | 点节点进入对应详情或外部系统；仅呈现观测事实，不代替 Harness 判定/推进。MVP 阶段复用看板的只读链路摘要，不要求先实现独立完整页面 |
+| **实例** | 桌面端采用实例列表与当前会话工作区并列：列表按 Story/工作区分组并显示状态；主区显示所选实例的实时输出、历史和回复输入；可选终端与对话明确分区 | 切换实例不串流、不丢各实例滚动位置；阻塞提示与恢复/停止等操作在所选实例上下文内出现。窄屏转为列表页与会话页切换 |
+| **定时** | 主体按 Story 列出 cron：需求标题优先，随后显示模式、启停状态、下次运行、最近结果与 owner 关联；执行历史和 Harness 产物在行内展开或详情层查看 | 间隔行内修改、启停与删除入口按风险分级；查询+修复明确展示副作用。owner session 与单次执行记录分开呈现 |
+| **发布** | 以需求/发布批次为主线，分区展示目标环境、关联应用、分支/commit、构建记录、制品和部署结果；批量操作前先列清应用与制品 | 写操作遵循 M6-16、环境护栏及二次确认；Phase 4-6 时禁用相关写按钮并说明原因。流水线页用于全链路状态概览，本页承载发布操作与记录 |
+| **工作区** | 页首提供工作区搜索/筛选与新建入口；主体列出工作区、仓库、分支和初始化状态；新建/初始化采用分步表单，执行期间展示阶段与逐仓库进度，完成后展示复核结果 | 仓库必须人工勾选；显示 DryRun、副作用与失败原因。归档和磁盘信息按能力提供，不自动删除文件 |
+
+#### 响应式与状态呈现
+
+- **桌面优先**：布局围绕桌面浏览器设计，不规定固定像素宽度；导航、内容、详情层的宽度允许按视口伸缩。主信息和关键动作不得只靠悬停才可见。
+- **窄屏基础降级**：导航 rail 收入菜单/抽屉；两栏内容改为列表与详情分屏切换；侧滑详情改为全屏层；多列数据可转卡片或明确提供横向滚动，不得静默隐藏关键字段；主要操作保持可触达。此规则不构成完整移动端适配承诺。
+- **加载/错误/空态**：首次加载使用与内容结构一致的骨架；局部通道加载或失败只影响对应区域，并标示来源、更新时间及缓存/离线状态；无数据时显示有针对性的空态和下一步入口，不用全屏空白或无限转圈。
+- **视觉基线**：延续暗色默认、亮色可选、4px 间距基数、13px 正文；状态必须同时使用文字/图标等非颜色线索，密度不得以牺牲可读性为代价。
+
+#### 布局验收
+
+1. 七个主导航入口在所有主页面位置稳定，当前页清晰可辨；自检/配置可从工具入口及连接异常提示到达，但不混入七项主导航。
+2. 打开站点默认进入收件箱；跳转看板与流水线不重复取数，数据更新时间与状态可见。
+3. 从看板打开并关闭需求详情后，原筛选、滚动位置和键盘焦点可恢复。
+4. 每页首屏能辨认页面目的和主操作；连接失败、加载中、无数据均有局部且明确的呈现。
+5. 窄屏下导航、详情及主要操作仍可访问；重要字段不会因响应式折叠而丢失。
+6. 发布写操作的禁用态/确认态与 M6 护栏一致；布局不得弱化危险操作提示。
+
+> 本节定义信息层级和交互承载方式，不是视觉稿；不锁定具体像素、颜色值或组件库实现。新页面实现仍按 MVP / 扩展轨交付。
+
+## 11.2 交互模式采纳决策 · v2.3 升级为完整记录
 
 > 来源：对 23 组协作与流程产品的交互调研，逐条放到本项目真实约束下重判，共 **29 条模式**。
-> 本节为**完整决策记录**（含落地方式与验收标准），可直接照着实现，无需再翻决策板。
+> 本小节为**完整决策记录**（含落地方式与验收标准），可直接照着实现，无需再翻决策板。
 > 可交互决策板见 `outputs/devtask-pattern-adoption/`；用户导出的决策快照见 `Downloads/DevTask-Console-交互采纳决策.md`（2026-11-12 20:54，与本文一致，无改判）。
 > 结论：**13 条直接采纳 · 10 条改造后采纳 · 6 条明确不抄**，其中 P0 共 16 项。
 
-### 11.1 直接采纳（13）
+### 11.2.1 直接采纳（13）
 
 #### 命令面板 ⌘K
 `P0 · 全局 · 成本 M` · 来源：Linear / Notion / ClickUp
@@ -759,7 +855,7 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 `P0 · M1 看板 · 成本 M` · 来源：Linear / monday.com
 - **结论**：列表只留决策必需字段，六源详情收进侧滑抽屉，不打断空间上下文。
 - **依据**：一个需求要展示的信息横跨六个源，全铺在卡片上必然过载。侧滑而非整页跳转，关掉后滚动位置和选中行都还在。
-- **落地**：卡片只留标题、阶段进度条、Bug 徽标（new/reopened/待确认）、工作区、MR/CI/实例/cron 四个小角标。点开抽屉聚合六源详情 + 关联 Bug 列表 + 快捷动作。行内操作按钮悬停才出现，且隐藏时 `pointer-events:none`。
+- **落地**：卡片只留标题、阶段进度条、Bug 徽标（new/reopened/待确认）、工作区、MR/CI/实例/cron 四个小角标。点开抽屉聚合六源详情 + 关联 Bug 列表 + 快捷动作。行内次要操作可悬停显示且隐藏时 `pointer-events:none`；关键操作不能只靠悬停才可见。
 - **验收**：抽屉打开不改变列表滚动位置；Esc 关闭并把焦点还给触发行；抽屉内可直接跳转到流水线/实例/发布。
 
 #### 骨架屏替代转圈
@@ -790,19 +886,19 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 - **落地**：只聚合这五类 + 凭据预警，每项给出原因与一键动作。处理完即从列表消失，可撤销。顶部四个统计：待决策数、高优先级、实例运行中、今日已处理。
 - **验收**：清空后显示明确的空态文案；每项都能一键跳到能真正解决它的界面；标记已处理可撤销。
 
-#### 执行锁与跨轮幂等可视化
-`P0 · M4 定时 · 成本 S` · 来源：自有 tapd-bug-fix-cron 机制
-- **结论**：把 `.lock` 与 `todo-list` 的隐藏机制搬到台面上，否则你永远不知道任务为什么跳过。
-- **依据**：已知坑里一半是「为什么这轮没修」——锁没释放、指纹一致被跳过、本地已完成但 TAPD 还是 new。可视化能省掉大量翻文件。
-- **落地**：任务行显示锁状态（roundId + 已持续分钟数），≥90 分钟标「陈旧锁」并提示可接管，但站点不主动删锁。todo-list 解析成表格显示本地状态 + 指纹 + 分类。本地「已完成」+ TAPD new 标注「已修复待流转（正常）」。
-- **验收**：锁存在时解冻按钮禁用并显示 roundId；reopened 行无条件标红提示需读评论；正常跳过与异常跳过在文案上可区分。
+#### Harness 定时修复可观测性
+`P0 · M4 定时 · 成本 S` · 来源：Harness cron 与 7 Phase 流程
+- **结论**：将 cron 是否触发、Harness 当前 Story / Phase、修复产物与最终结果放在一起展示。
+- **依据**：定时任务只负责触发 `/start fixbugs <storyId>`；跳过、阻塞、重试与阶段推进由 Harness 管理，站点不能再造一套并行状态。
+- **落地**：任务行展示下一次运行时间、执行记录、Harness 活跃 Story / Phase、`bug-list.json` 与分析报告入口；活动流程存在时按 Harness 规则跳过，不提供接管或删锁操作。
+- **验收**：用户可区分「未触发 / 正在执行 / Harness 阻塞 / 执行结束」；站点不修改 Harness 状态或 Bug 产物。
 
-#### 四信号判定面板
+#### reopened 诊断面板
 `P0 · M6 发布 · 成本 M` · 来源：自有增量 · 借鉴 CI 诊断视图
-- **结论**：整个控制台收益最高的一条：把最高频的假复现变成一次自动判定。
-- **依据**：已知坑 #27 把「测试环境没更新」标为最高频假复现。原方案想用 commit 比对，但 cron 硬禁 git 写、改动只留工作区，根本不存在修复提交。改成四信号顺序排查后，全部数据都是现成的。
-- **落地**：reopened 触发 → ① 强制读 TAPD 评论 ② git status 有未提交改动？判「未入库」 ③ MR 未合并？判「未合流」 ④ 最近成功构建早于修复完成？判「环境滞后」。任一命中即给结论与下一步动作，不改代码；三个都排除才进 A/B/C 真分析。
-- **验收**：逐条动画式检查并显示每条的数据来源；命中时给出明确处置建议；信号③ 因 DevOps 无部署查询接口，必须标注推断性质，不得表述为确定结论。
+- **结论**：把 reopened 的相关诊断信息集中展示，让用户基于同一视图作出判断。
+- **依据**：Harness fixbugs 可能继续执行提交/MR/构建阶段；站点应使用实际观测到的状态解释 reopened，不假设修复改动一定未提交或一定已部署。
+- **落地**：reopened 时展示 TAPD 评论、工作区改动、MR 合并状态、Harness Phase 与最近构建记录，作为人工诊断线索；站点不自行判定真/假复现，不重跑修复。
+- **验收**：每项诊断显示数据来源和更新时间；没有部署查询接口时，构建记录只能标为「疑似环境滞后」；流程判断及后续动作交由 Harness fixbugs 与用户处理。
 
 #### 聚合视图不做二次录入
 `P0 · 全局 · 成本 S` · 来源：ONES
@@ -839,19 +935,19 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 - **落地**：`g d` 看板 / `g i` 收件箱 / `g p` 流水线 / `g c` 实例 / `g t` 定时 / `g r` 发布 / `g w` 工作区；`/` 聚焦搜索；`T` 切主题；`Esc` 关闭浮层。命令面板里显示这些快捷键，形成学习路径。
 - **验收**：输入框内不触发；快捷键在命令面板与页脚可见；不与浏览器默认冲突。
 
-### 11.2 改造后采纳（10）—— 照搬会出事
+### 11.2.2 改造后采纳（10）—— 照搬会出事
 
 #### 乐观更新 + 撤销
 `P0 · 全局 · 成本 M` · 来源：Linear / Things 3
-- **结论**：可逆操作全部乐观更新；但触发构建、发布、建模式2任务绝不能乐观。
+- **结论**：可逆操作全部乐观更新；但触发构建、发布、创建 Harness fixbugs cron 任务绝不能乐观。
 - **依据**：Linear 的前提是「操作几乎不会失败且可回滚」。我们一半操作满足，另一半是不可回滚的外部副作用——构建一旦提交就会真的跑，TAPD 评论一旦写出就会被同事看到。
-- **落地**：分两类封装。① 可逆类（PATCH cron、enabled 开关、归档需求、标记 bug 已处理、改实例名）本地先改 → 后台提交 → 失败回滚并显示原始错误 + 5 秒撤销吐司。② 不可逆类（触发构建、批量发布、删除 cron、创建模式2任务）必须等真实回执，按钮进入 loading 且禁用重复点击。
+- **落地**：分两类封装。① 可逆类（PATCH cron、enabled 开关、归档需求、改实例名）本地先改 → 后台提交 → 失败回滚并显示原始错误 + 5 秒撤销吐司。② 不可逆类（触发构建、批量发布、删除 cron、创建 Harness fixbugs cron 任务）必须等真实回执，按钮进入 loading 且禁用重复点击。
 - **验收**：可逆操作界面响应 <50ms 且失败能回滚；不可逆操作在回执前不得显示成功；两类在代码里用不同封装，避免误用。
 
 #### 状态药丸单击切换
 `P0 · M1 看板 · 成本 S` · 来源：monday.com / Airtable
 - **结论**：学它的形式，但不能学它的自由循环——我们的状态受 Harness 状态机约束。
-- **依据**：monday 的状态是自定义枚举、无强约束。我们不行：Harness 相位由 dispatch.js 判定，TAPD 回写只允许 `in_progress`，Bug 本地状态还参与跨轮幂等。乱循环会破坏门控与去重。
+- **依据**：monday 的状态是自定义枚举、无强约束。我们不行：Harness 相位由 dispatch.js 判定，TAPD 回写边界由 Harness 负责。乱循环会破坏门控与去重。
 - **落地**：药丸保留彩色 + 单击直达的手感，但点击后弹出的是「当前合法目标状态」列表（由状态机计算），不是无限循环。Harness 相位药丸完全只读，点击只跳转到流水线对应节点。
 - **验收**：任何状态变更都经过合法性校验；Harness 相位不可通过 UI 直接改写；非法目标态不出现在选项里。
 
@@ -859,15 +955,15 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 `P0 · 流水线 · 成本 M` · 来源：飞书项目 Meego
 - **结论**：把流程图画成主界面这一招直接学，但我们只展示不配置。
 - **依据**：Harness 七相位天然就是节点流，而且比飞书项目更严格（dev-pass、门控、fix-loop）。但配置权在 Harness，站点不能抢。
-- **落地**：读 `e2e-state.json` 渲染九节点流水线（P0-P6 + 提测 + Bug 修复）。当前节点高亮、fix_loop 标 amber、blocked 标红。被条件裁剪的节点灰显「已裁剪」。点节点展示负责角色、关键产出物、门控条件、状态文件路径。
+- **落地**：读 `e2e-state.json` 渲染 Harness 七相位（P0-P6）；另以关联卡片展示提测与 Bug 状态，不将站点自定义节点混入 Harness 流程。当前节点高亮、fix_loop 标 amber、blocked 标红。点节点展示负责角色、关键产出物、门控条件、状态文件路径。
 - **验收**：节点状态与 `e2e-state.json` 完全一致；点节点能看到产出物与门控；站点没有任何写入该文件的代码路径。
 
 #### 自动化写成自然语言句子
 `P0 · M4 定时 · 成本 M` · 来源：Asana Rules
 - **结论**：把 cron 的 prompt 翻译成「当…且…则…」，让人能审计这条任务到底会干什么。
 - **依据**：定时任务 prompt 长达数百字，列表里只显示开头几十字——这正是已知坑 #28。我们需要的是让自己三个月后还能看懂这条任务会做什么。
-- **落地**：解析模式（1 只查 / 2 查+修）+ 查询口径（get_related_bugs → get_bug，current_owner，new|reopened）+ 副作用，渲染成三行句子卡：「每 60 分钟，查该需求关联缺陷中处理人是我且状态为 new/reopened 的」「模式2：命中后自动分析、分类、修复、验收」「副作用：改工作区代码 + 写 TAPD 评论 + 改状态为 in_progress」。模式2 整卡用警示色。
-- **验收**：不读 prompt 原文也能说清触发条件、动作与副作用；模式2 的副作用在建任务前必须显式确认。
+- **落地**：解析任务类型（只查 / 定时触发 Harness fixbugs）、查询口径（`get_related_bugs` → `get_bug`，`current_owner`，`new|reopened`）与副作用，渲染成三行句子卡：「每 60 分钟查询该需求关联且由我处理、状态为 new/reopened 的缺陷」「命中后启动 Harness fixbugs 7 Phase 流程」「可能修改代码、写 TAPD 评论/状态并执行 MR/构建」。修复任务整卡用警示色。
+- **验收**：不读 prompt 原文也能说清触发条件、动作与副作用；创建 Harness fixbugs 定时任务前必须显式确认。
 
 #### 字段类型驱动控件与护栏
 `P0 · M6 发布 · 成本 S` · 来源：Airtable
@@ -879,8 +975,8 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 #### 撤销优先于确认的边界
 `P0 · 全局 · 成本 S` · 来源：Linear（反例学习）
 - **结论**：Linear 说危险操作用撤销不用确认——这条在我们这里必须划出例外清单。
-- **依据**：直接照搬会出事。我们的发布、TAPD 评论、模式2 建任务都是对外部系统的不可逆写入。同事会看到机器人写的评论，生产发布会真的上线。
-- **落地**：明确例外清单：触发构建、批量发布（尤其 pre/prod）、删除 cron、创建模式2 任务、停止他人正在跑的构建 —— 一律二次确认 + 写审计。其余操作走撤销。确认弹窗要写清具体副作用，不是笼统的「确定吗」。
+- **依据**：直接照搬会出事。我们的发布、TAPD 评论、Harness fixbugs 定时任务都是对外部系统的不可逆写入。
+- **落地**：明确例外清单：触发构建、批量发布（尤其 pre/prod）、删除 cron、创建 Harness fixbugs 定时任务、停止他人正在跑的构建 —— 一律二次确认 + 写审计。其余操作走撤销。确认弹窗要写清具体副作用，不是笼统的「确定吗」。
 - **验收**：例外清单内操作没有确认就无法提交；确认文案列出具体副作用；所有确认过的写操作可在审计里回溯。
 
 #### 看板拖拽
@@ -894,8 +990,8 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 `P1 · M3 实例 · 成本 S` · 来源：Things 3 魔法命令 / 滴答清单
 - **结论**：学它的「少点几下」，但用在给实例发指令，而不是建需求。
 - **依据**：我们不建需求（需求来自 TAPD），但给实例发指令是高频动作，且有几条是固定套路：start、接口对齐二次 start、跑一次巡检、汇报进度。
-- **落地**：输入框上方一排快捷 chip，点击填入模板。特别是「接口对齐」要自动带上完整三步：更新 `story-input.json` → `create-workflow.js --refresh-input` → 再 start，并提示回填不可跳过。
-- **验收**：快捷指令覆盖四个高频场景；接口对齐模板包含 `--refresh-input` 步骤且有明确提示。
+- **落地**：输入框上方一排快捷 chip，点击填入模板。特别是「接口对齐」要自动带上完整步骤：更新 `story-input.json` → 按当前 Harness skill 刷新输入并重判门控 → 继续当前合法 Phase；不得重复创建 Story，并提示回填不可跳过。
+- **验收**：快捷指令覆盖四个高频场景；接口对齐模板明确包含输入刷新、门控重判与继续当前流程。
 
 #### 在制品限制 WIP
 `P1 · M3 实例 · 成本 S` · 来源：PingCode / Worktile 泳道看板
@@ -911,7 +1007,7 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 - **落地**：需求卡上一条小爬坡：左半坡代表待确认问题多（还在想清楚），右半坡代表口径已定在收尾。数据来自 `open-questions.json` 的 confirmation 字段，不是估算。站点不替用户确认。
 - **验收**：爬坡位置由未确认项数量驱动；点击可看到具体问题清单；确认动作只能由用户在源流程完成。
 
-### 11.3 明确不抄（6）—— 拒绝也是设计决策
+### 11.2.3 明确不抄（6）—— 拒绝也是设计决策
 
 #### 完成音效与彩带动效
 `P2 · 全局 · 成本 S` · 来源：Amie
@@ -954,9 +1050,11 @@ CodeBuddy 网关已提供 `jobs` / `scheduled-tasks` / `sessions` / `fs` / `pty`
 ## 12. 一句话总结
 
 **看板的价值在「聚合」，控制台的价值在「代劳」，而这个站点最重要的设计是「克制」——
-凡是被编排方已经定好的铁律（Harness 状态文件、Bug 指纹与锁、TAPD 状态回写边界、生产发布权限），站点一律只读不写。
+凡是被编排方已经定好的铁律（Harness 状态文件与 Bug 流程、TAPD 状态回写边界、生产发布权限），站点一律只读不写。
 把边界守住，它才是加速器而不是新的故障源。**
 
-**v2.1 的最大增量不是多了两个集成，而是把「reopened 到底是没修好还是环境没更新」这个最高频的无用功，变成了一次四信号自动判定。**
+**v2.4 的流程原则是：需求开发、Bug 修复与定时触发统一由 Harness 流程承接，控制台负责入口、聚合展示与诊断，不另造状态机。**
+
+**v2.6 的服务原则是：一个 TAPD Story 一个按需启动、固定端口并由控制台后端监督的 CodeBuddy 服务；StoryRound Job 与 cron owner 分离，浏览器只通过后端映射代理。**
 
 **v2.2 的最大增量不是加了功能，而是砍了范围：先用约 20 条做出「聚合器 + 收件箱 + 三个按钮」的一周闭环，让它先活下来，再长肉。**
