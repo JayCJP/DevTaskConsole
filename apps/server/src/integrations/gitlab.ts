@@ -23,9 +23,20 @@ export interface GitLabMergeRequest {
   changesCount?: number
   changedFiles?: string[]
   webUrl?: string
+  /** MR 作者的 GitLab 用户名 */
+  authorUsername?: string
+}
+
+/** 当前 GitLab 访问令牌对应的账号信息 */
+export interface GitLabCurrentUser {
+  username: string
+  name: string
 }
 
 export class GitLabAdapter {
+  /** 当前令牌对应用户缓存；仅在成功识别后写入，失败不缓存以便下次重试 */
+  private currentUserCache: GitLabCurrentUser | undefined
+
   async checkConnection(): Promise<boolean> {
     const credentials = await this.getCredentials()
     if (!credentials) return false
@@ -50,6 +61,29 @@ export class GitLabAdapter {
     })
   }
 
+  /**
+   * 查询当前访问令牌对应的 GitLab 账号；失败时返回 null 且不缓存失败结果。
+   * @returns 当前账号用户名与显示名，未配置或查询失败时为 null
+   */
+  async getCurrentUser(): Promise<GitLabCurrentUser | null> {
+    if (this.currentUserCache !== undefined) return this.currentUserCache
+    try {
+      const credentials = await this.requireCredentials()
+      const result = await this.request(credentials, '/user')
+      if (!isRecord(result) || typeof result.username !== 'string' || !result.username) {
+        throw new Error('GitLab returned an invalid current user response.')
+      }
+      this.currentUserCache = {
+        username: result.username,
+        name: typeof result.name === 'string' && result.name ? result.name : result.username,
+      }
+      return this.currentUserCache
+    } catch {
+      // 身份识别只用于“只看我的”筛选，失败时退化为不筛选，不阻塞快照
+      return null
+    }
+  }
+
   async listMergeRequests(projectId: number, sourceBranch: string): Promise<GitLabMergeRequest[]> {
     const credentials = await this.requireCredentials()
     const query = new URLSearchParams({
@@ -70,6 +104,10 @@ export class GitLabAdapter {
       ) {
         throw new Error('GitLab returned a merge request with an invalid shape.')
       }
+      // 作者用户名用于前端“只显示本人的发布内容”，字段缺失时不影响其它字段
+      const authorUsername = isRecord(mergeRequest.author) && typeof mergeRequest.author.username === 'string'
+        ? mergeRequest.author.username
+        : undefined
       return {
         projectId,
         id: String(mergeRequest.iid ?? mergeRequest.id),
@@ -77,12 +115,13 @@ export class GitLabAdapter {
         sourceBranch: mergeRequest.source_branch,
         targetBranch: mergeRequest.target_branch,
         state: mergeRequest.state,
+        ...(authorUsername ? { authorUsername } : {}),
         ...(typeof mergeRequest.detailed_merge_status === 'string'
           ? { mergeStatus: mergeRequest.detailed_merge_status }
           : typeof mergeRequest.merge_status === 'string'
             ? { mergeStatus: mergeRequest.merge_status }
             : {}),
-        ...(typeof mergeRequest.merged_at === 'string' ? { mergedAt: mergeRequest.merged_at } : {}),
+        ...(toIsoDate(mergeRequest.merged_at) ? { mergedAt: toIsoDate(mergeRequest.merged_at) } : {}),
         ...(typeof mergeRequest.web_url === 'string' ? { webUrl: mergeRequest.web_url } : {}),
       }
     })
@@ -189,6 +228,19 @@ export class GitLabAdapter {
       throw new Error('GitLab returned invalid JSON.')
     }
   }
+}
+
+/**
+ * 把 GitLab 时间字段统一成 ISO UTC 字符串。
+ * GitLab 会返回带时区偏移的格式（如 `2026-11-11T12:16:22.144+08:00`），
+ * 而快照与前端约定统一使用 ISO UTC，避免校验失败。
+ * @param value GitLab 返回的时间字段
+ * @returns ISO UTC 字符串；无法解析时返回 undefined
+ */
+function toIsoDate(value: unknown): string | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

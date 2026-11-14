@@ -37,6 +37,40 @@
   --shadow: 0 24px 80px rgb(28 43 68 / 18%);
 }
 
+/*
+ * Element Plus 主题变量映射：
+ * 全量引入 element-plus 样式后，弹窗/下拉/复选框默认是亮色，
+ * 这里把 EP 变量指向本项目调色板，使暗色与亮色主题下控件都与页面一致。
+ */
+:root {
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: var(--accent);
+  --el-color-primary-light-5: var(--accent-soft);
+  --el-color-primary-light-7: var(--accent-soft);
+  --el-color-primary-light-9: var(--accent-soft);
+  --el-color-success: var(--green);
+  --el-color-warning: var(--amber);
+  --el-color-danger: var(--red);
+  --el-color-error: var(--red);
+  --el-bg-color: var(--surface);
+  --el-bg-color-overlay: var(--surface);
+  --el-bg-color-page: var(--page);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--muted);
+  --el-text-color-secondary: var(--faint);
+  --el-text-color-placeholder: var(--faint);
+  --el-border-color: var(--line);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line);
+  --el-border-color-hover: var(--faint);
+  --el-fill-color: var(--surface-raised);
+  --el-fill-color-blank: var(--surface-raised);
+  --el-fill-color-light: var(--surface-hover);
+  --el-mask-color: rgb(0 0 0 / 55%);
+  --el-overlay-color-lighter: rgb(0 0 0 / 55%);
+  --el-box-shadow-light: 0 2px 12px rgb(0 0 0 / 35%);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -55,7 +89,17 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 
 #app { min-height: 100vh; }
 
-.app-shell { display: flex; min-height: 100vh; background: var(--page); }
+/*
+ * 应用外壳固定为视口高度，页面滚动交给右侧 .page-scroll 内部完成，
+ * 这样左侧 .nav-rail 与顶部 .topbar 都不会随内容滚动而移动。
+ */
+.app-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--page);
+}
 .nav-rail {
   width: 216px;
   flex: 0 0 216px;
@@ -64,6 +108,9 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   padding: 18px 12px 14px;
   border-right: 1px solid var(--line);
   background: var(--surface);
+  /* 菜单项超出视口高度时仅侧栏自身滚动，不影响页面滚动 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .brand-lockup { padding: 0 8px 22px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .brand-mark {
@@ -98,12 +145,13 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .rail-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding: 12px 4px 0; border-top: 1px solid var(--line); }
 .tool-link { width: 38px; min-height: 36px; justify-content: center; padding: 0; }
 .version-mark { color: var(--faint); font-size: 10px; letter-spacing: .12em; }
-.workspace-shell { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.workspace-shell { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
 .topbar {
   position: sticky;
   z-index: 4;
   top: 0;
   display: flex;
+  flex: 0 0 auto;
   min-height: 58px;
   align-items: center;
   justify-content: space-between;
@@ -137,7 +185,7 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .status-dot.is-active { background: var(--green); box-shadow: 0 0 10px color-mix(in srgb, var(--green) 50%, transparent); }
 .status-dot.is-error { background: var(--red); }
-.page-scroll { flex: 1; overflow: auto; }
+.page-scroll { flex: 1; min-height: 0; overflow: auto; }
 .page-content { width: min(1320px, 100%); margin: 0 auto; padding: 34px 32px 60px; }
 .page-heading-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .page-heading-row h1, .login-card h1 { margin: 3px 0 5px; color: var(--text); font-size: 25px; font-weight: 650; letter-spacing: -.035em; }
@@ -155,6 +203,16 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .stat-card span, .stat-card small { color: var(--muted); }
 .stat-card strong { font-size: 23px; font-weight: 650; line-height: 1; }
 .stat-card small { font-size: 10px; }
+.inbox-groups { display: grid; gap: 20px; }
+.inbox-workspace { display: grid; gap: 6px; }
+.inbox-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+.inbox-workspace-name { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.inbox-workspace-name strong { color: var(--text); font-size: 13px; }
+.inbox-workspace-name code { color: var(--faint); font-size: 10px; }
+.inbox-story { display: grid; gap: 2px; padding-left: 10px; border-left: 2px solid var(--line); }
+.inbox-story-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 2px 2px; }
+.inbox-story-head strong { color: var(--text); font-size: 12px; }
+.inbox-story-head code { color: var(--faint); font-size: 10px; }
 .inbox-list { display: grid; }
 .inbox-row { display: flex; align-items: center; gap: 13px; padding: 14px 2px; border-top: 1px solid var(--line); }
 .priority-marker { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 7px; background: var(--surface-raised); color: var(--muted); font-weight: 700; }
@@ -193,6 +251,21 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .phase-track span.passed { background: color-mix(in srgb, var(--green) 55%, var(--line)); }
 .phase-track span.current { background: var(--accent); }
 .requirement-badges { display: flex; gap: 6px; }
+/* 看板：TAPD 需求 × 本地工作区绑定 */
+.board-controls { display: flex; align-items: center; gap: 8px; }
+.board-filter { width: 168px; }
+.board-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+.board-list { display: grid; }
+.board-row { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(220px, 1fr) auto; align-items: start; gap: 16px; padding: 13px 10px; border-top: 1px solid var(--line); }
+.board-main { display: grid; min-width: 0; gap: 6px; }
+.board-main a { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; text-decoration: none; white-space: nowrap; }
+.board-main a:hover { color: var(--accent); text-decoration: underline; }
+.board-main small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: 11px; }
+.board-workspace { display: grid; min-width: 0; gap: 6px; }
+.board-workspace code { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.board-actions { display: flex; align-items: center; gap: 6px; }
+.board-manual-form { display: grid; gap: 14px; }
+.board-manual-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .tag { display: inline-flex; align-items: center; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .tag-warning { border-color: color-mix(in srgb, var(--amber) 30%, var(--line)); color: var(--amber); }
 .tag-danger { border-color: color-mix(in srgb, var(--red) 30%, var(--line)); color: var(--red); }
@@ -204,6 +277,21 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .pipeline-steps { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
 .pipeline-steps i { color: var(--faint); font-style: normal; }
 .row-arrow { color: var(--faint); }
+/* 工作区为根的层级：工作区 → 项目 → Story/任务 */
+.workspace-block { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.workspace-block:first-of-type { margin-top: 8px; }
+.workspace-block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding-bottom: 8px; }
+.workspace-block-head .workspace-main { flex: 1 1 240px; }
+.project-block { margin: 8px 0 0 12px; padding-left: 12px; border-left: 1px solid var(--line); }
+.project-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 10px; padding: 4px 0 6px; }
+.project-head strong { color: var(--text); }
+.project-head code { color: var(--faint); font-size: 10px; }
+.project-head .muted { margin-left: auto; font-size: 11px; }
+.pipeline-step-active { color: var(--text); }
+.project-empty { padding: 10px 2px; color: var(--faint); font-size: 12px; }
+.cron-story-head { display: flex; align-items: baseline; gap: 8px; padding: 10px 2px 0; color: var(--muted); font-size: 12px; }
+.cron-story-head code { color: var(--faint); font-size: 10px; }
+.instance-job-row { padding-left: 18px; }
 .split-layout { display: grid; grid-template-columns: minmax(260px, .75fr) minmax(0, 1.5fr); gap: 16px; }
 .split-list, .instance-workspace { min-height: 420px; }
 .simple-list-row { display: flex; width: 100%; align-items: center; gap: 10px; padding: 12px 2px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
@@ -225,6 +313,7 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .cron-primary strong, .release-row strong { color: var(--text); }
 .cron-primary small, .channel-row small { color: var(--muted); }
 .cron-primary .cron-risk { color: var(--danger); }
+.cron-primary .cron-prompt-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cron-mapping { display: grid; width: 100%; grid-template-columns: repeat(4, minmax(140px, 1fr)); align-items: center; gap: 8px; }
 .cron-mapping > span { color: var(--muted); font-size: 11px; }
 .cron-mapping .mapping-error { grid-column: 1 / -1; }
@@ -242,11 +331,24 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .workspace-form { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; margin: 20px 0; }
 .workspace-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .workspace-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0; }
+.workspace-form .workspace-form-wide { grid-column: 1 / -1; }
+.workspace-form .workspace-form-checks { display: flex; grid-column: 1 / -1; align-items: center; gap: 16px; }
+.workspace-list { display: grid; }
+.workspace-row { display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-top: 1px solid var(--line); }
+.workspace-main { display: grid; min-width: 0; flex: 1 1 220px; gap: 3px; }
+.workspace-main strong { color: var(--text); }
+.workspace-main small { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-row-actions { display: flex; gap: 6px; margin-left: auto; }
+.option-hint { margin-left: 12px; color: var(--faint); font-size: 10px; }
+.delete-confirm-field { display: grid; gap: 8px; margin-top: 16px; color: var(--muted); font-size: 12px; }
 .workspace-output { margin-top: 20px; }
 .workspace-output pre { max-height: 360px; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }
 .mapping-card { display: grid; gap: 10px; padding: 13px 0; border-top: 1px solid var(--line); }
 .mapping-card > strong { color: var(--text); }
-.mapping-controls { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto; align-items: end; gap: 10px; }
+.mapping-card-head { display: flex; align-items: center; gap: 10px; }
+.mapping-card-head strong { color: var(--text); }
+.mapping-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.mapping-controls { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto auto; align-items: end; gap: 10px; }
 .mapping-control { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 11px; }
 .mapping-inline { display: flex; min-width: 0; gap: 6px; }
 .mapping-inline .el-select { min-width: 0; flex: 1; }
@@ -306,12 +408,18 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   .stat-card { min-height: 90px; padding: 12px; }
   .surface { padding: 15px; }
   .requirement-row { grid-template-columns: 1fr; gap: 9px; }
+  .board-controls { flex-wrap: wrap; justify-content: flex-start; }
+  .board-row { grid-template-columns: 1fr; gap: 10px; }
+  .board-actions { justify-content: flex-start; }
   .phase-track { max-width: 100%; }
   .pipeline-row { align-items: flex-start; flex-direction: column; gap: 10px; }
   .pipeline-steps { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
   .row-arrow { display: none; }
   .split-layout, .tool-grid { grid-template-columns: 1fr; }
   .workspace-form { grid-template-columns: 1fr; }
+  .workspace-row { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
+  .workspace-main { flex-basis: 100%; }
+  .workspace-row-actions { margin-left: 0; }
   .mapping-controls { grid-template-columns: 1fr; }
   .split-list { min-height: 200px; }
   .instance-workspace { min-height: 270px; }
@@ -323,4 +431,5 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   .inbox-row { align-items: flex-start; flex-wrap: wrap; }
   .inbox-copy { flex-basis: calc(100% - 40px); }
   .inbox-row .el-button { margin-left: 37px; }
+  .inbox-workspace-head { align-items: flex-start; flex-wrap: wrap; }
 }

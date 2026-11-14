@@ -14,23 +14,39 @@ import {
   loginRequestSchema,
   resumableSessionSchema,
   snapshotSchema,
+  workspaceBindingRequestSchema,
+  workspaceDeleteRequestSchema,
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
 import { buildSnapshot, getWorkspacesRoot } from './aggregator/snapshot.js'
+import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
 import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
+import { TapdAdapter } from './integrations/tapd.js'
 import { ApplicationMappingStore } from './integrations/application-mappings.js'
 import { CronMappingStore } from './aggregator/cron-data.js'
 import { mcpClientRegistry } from './integrations/mcp-client.js'
 import { getDataDirectory, loadOrCreateToken, tokenMatches } from './security/token-store.js'
 import { listRepositoryCandidates } from './workspaces/repository-candidates.js'
 import {
+  deleteWorkspace,
+  listWorkspaces,
+  WorkspaceNotFoundError,
+  WorkspaceRegistryInputError,
+} from './workspaces/registry.js'
+import {
   WorkspaceConflictError,
   WorkspaceDependencyError,
   WorkspaceInitializer,
   WorkspaceInputError,
 } from './workspaces/initializer.js'
+import {
+  normalizeTapdStoryId,
+  WorkspaceBindingConflictError,
+  WorkspaceBindingInputError,
+  WorkspaceBindingStore,
+} from './workspaces/bindings.js'
 import { StoryServiceSupervisor, type StoryService } from './services/story-service-supervisor.js'
 import { CodeBuddyApi, CodeBuddyApiError } from './services/codebuddy-api.js'
 
@@ -40,8 +56,10 @@ export interface ServerOptions {
   snapshotProvider?: () => Promise<Snapshot>
   devOpsAdapter?: DevOpsAdapter
   gitLabAdapter?: GitLabAdapter
+  tapdAdapter?: Pick<TapdAdapter, 'listOwnedStories'>
   applicationMappingStore?: ApplicationMappingStore
   cronMappingStore?: CronMappingStore
+  workspaceBindingStore?: WorkspaceBindingStore
   workspaceInitializer?: WorkspaceInitializer
   storyServiceSupervisor?: StoryServiceSupervisor
   workspacesRoot?: string
@@ -56,6 +74,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const gitLab = options.gitLabAdapter ?? new GitLabAdapter()
   const applicationMappings = options.applicationMappingStore ?? new ApplicationMappingStore()
   const cronMappings = options.cronMappingStore ?? new CronMappingStore()
+  const workspaceBindings = options.workspaceBindingStore ?? new WorkspaceBindingStore()
+  const tapd = options.tapdAdapter ?? new TapdAdapter()
   const workspaceInitializer = options.workspaceInitializer ?? new WorkspaceInitializer()
   const storyServiceSupervisor = options.storyServiceSupervisor ?? new StoryServiceSupervisor()
   const codeBuddyApi = new CodeBuddyApi()
@@ -122,6 +142,152 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         },
       })
     }
+  })
+
+  app.get('/api/v1/workspaces', async (request, reply) => {
+    try {
+      return await listWorkspaces(workspacesRoot)
+    } catch (error) {
+      request.log.error({ code: 'WORKSPACE_LIST_FAILED' }, 'Unable to list workspaces')
+      return reply.code(503).send({
+        error: {
+          code: 'WORKSPACE_LIST_UNAVAILABLE',
+          message: error instanceof Error ? error.message : 'Unable to list workspaces.',
+        },
+      })
+    }
+  })
+
+  app.delete('/api/v1/workspaces/:name', async (request, reply) => {
+    const params = z.object({ name: z.string().min(1).max(200) }).safeParse(request.params)
+    const body = workspaceDeleteRequestSchema.safeParse(request.body)
+    if (!params.success) return invalidParameters(reply)
+    if (!body.success) {
+      return reply.code(400).send({
+        error: {
+          code: 'INVALID_CONFIRMATION',
+          message: '请输入“确认删除”后才允许删除工作区。',
+        },
+      })
+    }
+    try {
+      return await deleteWorkspace(workspacesRoot, params.data.name)
+    } catch (error) {
+      if (error instanceof WorkspaceNotFoundError) {
+        return reply.code(404).send({
+          error: { code: 'WORKSPACE_NOT_FOUND', message: error.message },
+        })
+      }
+      if (error instanceof WorkspaceRegistryInputError) {
+        return reply.code(400).send({
+          error: { code: 'INVALID_WORKSPACE_REQUEST', message: error.message },
+        })
+      }
+      request.log.error({ code: 'WORKSPACE_DELETE_FAILED' }, 'Unable to delete workspace')
+      return reply.code(503).send({
+        error: {
+          code: 'WORKSPACE_DELETE_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to delete workspace.',
+        },
+      })
+    }
+  })
+
+  app.get('/api/v1/workspace-bindings', async (request, reply) => {
+    try {
+      return await workspaceBindings.list()
+    } catch (error) {
+      request.log.error({ code: 'WORKSPACE_BINDING_LIST_FAILED' }, 'Unable to list workspace bindings')
+      return reply.code(503).send({
+        error: {
+          code: 'WORKSPACE_BINDING_LIST_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to list workspace bindings.',
+        },
+      })
+    }
+  })
+
+  app.put('/api/v1/workspace-bindings', async (request, reply) => {
+    const body = workspaceBindingRequestSchema.safeParse(request.body)
+    if (!body.success) return invalidParameters(reply)
+    try {
+      const tapdStoryId = normalizeTapdStoryId(body.data.tapdStoryId)
+      // 绑定目标必须是一个真实存在的工作区，避免保存指向空目录的映射
+      const workspaces = await listWorkspaces(workspacesRoot)
+      const target = workspaces.find((workspace) => workspace.name === body.data.workspaceName)
+      if (!target) {
+        return reply.code(404).send({
+          error: {
+            code: 'WORKSPACE_NOT_FOUND',
+            message: `工作区不存在或未被 *.code-workspace 声明：${body.data.workspaceName}`,
+          },
+        })
+      }
+      return await workspaceBindings.upsert({
+        tapdStoryId,
+        workspaceName: target.name,
+        ...(body.data.storyTitle ? { storyTitle: body.data.storyTitle } : {}),
+        ...(body.data.tapdUrl ? { tapdUrl: body.data.tapdUrl } : {}),
+      })
+    } catch (error) {
+      if (error instanceof WorkspaceBindingConflictError) {
+        return reply.code(409).send({
+          error: { code: 'WORKSPACE_BINDING_CONFLICT', message: error.message },
+        })
+      }
+      if (error instanceof WorkspaceBindingInputError) {
+        return reply.code(400).send({
+          error: { code: 'INVALID_WORKSPACE_BINDING', message: error.message },
+        })
+      }
+      if (error instanceof WorkspaceRegistryInputError) {
+        return reply.code(503).send({
+          error: { code: 'WORKSPACE_LIST_UNAVAILABLE', message: error.message },
+        })
+      }
+      request.log.error({ code: 'WORKSPACE_BINDING_SAVE_FAILED' }, 'Unable to save workspace binding')
+      return reply.code(503).send({
+        error: {
+          code: 'WORKSPACE_BINDING_SAVE_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to save workspace binding.',
+        },
+      })
+    }
+  })
+
+  app.delete('/api/v1/workspace-bindings/:tapdStoryId', async (request, reply) => {
+    const params = z.object({ tapdStoryId: z.string().min(1).max(200) }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    try {
+      return await workspaceBindings.remove(params.data.tapdStoryId)
+    } catch (error) {
+      request.log.error({ code: 'WORKSPACE_BINDING_DELETE_FAILED' }, 'Unable to remove workspace binding')
+      return reply.code(503).send({
+        error: {
+          code: 'WORKSPACE_BINDING_DELETE_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to remove workspace binding.',
+        },
+      })
+    }
+  })
+
+  app.get('/api/v1/board/stories', async (request, reply) => {
+    const query = z.object({
+      owner: z.string().trim().min(1).max(100).optional(),
+      // 默认 0：排除“已发布”需求；传 1 才显示
+      includeReleased: z.enum(['0', '1']).optional(),
+    }).safeParse(request.query)
+    if (!query.success) return invalidParameters(reply)
+    const board = await buildBoard(
+      query.data.owner ?? defaultBoardOwner,
+      {
+        tapd,
+        bindings: workspaceBindings,
+        workspaces: () => listWorkspaces(workspacesRoot),
+      },
+      { includeReleased: query.data.includeReleased === '1' },
+    )
+    return board
   })
 
   app.get('/api/v1/stories/:storyId/service', async (request, reply) => {
@@ -387,6 +553,22 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     }
   })
 
+  app.delete('/api/v1/application-mappings/:repoName', async (request, reply) => {
+    const params = z.object({ repoName: z.string().min(1).max(200) }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    try {
+      return await applicationMappings.remove(params.data.repoName)
+    } catch (error) {
+      request.log.error({ code: 'APPLICATION_MAPPING_DELETE_FAILED' }, 'Unable to remove application mapping')
+      return reply.code(503).send({
+        error: {
+          code: 'APPLICATION_MAPPING_DELETE_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to remove application mapping.',
+        },
+      })
+    }
+  })
+
   app.post('/api/v1/workspaces/initialize/preview', async (request, reply) => {
     try {
       return await workspaceInitializer.preview(request.body)
@@ -500,10 +682,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const parsed = snapshotSchema.safeParse(snapshot)
     if (!parsed.success) {
       request.log.error({ issues: parsed.error.issues }, 'Snapshot validation failed')
+      // 只回传字段路径，便于定位上游格式问题，不回传任何字段值
+      const fieldPaths = [...new Set(parsed.error.issues
+        .map((issue) => issue.path.join('.'))
+        .filter((path) => path.length > 0))].slice(0, 8)
       return reply.code(500).send({
         error: {
           code: 'INVALID_SNAPSHOT',
-          message: 'The data aggregator returned an invalid snapshot.',
+          message: fieldPaths.length
+            ? `The data aggregator returned an invalid snapshot. Fields: ${fieldPaths.join(', ')}`
+            : 'The data aggregator returned an invalid snapshot.',
         },
       })
     }

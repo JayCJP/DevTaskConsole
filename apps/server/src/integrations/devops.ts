@@ -77,6 +77,17 @@ export class DevOpsAdapter {
     return result.detail.map((record) => parseBuild(record, app))
   }
 
+  /**
+   * 读取当前 DevOps 登录账号，用于把构建记录筛成“本人触发的构建”。
+   * 账号取自 MCP 配置的 `user`（缺省回退 `login_id`），与构建记录的 `last_name` 口径一致。
+   * @returns 登录账号；未配置时返回 null
+   */
+  async getLoginUser(): Promise<string | null> {
+    const config = await loadMcpServerConfig('Devops_MCP')
+    const candidate = config?.env?.user?.trim() || config?.env?.login_id?.trim()
+    return candidate ? candidate : null
+  }
+
   private async getCredentials(): Promise<DevOpsCredentials | null> {
     const config = await loadMcpServerConfig('Devops_MCP')
     if (!config) return null

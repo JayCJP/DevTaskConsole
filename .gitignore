@@ -6,3 +6,4 @@ coverage/
 !.env.example
 .devtask-console/
 *.tsbuildinfo
+graphify-out

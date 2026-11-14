@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
+import { mergeRequestSchema } from '@devtask/shared'
 import { GitLabAdapter } from './gitlab.js'
 
 let server: Server | undefined
@@ -57,6 +58,80 @@ describe('GitLab read adapter', () => {
       mergeStatus: 'mergeable',
       webUrl: 'https://gitlab.example/group/repo/-/merge_requests/9',
     }])
+  })
+
+  it('exposes the MR author and caches the token owner for "only mine" filtering', async () => {
+    const requestPaths: string[] = []
+    server = createServer((request, response) => {
+      requestPaths.push(request.url ?? '')
+      response.writeHead(200, { 'content-type': 'application/json' })
+      if (request.url === '/api/v4/user') {
+        response.end(JSON.stringify({ username: 'caijiepeng', name: '蔡杰鹏' }))
+        return
+      }
+      response.end(JSON.stringify([{
+        id: 81,
+        iid: 12,
+        title: 'Mine',
+        source_branch: 'feat/mine',
+        target_branch: 'dev',
+        state: 'opened',
+        author: { username: 'caijiepeng' },
+      }, {
+        id: 82,
+        iid: 13,
+        title: 'Someone else',
+        source_branch: 'feat/mine',
+        target_branch: 'dev',
+        state: 'opened',
+        author: { username: 'someone-else' },
+      }]))
+    })
+    await listen(server)
+    await configureServer(server)
+
+    const adapter = new GitLabAdapter()
+    await expect(adapter.getCurrentUser()).resolves.toEqual({ username: 'caijiepeng', name: '蔡杰鹏' })
+    const mergeRequests = await adapter.listMergeRequests(12, 'feat/mine')
+    // 第二次查询命中缓存，不重复请求 /user
+    await expect(adapter.getCurrentUser()).resolves.toEqual({ username: 'caijiepeng', name: '蔡杰鹏' })
+
+    expect(mergeRequests.map((mergeRequest) => mergeRequest.authorUsername))
+      .toEqual(['caijiepeng', 'someone-else'])
+    expect(requestPaths.filter((path) => path === '/api/v4/user')).toHaveLength(1)
+  })
+
+  it('returns null instead of failing when the token owner cannot be read', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(401)
+      response.end('unauthorized')
+    })
+    await listen(server)
+    await configureServer(server)
+
+    await expect(new GitLabAdapter().getCurrentUser()).resolves.toBeNull()
+  })
+
+  it('normalizes timestamps with timezone offsets so the snapshot schema stays valid', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify([{
+        id: 72,
+        iid: 374,
+        title: 'Merged MR',
+        source_branch: 'feat/agent-group',
+        target_branch: 'dev',
+        state: 'merged',
+        merged_at: '2026-11-11T12:16:22.144+08:00',
+      }]))
+    })
+    await listen(server)
+    await configureServer(server)
+
+    const mergeRequests = await new GitLabAdapter().listMergeRequests(771, 'feat/agent-group')
+
+    expect(mergeRequests[0]?.mergedAt).toBe('2026-11-11T04:16:22.144Z')
+    expect(mergeRequestSchema.safeParse({ ...mergeRequests[0], storyId: 'STORY-1' }).success).toBe(true)
   })
 
   it('surfaces HTTP failures without including configured credentials', async () => {

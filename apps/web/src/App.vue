@@ -14,7 +14,7 @@ import {
   Sunny,
   Timer,
 } from '@element-plus/icons-vue'
-import { ApiError, apiRequest } from './api/client'
+import { ApiError, apiRequest, clearConsoleToken, readConsoleToken, saveConsoleToken } from './api/client'
 import { navItems } from './router'
 import { useConsoleStore } from './stores/console'
 
@@ -43,6 +43,11 @@ const connectionWarning = computed(() =>
 )
 const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 
+/**
+ * 使用本机令牌登录控制台。
+ * 成功后把令牌持久化到 localStorage，并立即拉取首屏快照。
+ * @returns Promise<void>，失败时把错误写入 loginError
+ */
 async function login(): Promise<void> {
   loginError.value = ''
   try {
@@ -50,7 +55,7 @@ async function login(): Promise<void> {
       method: 'POST',
       body: JSON.stringify({ token: token.value }),
     })
-    sessionStorage.setItem('devtask-console-token', token.value)
+    saveConsoleToken(token.value.trim())
     authenticated.value = true
     await store.refresh()
   } catch (cause) {
@@ -58,21 +63,28 @@ async function login(): Promise<void> {
   }
 }
 
+/**
+ * 刷新页面后恢复登录态。
+ * 只要本地存有令牌就进入控制台并主动拉取快照，
+ * 避免刷新后页面停留在“没有数据”的空状态。
+ * @returns Promise<void>
+ */
 async function validateSession(): Promise<void> {
-  const savedToken = sessionStorage.getItem('devtask-console-token')
+  const savedToken = readConsoleToken()
   if (!savedToken) return
+  authenticated.value = true
   try {
     await apiRequest('/api/v1/health')
-    authenticated.value = true
-    await store.refresh()
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 401) {
-      sessionStorage.removeItem('devtask-console-token')
+      clearConsoleToken()
+      authenticated.value = false
       return
     }
-    authenticated.value = true
     store.error = cause instanceof Error ? cause.message : 'The console API is unavailable.'
   }
+  // 无论健康检查结果如何都尝试拉取一次快照，保证刷新后有数据（或明确的错误提示）
+  await store.refresh()
 }
 
 function openCommand(): void {

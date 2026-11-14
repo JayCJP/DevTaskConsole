@@ -140,6 +140,32 @@ describe('TAPD MCP connection', () => {
     })
   })
 
+  it('parses a count embedded as the full count-tool response object', async () => {
+    // TAPD MCP 列表接口会把 count 工具的完整响应对象嵌在 count 字段里
+    const responses: Record<string, unknown> = {
+      get_stories_or_tasks: {
+        url_template: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+        data: [{ Story: { id: '18', name: 'First story', status: 'open', owner: 'Alice' } }],
+        count: { status: 1, data: { count: 1 }, info: 'success' },
+      },
+      get_related_bugs: { data: [{ story_id: '18', bug_id: 'b1' }] },
+      get_bug: {
+        data: [{ Bug: { id: 'b1', title: 'First defect', status: 'new', current_owner: 'Alice;' } }],
+        count: { status: 1, data: { count: 1 }, info: 'success' },
+      },
+    }
+    const adapter = new TapdAdapter({
+      listTools: async () => listing,
+      callTool: async (_serverName, name) => ({
+        isError: false,
+        content: [{ type: 'text', text: JSON.stringify(responses[name]) }],
+      }),
+    })
+
+    const aggregated = await adapter.aggregate([{ storyId: 'HARNESS-18', tapdStoryId: '18', title: 'Local story' }])
+    expect(aggregated.requirements).toHaveLength(1)
+  })
+
   it('does not report a truncated Bug page as an accurate count', async () => {
     const responses: Record<string, unknown> = {
       get_stories_or_tasks: { data: [{ Story: { id: '18', name: 'First story', owner: 'Alice' } }], count: 1 },

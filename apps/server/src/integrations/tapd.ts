@@ -1,4 +1,4 @@
-import type { Bug, Requirement } from '@devtask/shared'
+import type { Bug, Requirement, TapdStory } from '@devtask/shared'
 import { mcpClientRegistry, type McpClientRegistry } from './mcp-client.js'
 
 const requiredReadTools = ['get_stories_or_tasks', 'get_related_bugs', 'get_bug', 'get_iterations']
@@ -6,6 +6,10 @@ type ToolListing = Awaited<ReturnType<McpClientRegistry['listTools']>>
 type ToolResult = Awaited<ReturnType<McpClientRegistry['callTool']>>
 const tapdWorkspaceId = 38260062
 const storyFields = 'id,name,status,priority_label,owner,iteration_id,iteration_name'
+/** 按处理人列需求时额外需要的创建时间字段 */
+const ownedStoryFields = `${storyFields},created`
+/** TAPD 未返回 url_template 时使用的需求详情链接模板 */
+const defaultStoryUrlTemplate = 'https://www.tapd.cn/38260062/prong/stories/view/{id}'
 const bugFields = 'id,title,status,current_owner,created,module,description'
 
 interface RelatedBug {
@@ -24,6 +28,9 @@ interface StoryDetails {
 }
 
 export class TapdAdapter {
+  /** TAPD 需求状态码到中文名的映射缓存，避免每次查询需求都重复拉取 */
+  private storyStatusLabels?: Promise<Map<string, string>>
+
   constructor(
     private readonly tools: Pick<McpClientRegistry, 'listTools' | 'callTool'> = mcpClientRegistry,
   ) {}
@@ -165,6 +172,77 @@ export class TapdAdapter {
     return (await this.aggregate(requirements)).requirements
   }
 
+  /**
+   * 按处理人查询 TAPD 需求，作为看板的数据元。
+   * 只读查询，不按标题或仓库名做本地猜测。
+   * @param owner TAPD 处理人姓名，例如“蔡杰鹏”
+   * @returns 需求列表与 TAPD 详情链接模板
+   * @throws Error 处理人为空、MCP 未配置或响应结构非法
+   */
+  async listOwnedStories(owner: string): Promise<{ stories: TapdStory[]; urlTemplate: string }> {
+    const normalizedOwner = owner.trim()
+    if (!normalizedOwner) throw new Error('TAPD 处理人不能为空。')
+    const value = await this.callJsonTool('get_stories_or_tasks', {
+      workspace_id: tapdWorkspaceId,
+      options: {
+        entity_type: 'stories',
+        owner: normalizedOwner,
+        limit: 200,
+        fields: ownedStoryFields,
+      },
+    })
+    const rows = getDataRows(value, 'get_stories_or_tasks')
+    const urlTemplate = readUrlTemplate(value) ?? defaultStoryUrlTemplate
+    const statusLabels = await this.loadStoryStatusLabels()
+    const stories = rows.map((row) => {
+      const fields = unwrapEntity(row, 'Story')
+      const storyId = requiredText(fields.id, 'story id')
+      const title = optionalText(fields.name) ?? storyId
+      const status = optionalText(fields.status)
+      const statusLabel = status ? statusLabels.get(status) : undefined
+      const storyOwner = optionalText(fields.owner)
+      const iterationName = optionalText(fields.iteration_name)
+      const priority = optionalText(fields.priority_label)
+      const createdAt = optionalText(fields.created)
+      return {
+        storyId,
+        title,
+        tapdUrl: urlTemplate.replace('{id}', storyId),
+        ...(status ? { status } : {}),
+        ...(statusLabel ? { statusLabel } : {}),
+        ...(storyOwner ? { owner: storyOwner } : {}),
+        ...(iterationName ? { iterationName } : {}),
+        ...(priority ? { priority } : {}),
+        ...(createdAt ? { createdAt } : {}),
+      }
+    })
+    return { stories, urlTemplate }
+  }
+
+  /**
+   * 读取 TAPD 需求工作流“状态码 → 中文名”的映射。
+   * 结果按实例缓存；读取失败时返回空映射，不阻塞需求列表。
+   * @returns 状态码到中文名的映射
+   */
+  private loadStoryStatusLabels(): Promise<Map<string, string>> {
+    this.storyStatusLabels ??= (async () => {
+      try {
+        const types = await this.callJsonTool('get_workitem_types', { workspace_id: tapdWorkspaceId })
+        const workitemTypeId = readStoryWorkitemTypeId(types)
+        if (!workitemTypeId) return new Map<string, string>()
+        const value = await this.callJsonTool('get_workflows_status_map', {
+          workspace_id: tapdWorkspaceId,
+          options: { system: 'story', workitem_type_id: workitemTypeId },
+        })
+        return readStatusLabels(value)
+      } catch {
+        // 状态中文名属于展示增强，失败时退化为显示原始状态码
+        return new Map<string, string>()
+      }
+    })()
+    return this.storyStatusLabels
+  }
+
   private async callJsonTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     let result: ToolResult
     try {
@@ -303,6 +381,51 @@ function hasOwnerMatch(currentOwner: string, storyOwner?: string): boolean {
   return Boolean(normalizedOwner && currentOwner.toLocaleLowerCase().includes(normalizedOwner))
 }
 
+/**
+ * 从需求类别列表中取出 entity_type 为 story 的类别 ID。
+ * @param value TAPD get_workitem_types 响应
+ * @returns 需求类别 ID；缺省或结构非法时返回 undefined
+ */
+function readStoryWorkitemTypeId(value: unknown): string | undefined {
+  if (!isRecord(value) || !Array.isArray(value.data)) return undefined
+  for (const row of value.data) {
+    if (!isRecord(row)) continue
+    const type = isRecord(row.WorkitemType) ? row.WorkitemType : row
+    if (type.entity_type !== 'story') continue
+    const id = optionalText(type.id)
+    if (id) return id
+  }
+  return undefined
+}
+
+/**
+ * 把工作流状态映射响应转成 Map。
+ * TAPD 返回形如 `{ status: 1, data: { status_4: '方案中' }, info: 'success' }`。
+ * @param value TAPD get_workflows_status_map 响应
+ * @returns 状态码到中文名的映射
+ */
+function readStatusLabels(value: unknown): Map<string, string> {
+  const labels = new Map<string, string>()
+  if (!isRecord(value)) return labels
+  const data = isRecord(value.data) ? value.data : value
+  for (const [code, label] of Object.entries(data)) {
+    const text = optionalText(label)
+    if (text) labels.set(code, text)
+  }
+  return labels
+}
+
+/**
+ * 从 TAPD 响应顶层的 url_template 读取需求详情链接模板。
+ * @param value TAPD 工具响应
+ * @returns 含 `{id}` 占位符的链接模板；缺省或格式不符时返回 undefined
+ */
+function readUrlTemplate(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  const template = value.url_template
+  return typeof template === 'string' && template.includes('{id}') ? template : undefined
+}
+
 function isBugStatus(value: string): value is TapdBug['status'] {
   return value === 'new' || value === 'reopened'
 }
@@ -319,12 +442,28 @@ function optionalText(value: unknown): string | undefined {
   return text || undefined
 }
 
+/**
+ * 从 TAPD MCP 工具响应中解析出记录总数。
+ * 支持以下形态：
+ * 1. 数字或纯数字字符串，例如 2 或 "2"
+ * 2. 计数工具的完整响应对象，例如 {status: 1, data: {count: 17422}, info: "success"}
+ * 3. data 为单元素数组且元素内含 count/bug_count/total 字段的对象
+ *
+ * @param value TAPD 响应中的 count 字段（结构不定）
+ * @returns 解析出的非负整数总数；无法识别时返回 undefined
+ */
 function parseCount(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value
   if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value)
   if (isRecord(value)) {
     const directCount = parseCount(value.count)
     if (directCount !== undefined) return directCount
+    // TAPD MCP 的列表接口（如 get_stories_or_tasks）会把 count 工具的完整响应对象
+    // 原样嵌入 count 字段，此时 data 是 {count: N} 形态的对象而非数组，需递归解析
+    if (isRecord(value.data)) {
+      const nestedCount = parseCount(value.data)
+      if (nestedCount !== undefined) return nestedCount
+    }
     if (Array.isArray(value.data) && value.data.length === 1 && isRecord(value.data[0])) {
       for (const key of ['count', 'bug_count', 'total']) {
         const nestedCount = parseCount(value.data[0][key])

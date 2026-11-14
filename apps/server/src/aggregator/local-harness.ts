@@ -218,7 +218,7 @@ async function readHarnessActive(
       ...(active.mode === 'run' || active.mode === 'fixbugs' ? { mode: active.mode } : {}),
       ...(requirement?.phase !== undefined ? { phase: requirement.phase } : {}),
       ...(requirement?.status ? { status: requirement.status } : {}),
-      workspacePath: relative(root, directoryFromPlans(plansDirectory)),
+      workspacePath: toWorkspacePath(root, directoryFromPlans(plansDirectory)),
       ...(typeof active.activatedAt === 'string' ? { activatedAt: active.activatedAt } : {}),
     })
   } catch (error) {
@@ -282,7 +282,7 @@ async function readPlans(
         title: state.title,
         status: state.status,
         phase: state.phase,
-        workspacePath: relative(root, directoryFromPlans(plansDirectory)),
+        workspacePath: toWorkspacePath(root, directoryFromPlans(plansDirectory)),
         ...(tapdStoryId ? { tapdStoryId } : {}),
       })
     } catch (error) {
@@ -327,6 +327,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function directoryFromPlans(plansDirectory: string): string {
   return dirname(dirname(plansDirectory))
+}
+
+/**
+ * 把 Story 目录转成相对工作区根的 posix 风格路径。
+ * 统一用 `/` 分隔，避免 Windows 下的 `\` 直接出现在 API 与页面里。
+ * @param root 工作区扫描根目录
+ * @param directory Story 目录绝对路径
+ * @returns 相对路径；Story 就在扫描根目录时返回空字符串
+ */
+function toWorkspacePath(root: string, directory: string): string {
+  return relative(root, directory).replaceAll('\\', '/')
 }
 
 function isMissing(error: unknown): boolean {

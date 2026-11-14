@@ -95,6 +95,23 @@ describe('DevOps read adapter', () => {
     }])
   })
 
+  it('exposes the configured login account for build operator matching', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end('{}')
+    })
+    await listen(server)
+    await configureServer(server)
+
+    await expect(new DevOpsAdapter().getLoginUser()).resolves.toBe('dev')
+  })
+
+  it('returns null when DevOps is not configured', async () => {
+    process.env.DEVTASK_MCP_CONFIG = join(tmpdir(), 'devtask-missing-mcp.json')
+
+    await expect(new DevOpsAdapter().getLoginUser()).resolves.toBeNull()
+  })
+
   it('surfaces expired sessions without returning credential values', async () => {
     server = createServer((_request, response) => {
       response.writeHead(403)

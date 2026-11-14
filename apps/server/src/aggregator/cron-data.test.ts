@@ -78,4 +78,58 @@ describe('local scheduled task aggregation', () => {
     expect(result.crons).toEqual([])
     expect(result.errors).toEqual(['STORY-1: scheduled task 1 has an invalid shape.'])
   })
+
+  it('reads tasks straight from workspace projects even without a Story', async () => {
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-cron-workspaces-'))
+    const projectPath = join(workspacesRoot, 'feature-x', 'repo-a')
+    await mkdir(join(projectPath, '.codebuddy'), { recursive: true })
+    await writeFile(join(projectPath, '.codebuddy', 'scheduled_tasks.json'), JSON.stringify({
+      tasks: [{ id: 'task-workspace', cron: '0 9 * * *', prompt: 'Scan TAPD bugs.' }],
+    }))
+
+    const result = await readLocalCrons(workspacesRoot, [], [], [{
+      name: 'feature-x',
+      path: join(workspacesRoot, 'feature-x'),
+      missingProjects: [],
+      projects: [{ name: 'repo-a', path: projectPath, worktree: true }],
+    }])
+
+    expect(result.errors).toEqual([])
+    expect(result.crons).toEqual([expect.objectContaining({
+      id: 'task-workspace',
+      workspacePath: 'feature-x/repo-a',
+    })])
+    // 没有 Story 时不臆造归属，交给项目级展示
+    expect(result.crons[0]?.storyId).toBeUndefined()
+  })
+
+  it('accepts millisecond timestamps written by CodeBuddy scheduled tasks', async () => {
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-cron-workspaces-'))
+    const projectPath = join(workspacesRoot, 'feature-x', 'repo-a')
+    await mkdir(join(projectPath, '.codebuddy'), { recursive: true })
+    await writeFile(join(projectPath, '.codebuddy', 'scheduled_tasks.json'), JSON.stringify({
+      tasks: [{
+        id: 'task-ts',
+        cron: '7 */6 * * *',
+        enabled: false,
+        recurring: true,
+        expiryDays: 30,
+        expiresAt: 1797124163907,
+      }],
+    }))
+
+    const result = await readLocalCrons(workspacesRoot, [], [], [{
+      name: 'feature-x',
+      path: join(workspacesRoot, 'feature-x'),
+      missingProjects: [],
+      projects: [{ name: 'repo-a', path: projectPath, worktree: true }],
+    }])
+
+    expect(result.errors).toEqual([])
+    expect(result.crons).toEqual([expect.objectContaining({
+      id: 'task-ts',
+      enabled: false,
+      expiresAt: new Date(1797124163907).toISOString(),
+    })])
+  })
 })

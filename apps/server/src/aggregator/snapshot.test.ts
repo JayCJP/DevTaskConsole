@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { snapshotSchema } from '@devtask/shared'
 import { buildSnapshot } from './snapshot.js'
 import { CronMappingStore } from './cron-data.js'
 
@@ -19,6 +20,36 @@ afterEach(async () => {
   else process.env.DEVTASK_DATA_DIR = previousDataDirectory
   workspacesRoot = undefined
   dataDirectory = undefined
+})
+
+describe('snapshot schema tolerance', () => {
+  it('accepts upstream timestamps that carry a timezone offset', () => {
+    const snapshot = {
+      snapshotAt: '2026-11-14T00:00:00.000Z',
+      channels: {},
+      requirements: [],
+      bugs: [],
+      harnessBugs: [],
+      openQuestions: [],
+      harnessActive: [],
+      inbox: [],
+      jobs: [],
+      crons: [],
+      builds: [{ id: '1', app: 'web', succeed: true, buildDate: '2026-11-14T09:33:11+08:00' }],
+      branches: [{ app: 'web', name: 'origin/dev', lastCommitTime: '2026-11-14T09:33:11+08:00' }],
+      mergeRequests: [{
+        projectId: 1,
+        id: '2',
+        title: 'MR',
+        sourceBranch: 'feat/x',
+        targetBranch: 'dev',
+        state: 'merged',
+        mergedAt: '2026-11-11T12:16:22.144+08:00',
+      }],
+    }
+
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(true)
+  })
 })
 
 describe('snapshot channel status', () => {
@@ -59,6 +90,8 @@ describe('snapshot channel status', () => {
       kind: 'open_question',
       title: 'Needs an answer?',
       requirementId: 'STORY-INBOX',
+      // 收件箱按「工作区 → Story」分组依赖该字段，缺失会导致事项落进兜底分组
+      workspacePath: 'feature-x',
       priority: 'high',
     })])
     expect(snapshot.openQuestions.map((question) => question.state)).toEqual([
