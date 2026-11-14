@@ -6,7 +6,12 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { getDataDirectory } from '../security/token-store.js'
 
-export type StoryServiceStatus = 'starting' | 'running' | 'failed'
+/**
+ * Story 服务状态。
+ * `stopped` 表示由控制台主动停止：进程树已结束且端口已释放，
+ * 恢复流程不会把它当作需要重启的服务。
+ */
+export type StoryServiceStatus = 'starting' | 'running' | 'failed' | 'stopped'
 
 export interface StoryService {
   storyId: string
@@ -16,6 +21,22 @@ export interface StoryService {
   status: StoryServiceStatus
   updatedAt: string
   error?: string
+}
+
+/** 服务无法停止时的错误：端口仍被占用或无法定位进程 */
+export class StoryServiceStopError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StoryServiceStopError'
+  }
+}
+
+/** 服务映射无法删除时的错误 */
+export class StoryServiceRemoveError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StoryServiceRemoveError'
+  }
 }
 
 interface StoryServiceSupervisorOptions {
@@ -28,6 +49,10 @@ interface StoryServiceSupervisorOptions {
   wait?: (milliseconds: number) => Promise<void>
   retryWait?: (milliseconds: number) => Promise<void>
   startupTimeoutMs?: number
+  /** 结束进程树的实现；默认 Windows 用 taskkill /T /F，其它平台用负 PID 分组信号 */
+  killProcessTree?: (pid: number) => Promise<void>
+  /** 停止后等待端口释放的超时时间 */
+  stopTimeoutMs?: number
 }
 
 export class StoryServiceSupervisor {
@@ -39,7 +64,9 @@ export class StoryServiceSupervisor {
   private readonly isHealthy: (port: number) => Promise<boolean>
   private readonly wait: (milliseconds: number) => Promise<void>
   private readonly retryWait: (milliseconds: number) => Promise<void>
+  private readonly killProcessTree: (pid: number) => Promise<void>
   private readonly startupTimeoutMs: number
+  private readonly stopTimeoutMs: number
   private queue: Promise<void> = Promise.resolve()
 
   constructor(options: StoryServiceSupervisorOptions = {}) {
@@ -60,13 +87,22 @@ export class StoryServiceSupervisor {
     this.isHealthy = options.isHealthy ?? checkHealth
     this.wait = options.wait ?? delay
     this.retryWait = options.retryWait ?? delay
+    this.killProcessTree = options.killProcessTree ?? killProcessTree
     this.startupTimeoutMs = options.startupTimeoutMs ?? 60_000
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 10_000
   }
 
+  /**
+   * 服务重启后恢复已登记的服务。
+   * 被控制台主动停止（status = stopped）的服务不会自动重启，避免覆盖用户意图。
+   * @param workspacesRoot 工作区根目录
+   * @returns Promise<void>
+   */
   async recoverPersistedServices(workspacesRoot: string): Promise<void> {
     const services = await this.readRegistry()
     const retryDelays = [5_000, 15_000, 30_000]
     for (const service of services) {
+      if (service.status === 'stopped') continue
       let lastError: unknown
       for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
         const retryDelay = retryDelays[attempt - 1]
@@ -99,11 +135,96 @@ export class StoryServiceSupervisor {
     return (await this.readRegistry()).find((service) => service.storyId === storyId)
   }
 
+  /**
+   * 停止 Story 服务：结束整棵进程树并轮询端口释放。
+   * 端口未在超时内释放时抛错并保持原登记不变，绝不谎报「已停止」。
+   * @param storyId Story 标识
+   * @returns 停止后的服务登记（status = stopped）
+   */
+  async stop(storyId: string): Promise<StoryService> {
+    return this.serialize(async () => {
+      const services = await this.readRegistry()
+      const service = services.find((item) => item.storyId === storyId)
+      if (!service) throw new StoryServiceStopError('The Story service is not registered.')
+      if (service.status === 'stopped') return service
+
+      if (!(await this.isPortAvailable(service.port))) {
+        if (service.pid === undefined) {
+          throw new StoryServiceStopError(
+            `Port ${service.port} is still in use but no PID is recorded; refusing to report the service as stopped.`,
+          )
+        }
+        await this.killProcessTree(service.pid)
+      }
+      const released = await this.waitUntilPortReleased(service.port)
+      if (!released) {
+        throw new StoryServiceStopError(`Port ${service.port} was not released before the stop timeout.`)
+      }
+
+      const stopped: StoryService = {
+        storyId: service.storyId,
+        port: service.port,
+        cwd: service.cwd,
+        status: 'stopped',
+        updatedAt: new Date().toISOString(),
+      }
+      await this.upsert(services, stopped)
+      return stopped
+    })
+  }
+
+  /**
+   * 删除服务映射。只有确认已停止且端口已释放时才允许删除，
+   * 避免「映射没了、端口仍被占用」的谎报状态。
+   * @param storyId Story 标识
+   * @returns 被删除的服务登记
+   */
+  async remove(storyId: string): Promise<StoryService> {
+    return this.serialize(async () => {
+      const services = await this.readRegistry()
+      const service = services.find((item) => item.storyId === storyId)
+      if (!service) throw new StoryServiceRemoveError('The Story service is not registered.')
+      if (service.status !== 'stopped') {
+        throw new StoryServiceRemoveError('Stop the Story service before removing its mapping.')
+      }
+      if (!(await this.isPortAvailable(service.port))) {
+        throw new StoryServiceRemoveError(`Port ${service.port} is still in use; keeping the mapping.`)
+      }
+      const next = services.filter((item) => item.storyId !== storyId)
+      const directory = dirname(this.filePath)
+      await mkdir(directory, { recursive: true })
+      const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
+      await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      })
+      await rename(temporaryPath, this.filePath)
+      services.splice(0, services.length, ...next)
+      return service
+    })
+  }
+
+  /**
+   * 轮询等待端口释放。
+   * @param port 端口号
+   * @returns 释放返回 true；超时返回 false
+   */
+  private async waitUntilPortReleased(port: number): Promise<boolean> {
+    const deadline = Date.now() + this.stopTimeoutMs
+    while (Date.now() < deadline) {
+      if (await this.isPortAvailable(port)) return true
+      await this.wait(250)
+    }
+    return this.isPortAvailable(port)
+  }
+
   async inspect(storyId: string): Promise<StoryService | undefined> {
     return this.serialize(async () => {
       const services = await this.readRegistry()
       const service = services.find((item) => item.storyId === storyId)
       if (!service) return undefined
+      // 主动停止的服务不参与健康检查：不响应是预期状态，不能改写成 failed
+      if (service.status === 'stopped') return service
       const healthy = await this.isHealthy(service.port)
       const status: StoryServiceStatus = healthy ? 'running' : 'failed'
       const error = healthy ? undefined : 'CodeBuddy service is not responding to health checks.'
@@ -321,17 +442,28 @@ async function portIsAvailable(port: number): Promise<boolean> {
   })
 }
 
+/**
+ * 探测 CodeBuddy 实例健康状态。
+ * CodeBuddy 在忙碌（正在跑 job）时单次响应可能超过 1 秒，若按 1 秒判死会导致
+ * 「健康检查失败 → 触发自动重启」的误报，因此这里给足 2.5 秒并重试一次。
+ * @param port 实例端口
+ * @returns 健康返回 true
+ */
 async function checkHealth(port: number): Promise<boolean> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
-      headers: { 'X-CodeBuddy-Request': '1' },
-      redirect: 'error',
-      signal: AbortSignal.timeout(1000),
-    })
-    return response.ok
-  } catch {
-    return false
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+        headers: { 'X-CodeBuddy-Request': '1' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(2500),
+      })
+      if (response.ok) return true
+    } catch {
+      // 落入重试：一次超时不代表进程已死
+    }
+    if (attempt === 0) await delay(200)
   }
+  return false
 }
 
 function isStoryService(value: unknown): value is StoryService {
@@ -341,9 +473,35 @@ function isStoryService(value: unknown): value is StoryService {
     && Number.isInteger(item.port)
     && typeof item.cwd === 'string'
     && (item.pid === undefined || Number.isInteger(item.pid))
-    && (item.status === 'starting' || item.status === 'running' || item.status === 'failed')
+    && (item.status === 'starting' || item.status === 'running' || item.status === 'failed' || item.status === 'stopped')
     && typeof item.updatedAt === 'string'
     && (item.error === undefined || typeof item.error === 'string')
+}
+
+/**
+ * 结束整棵进程树。
+ * Windows 用 `taskkill /T /F`（子进程由 cmd 派生，只有 /T 才能带走整棵树）；
+ * 其它平台对负 PID 发 SIGTERM，等价于结束进程组。
+ * 进程已退出或命令返回非 0 不算失败，最终以端口是否释放为准。
+ * @param pid 进程 ID
+ * @returns Promise<void>
+ */
+async function killProcessTree(pid: number): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid process ID for Story service stop.')
+  await new Promise<void>((resolvePromise, reject) => {
+    const windows = process.platform === 'win32'
+    const command = windows ? 'taskkill' : 'kill'
+    const args = windows ? ['/PID', String(pid), '/T', '/F'] : ['-TERM', `-${pid}`]
+    let child: ChildProcess
+    try {
+      child = spawnProcess(command, args, { stdio: 'ignore', windowsHide: true })
+    } catch (error) {
+      reject(error)
+      return
+    }
+    child.once('error', reject)
+    child.once('close', () => resolvePromise())
+  })
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

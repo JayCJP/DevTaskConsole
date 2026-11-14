@@ -29,6 +29,13 @@ export interface WorkspacePreview {
 export class WorkspaceInputError extends Error {}
 export class WorkspaceDependencyError extends Error {}
 export class WorkspaceConflictError extends Error {}
+/** 初始化任务不存在 */
+export class WorkspaceJobNotFoundError extends Error {
+  constructor(message = 'Workspace initialization job was not found.') {
+    super(message)
+    this.name = 'WorkspaceJobNotFoundError'
+  }
+}
 
 export class WorkspaceInitializer {
   private readonly jobs = new Map<string, WorkspaceInitializationJob>()
@@ -66,6 +73,8 @@ export class WorkspaceInitializer {
       startedAt: now,
       updatedAt: now,
       exitCode: null,
+      // 保存原始参数，服务重启后可用于以同一参数重放幂等脚本
+      request,
     })
     this.jobs.set(job.id, job)
     this.pruneCompletedJobs()
@@ -96,6 +105,53 @@ export class WorkspaceInitializer {
     return job ? copyJob(job) : undefined
   }
 
+  /**
+   * 续跑一个失败或中断的初始化任务。
+   * 说明：这里不能重新附着到原来的 PowerShell 子进程，也无法回放其 stdio；
+   * 因此以同一参数重新执行幂等脚本（已存在的 worktree、已装依赖会被脚本跳过），
+   * 并在日志中如实记录「从哪个阶段续跑」，绝不伪造连续性。
+   * @param id 初始化任务 ID
+   * @returns 进入 running 状态的任务快照
+   */
+  async resume(id: string): Promise<WorkspaceInitializationJob> {
+    await this.ready
+    const job = this.jobs.get(id)
+    if (!job) throw new WorkspaceJobNotFoundError()
+    if (job.status === 'running' || job.status === 'orphaned') {
+      throw new WorkspaceConflictError(
+        '该任务仍有进程在运行（或已脱离本服务的外部进程），不能重复续跑。',
+      )
+    }
+    if (job.status === 'succeeded') {
+      throw new WorkspaceConflictError('该任务已成功完成，无需续跑。')
+    }
+    if (!job.request) {
+      throw new WorkspaceConflictError('该任务没有保存原始参数，无法续跑。')
+    }
+    // 与首次启动相同的前置校验：脚本仍存在、仓库仍可用
+    const request = await this.validate(job.request)
+    const stageBefore = job.stage
+    job.resumeCount = (job.resumeCount ?? 0) + 1
+    job.status = 'running'
+    job.exitCode = null
+    job.updatedAt = new Date().toISOString()
+    addLog(
+      job,
+      `从阶段 ${stageBefore} 开始第 ${job.resumeCount} 次续跑；脚本为幂等执行，已完成的步骤会被跳过。`,
+    )
+    try {
+      const child = spawn('pwsh', buildPowerShellArguments(request, false), {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+      this.consumeChild(job, child)
+    } catch (error) {
+      this.finish(job, 'failed', null, error instanceof Error ? error.message : 'Unable to start PowerShell.')
+    }
+    await this.persistJobs()
+    return copyJob(job)
+  }
+
   async flush(): Promise<void> {
     await this.ready
     if (this.persistenceTimer) {
@@ -123,18 +179,31 @@ export class WorkspaceInitializer {
     }
     const parsed = workspaceInitializationJobSchema.array().safeParse(value)
     if (!parsed.success) throw new Error('Workspace initialization job registry has an invalid shape.')
+    let changed = false
     for (const job of parsed.data) {
       if (job.status === 'running') {
-        job.status = 'interrupted'
-        job.stage = 'failed'
-        job.exitCode = null
-        job.updatedAt = new Date().toISOString()
-        addLog(job, 'The server restarted while this job was running; its process state is unknown.')
+        // 通过 PID 存活判定区分「进程仍在跑」与「进程已消失」，两种情况的处理完全不同
+        if (job.pid !== undefined && isProcessAlive(job.pid)) {
+          job.status = 'orphaned'
+          job.updatedAt = new Date().toISOString()
+          addLog(
+            job,
+            `The server restarted while this job was running; process ${job.pid} is still alive but detached. `
+            + 'Its output can no longer be captured, so this job is shown as an external process.',
+          )
+        } else {
+          job.status = 'interrupted'
+          job.stage = 'failed'
+          job.exitCode = null
+          job.updatedAt = new Date().toISOString()
+          addLog(job, 'The server restarted while this job was running and its process is gone; the job can be resumed.')
+        }
+        changed = true
       }
       this.jobs.set(job.id, job)
     }
     this.pruneCompletedJobs()
-    if (parsed.data.some((job) => job.status === 'interrupted')) await this.persistJobs()
+    if (changed) await this.persistJobs()
   }
 
   private async persistJobs(): Promise<void> {
@@ -228,6 +297,11 @@ export class WorkspaceInitializer {
   }
 
   private consumeChild(job: WorkspaceInitializationJob, child: ChildProcessByStdio<null, Readable, Readable>): void {
+    // 记录 PID 并立即持久化：服务重启后据此判断子进程是否仍存活
+    if (child.pid !== undefined) {
+      job.pid = child.pid
+      this.schedulePersistence(job)
+    }
     consumeLines(child.stdout, (line) => this.recordLog(job, line))
     consumeLines(child.stderr, (line) => this.recordLog(job, line))
     child.once('error', (error) => this.finish(job, 'failed', null, error.message))
@@ -322,6 +396,22 @@ function stageFromLine(line: string): WorkspaceInitializationJob['stage'] | unde
 
 function copyJob(job: WorkspaceInitializationJob): WorkspaceInitializationJob {
   return { ...job, logs: [...job.logs] }
+}
+
+/**
+ * 通过 PID 判断进程是否存活。
+ * 信号 0 只做权限与存在性检查，不会真的发送信号；
+ * EPERM 表示进程存在但无权操作，同样视为存活。
+ * @param pid 进程 ID
+ * @returns 存活返回 true
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return isNodeError(error, 'EPERM')
+  }
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

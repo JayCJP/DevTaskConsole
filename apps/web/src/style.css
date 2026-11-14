@@ -292,7 +292,7 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .cron-story-head { display: flex; align-items: baseline; gap: 8px; padding: 10px 2px 0; color: var(--muted); font-size: 12px; }
 .cron-story-head code { color: var(--faint); font-size: 10px; }
 .instance-job-row { padding-left: 18px; }
-.split-layout { display: grid; grid-template-columns: minmax(260px, .75fr) minmax(0, 1.5fr); gap: 16px; }
+.split-layout { display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.6fr); gap: 20px; align-items: start; }
 .split-list, .instance-workspace { min-height: 420px; }
 .simple-list-row { display: flex; width: 100%; align-items: center; gap: 10px; padding: 12px 2px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
 .simple-list-row span:nth-child(2) { display: grid; min-width: 0; flex: 1; gap: 2px; }
@@ -343,16 +343,20 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .delete-confirm-field { display: grid; gap: 8px; margin-top: 16px; color: var(--muted); font-size: 12px; }
 .workspace-output { margin-top: 20px; }
 .workspace-output pre { max-height: 360px; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }
-.mapping-card { display: grid; gap: 10px; padding: 13px 0; border-top: 1px solid var(--line); }
-.mapping-card > strong { color: var(--text); }
-.mapping-card-head { display: flex; align-items: center; gap: 10px; }
-.mapping-card-head strong { color: var(--text); }
-.mapping-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.mapping-controls { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto auto; align-items: end; gap: 10px; }
+.mapping-head-actions { display: flex; gap: 6px; }
+.mapping-table { display: grid; overflow-x: auto; }
+.mapping-table-head, .mapping-table-row { display: grid; min-width: 620px; grid-template-columns: minmax(140px, 1.4fr) repeat(3, minmax(110px, 1fr)) minmax(128px, auto); align-items: center; gap: 10px; }
+.mapping-table-head { padding: 0 2px 8px; color: var(--faint); font-size: 10px; letter-spacing: .04em; }
+.mapping-table-row { padding: 10px 2px; border-top: 1px solid var(--line); font-size: 12px; }
+.mapping-table-row.is-default { background: var(--surface-raised); }
+.mapping-table-row strong { overflow: hidden; color: var(--text); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.mapping-cell { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.mapping-cell.is-changed { color: var(--accent); font-weight: 550; }
+.mapping-row-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.mapping-footnote { margin: 10px 0 0; color: var(--faint); font-size: 11px; }
+.mapping-form { display: grid; gap: 12px; }
+.mapping-hint { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .mapping-control { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 11px; }
-.mapping-inline { display: flex; min-width: 0; gap: 6px; }
-.mapping-inline .el-select { min-width: 0; flex: 1; }
-.mapping-saved { color: var(--green); }
 .mapping-error { color: var(--red); }
 .detail-grid strong { font-weight: 550; }
 .login-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 20%, #20283a 0, var(--page) 60%); }
@@ -420,7 +424,8 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   .workspace-row { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
   .workspace-main { flex-basis: 100%; }
   .workspace-row-actions { margin-left: 0; }
-  .mapping-controls { grid-template-columns: 1fr; }
+  .mapping-head-actions { margin-left: auto; }
+  .mapping-table-head, .mapping-table-row { min-width: 560px; }
   .split-list { min-height: 200px; }
   .instance-workspace { min-height: 270px; }
   .cron-row, .release-row, .channel-row { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
@@ -433,3 +438,131 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
   .inbox-row .el-button { margin-left: 37px; }
   .inbox-workspace-head { align-items: flex-start; flex-wrap: wrap; }
 }
+
+/* ===== 定时任务与控制面：写操作、执行记录、生命周期、审计 ===== */
+.cron-surface { padding: 22px; }
+.cron-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; margin: 20px 0 14px; padding: 1px; border: 1px solid var(--line); border-radius: 9px; background: var(--line); }
+.cron-overview > div { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 13px 15px; background: var(--surface-raised); color: var(--muted); font-size: 11px; }
+.cron-overview strong { margin-left: auto; color: var(--text); font-size: 20px; font-weight: 620; line-height: 1; }
+.cron-overview .has-attention strong { color: var(--amber); }
+.cron-paused-dot { background: var(--amber); }
+.cron-toolbar { display: flex; align-items: center; gap: 10px; padding: 2px 0 6px; }
+.cron-search { width: min(360px, 100%); }
+.cron-status-filter { width: 150px; flex: 0 0 150px; }
+.cron-filter-result { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cron-workspace-block { margin-top: 24px; padding-top: 18px; }
+.cron-workspace-block .project-block { margin-left: 0; padding-left: 0; border-left: 0; }
+.cron-workspace-block .project-head { padding: 8px 0 4px; }
+.cron-workspace-block .cron-story-head { margin-top: 18px; padding: 10px 12px; border-radius: 8px; background: var(--surface-raised); }
+.cron-story-head .el-button { margin-left: auto; }
+.cron-row.is-busy { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.cron-schedule { display: grid; gap: 2px; min-width: 130px; }
+.cron-schedule small, .cron-next small { color: var(--faint); font-size: 10px; }
+.cron-next { min-width: 150px; color: var(--muted); font-size: 11px; }
+.cron-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+
+.cron-editor { display: grid; gap: 12px; }
+.cron-editor-hint { margin: 0; color: var(--muted); font-size: 11px; }
+.cron-editor-ok { margin: 0; color: var(--green); font-size: 11px; }
+.cron-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.cron-field { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+.cron-upcoming { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--muted); font-size: 11px; }
+.cron-upcoming ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+
+.cron-executions { width: 100%; margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
+.cron-executions-head { display: flex; align-items: center; gap: 10px; }
+.cron-executions-count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.cron-executions-warning { margin: 8px 0 0; color: var(--amber); font-size: 11px; }
+.cron-executions-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.cron-executions-filter .el-select, .cron-executions-filter .el-input { width: 170px; }
+.cron-timeline { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cron-timeline-item { display: flex; gap: 8px; align-items: flex-start; }
+.cron-timeline-body { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.cron-timeline-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.cron-timeline-line strong { color: var(--text); font-weight: 550; }
+.cron-run-id { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); }
+.cron-timeline-error { margin: 2px 0 0; color: var(--red); font-size: 11px; overflow-wrap: anywhere; }
+
+.service-panel-actions { display: flex; gap: 6px; }
+.service-event-bar { display: grid; gap: 8px; margin-bottom: 14px; }
+.service-event { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); font-size: 11px; }
+.service-event.is-error { border-color: color-mix(in srgb, var(--red) 45%, var(--line)); }
+.service-event.is-warning { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
+.service-event span:nth-child(2) { flex: 1; color: var(--muted); }
+
+.audit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.audit-list { display: grid; gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
+.audit-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); font-size: 11px; }
+.audit-item.is-undone { opacity: .62; }
+.audit-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.audit-line strong { color: var(--text); font-weight: 550; }
+.audit-line code { color: var(--muted); font-size: 10px; }
+.audit-line small { color: var(--faint); }
+.audit-actions { margin-left: auto; }
+.audit-error { margin: 6px 0 0; color: var(--red); }
+.audit-diff { margin: 6px 0 0; color: var(--faint); overflow-wrap: anywhere; }
+
+.undo-toasts { position: fixed; right: 18px; bottom: 18px; z-index: 3000; display: grid; gap: 8px; max-width: min(360px, 88vw); }
+.undo-toast { display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); box-shadow: var(--shadow); color: var(--text); font-size: 12px; }
+.undo-toast span { flex: 1; }
+
+@media (max-width: 900px) {
+  .cron-actions { justify-content: flex-start; }
+  .cron-next { min-width: 0; }
+  .cron-toolbar { flex-wrap: wrap; }
+  .cron-filter-result { margin-left: 0; }
+  .cron-executions-filter .el-select, .cron-executions-filter .el-input { width: 100%; }
+  .service-panel { align-items: flex-start; }
+  .service-panel-main { flex-basis: 100%; }
+  .undo-toasts { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+}
+
+@media (max-width: 640px) {
+  .cron-surface { padding: 16px; }
+  .cron-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cron-overview > div { padding: 12px; }
+  .cron-search { width: 100%; flex-basis: 100%; }
+  .cron-status-filter { flex: 1; }
+  .cron-workspace-block { margin-top: 18px; }
+  .cron-workspace-block .cron-story-head { flex-wrap: wrap; }
+  .cron-story-head .el-button { margin-left: 0; }
+}
+
+/* ===== 实例工作区：当前 Story 上下文与选中态 ===== */
+.instance-context { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); }
+.instance-context-main { display: grid; flex: 1; min-width: 180px; gap: 2px; }
+.instance-context-main .eyebrow { margin: 0; }
+.instance-context-main strong { color: var(--text); font-size: 13px; }
+.instance-context-main small { color: var(--faint); font-size: 11px; }
+.instance-context .service-port { color: var(--muted); font-size: 11px; }
+.instance-workspace .section-heading p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* 左侧只保留「选中哪个 Story」，按钮全部移到右侧工具栏，列表因此更宽松 */
+.instance-story { margin: 6px 0; }
+.instance-story-button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.instance-story-button:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.instance-story-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.instance-story.is-current .instance-story-button { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised)); box-shadow: inset 3px 0 0 var(--accent); }
+.instance-story-text { display: grid; flex: 1; min-width: 0; gap: 4px; }
+.instance-story-text strong { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.instance-story-text small { color: var(--faint); font-size: 11px; }
+.instance-toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 18px; }
+.instance-toolbar .el-button { margin-left: 0; }
+
+@media (max-width: 900px) {
+  .instance-context-main { flex-basis: 100%; }
+}
+
+/* ===== 实例工作区表单：字段分组、标签与留白 ===== */
+.instance-form { display: grid; gap: 14px; margin-top: 14px; }
+.instance-field { display: grid; gap: 6px; }
+.instance-field > span { color: var(--muted); font-size: 12px; }
+.instance-field .el-input, .instance-field .el-textarea { width: 100%; }
+.instance-form-actions { display: flex; justify-content: flex-end; }
+.instance-resume { display: grid; gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.instance-resume h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.instance-resume p { margin: 0; }
+.job-rename { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+.job-rename .el-select { flex: 1; min-width: 0; }
+.job-rename .el-input { flex: 1; min-width: 0; }
+.instance-reply { display: grid; gap: 10px; margin-top: 14px; }

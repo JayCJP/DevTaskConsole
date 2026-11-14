@@ -123,6 +123,15 @@ describe('DevOps read adapter', () => {
     await expect(new DevOpsAdapter().checkConnection()).rejects.toThrow('session expired (HTTP 403)')
     await expect(new DevOpsAdapter().checkConnection()).rejects.not.toThrow('private-session-token')
   })
+
+  it('reports deployment and environment facts as unknown instead of guessing', () => {
+    const facts = new DevOpsAdapter().getReleaseFacts('repo-one')
+    expect(facts.deployment.fact).toBe('unknown')
+    expect(facts.deployment.statement).toContain('构建成功不等于已部署')
+    expect(facts.deployment.statement).toContain('repo-one')
+    expect(facts.environment.fact).toBe('unknown')
+    expect(facts.environment.statement).toContain('dev 与 test')
+  })
 })
 
 async function configureServer(target: Server): Promise<void> {

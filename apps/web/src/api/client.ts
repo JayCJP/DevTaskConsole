@@ -64,7 +64,12 @@ export function clearConsoleToken(): void {
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const token = readConsoleToken()
   const headers = new Headers(init?.headers)
-  headers.set('content-type', 'application/json')
+  // 只有真正带 body 时才声明 JSON：POST/PUT 无 body 却声明 application/json 时，
+  // Fastify 会直接返回 400 FST_ERR_CTP_EMPTY_JSON_BODY，写操作会「点一下就失败」。
+  const hasBody = init?.body !== undefined && init.body !== null
+  if (hasBody && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json')
+  }
   if (token) {
     headers.set('x-devtask-token', token)
   }
@@ -72,16 +77,29 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const response = await fetch(path, { ...init, headers })
   const payload: unknown = await response.json().catch(() => undefined)
   if (!response.ok) {
-    const body = isErrorPayload(payload) ? payload.error.message : response.statusText
-    throw new ApiError(body || `Request failed with status ${response.status}.`, response.status)
+    throw new ApiError(
+      errorMessageOf(payload, response.statusText || `Request failed with status ${response.status}.`),
+      response.status,
+    )
   }
   return payload as T
 }
 
-function isErrorPayload(payload: unknown): payload is { error: { message: string } } {
-  if (typeof payload !== 'object' || payload === null || !('error' in payload)) {
-    return false
+/**
+ * 从错误响应中取出可读信息。
+ * 同时兼容本站封装 `{ error: { code, message } }` 与 Fastify 原生 `{ statusCode, code, error, message }`。
+ * @param payload 响应 JSON
+ * @param fallback 无法解析时的兜底文案
+ * @returns 可展示的错误信息
+ */
+function errorMessageOf(payload: unknown, fallback: string): string {
+  if (typeof payload !== 'object' || payload === null) return fallback
+  const record = payload as Record<string, unknown>
+  const nested = record.error
+  if (typeof nested === 'object' && nested !== null) {
+    const message = (nested as Record<string, unknown>).message
+    if (typeof message === 'string' && message) return message
   }
-  const error = payload.error
-  return typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+  if (typeof record.message === 'string' && record.message) return record.message
+  return fallback
 }

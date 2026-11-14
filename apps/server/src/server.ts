@@ -16,6 +16,7 @@ import {
   snapshotSchema,
   workspaceBindingRequestSchema,
   workspaceDeleteRequestSchema,
+  workspaceInitializationResumeRequestSchema,
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
@@ -40,6 +41,7 @@ import {
   WorkspaceDependencyError,
   WorkspaceInitializer,
   WorkspaceInputError,
+  WorkspaceJobNotFoundError,
 } from './workspaces/initializer.js'
 import {
   normalizeTapdStoryId,
@@ -49,6 +51,15 @@ import {
 } from './workspaces/bindings.js'
 import { StoryServiceSupervisor, type StoryService } from './services/story-service-supervisor.js'
 import { CodeBuddyApi, CodeBuddyApiError } from './services/codebuddy-api.js'
+import { ScheduledTaskClient } from './services/scheduled-tasks.js'
+import { CronExecutionReader } from './services/cron-executions.js'
+import { AuditLog } from './services/audit-log.js'
+import { CronDispatchStore } from './services/cron-dispatch.js'
+import { ServiceMonitor } from './services/service-monitor.js'
+import { registerCronRoutes } from './routes/crons.js'
+import { registerServiceRoutes } from './routes/services.js'
+import { registerAuditRoutes } from './routes/audit.js'
+import { restoreCronOwners } from './services/cron-recovery.js'
 
 export interface ServerOptions {
   token: string
@@ -63,6 +74,18 @@ export interface ServerOptions {
   workspaceInitializer?: WorkspaceInitializer
   storyServiceSupervisor?: StoryServiceSupervisor
   workspacesRoot?: string
+  /** CodeBuddy 定时任务客户端；测试可注入桩 */
+  scheduledTaskClient?: ScheduledTaskClient
+  /** 站点派发轮次登记；测试可注入临时目录 */
+  cronDispatchStore?: CronDispatchStore
+  /** 审计流水；测试可注入临时目录 */
+  auditLog?: AuditLog
+  /** 运行期监督器；未注入时不暴露监督事件 */
+  serviceMonitor?: ServiceMonitor
+  /** 执行记录读取器；测试可注入桩 */
+  cronExecutionReader?: CronExecutionReader
+  /** CodeBuddy 原始 API；测试可注入桩，用于派发轮次等直连调用 */
+  codeBuddyApi?: CodeBuddyApi
 }
 
 const storyIdSchema = z.string().min(1).max(200)
@@ -70,6 +93,29 @@ const jobIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/)
 
 export function buildServer(options: ServerOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true })
+  // 容许「声明 application/json 但 body 为空」的写请求。
+  // 部分客户端（含本站早期版本与 curl）会对无参数的 POST/DELETE 也带上 JSON 头，
+  // Fastify 默认会返回 400 FST_ERR_CTP_EMPTY_JSON_BODY，导致启动/停止/续期这类无参数操作直接失败。
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
+    const text = typeof body === 'string' ? body.trim() : ''
+    if (!text) {
+      done(null, undefined)
+      return
+    }
+    try {
+      done(null, JSON.parse(text) as unknown)
+    } catch (error) {
+      // 显式标记为 400：默认 parser 不带 statusCode 时会退化成 500，
+      // 前端只能看到「Internal Server Error」，无法判断是请求体写错了。
+      const parseError = (error instanceof Error ? error : new Error('Invalid JSON body.')) as Error & {
+        statusCode?: number
+        code?: string
+      }
+      parseError.statusCode = 400
+      parseError.code = 'FST_ERR_CTP_INVALID_JSON_BODY'
+      done(parseError, undefined)
+    }
+  })
   const devOps = options.devOpsAdapter ?? new DevOpsAdapter()
   const gitLab = options.gitLabAdapter ?? new GitLabAdapter()
   const applicationMappings = options.applicationMappingStore ?? new ApplicationMappingStore()
@@ -78,7 +124,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const tapd = options.tapdAdapter ?? new TapdAdapter()
   const workspaceInitializer = options.workspaceInitializer ?? new WorkspaceInitializer()
   const storyServiceSupervisor = options.storyServiceSupervisor ?? new StoryServiceSupervisor()
-  const codeBuddyApi = new CodeBuddyApi()
+  const codeBuddyApi = options.codeBuddyApi ?? new CodeBuddyApi()
   const workspacesRoot = options.workspacesRoot ?? getWorkspacesRoot()
   app.addHook('onClose', async () => {
     await workspaceInitializer.flush()
@@ -98,6 +144,38 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       workspacesRoot,
     )
   }
+  const scheduledTasks = options.scheduledTaskClient ?? new ScheduledTaskClient(codeBuddyApi)
+  const cronExecutions = options.cronExecutionReader ?? new CronExecutionReader(workspacesRoot, scheduledTasks)
+  const auditLog = options.auditLog ?? new AuditLog()
+  const cronDispatches = options.cronDispatchStore ?? new CronDispatchStore()
+
+  // 定时任务、服务生命周期与审计三组路由共享同一套端口解析与审计流水
+  registerCronRoutes(app, {
+    snapshotProvider,
+    workspacesRoot,
+    supervisor: storyServiceSupervisor,
+    client: scheduledTasks,
+    api: codeBuddyApi,
+    executions: cronExecutions,
+    mappings: cronMappings,
+    dispatches: cronDispatches,
+    audit: auditLog,
+  })
+  registerServiceRoutes(app, {
+    supervisor: storyServiceSupervisor,
+    ...(options.serviceMonitor ? { monitor: options.serviceMonitor } : {}),
+    mappings: cronMappings,
+    client: scheduledTasks,
+    dispatches: cronDispatches,
+    audit: auditLog,
+  })
+  registerAuditRoutes(app, {
+    audit: auditLog,
+    snapshotProvider,
+    supervisor: storyServiceSupervisor,
+    client: scheduledTasks,
+    mappings: cronMappings,
+  })
 
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/api/auth/login') {
@@ -596,6 +674,28 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return job
   })
 
+  app.post('/api/v1/workspaces/initialize/:jobId/resume', async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params)
+    const body = workspaceInitializationResumeRequestSchema.safeParse(request.body)
+    if (!params.success) return invalidParameters(reply)
+    if (!body.success) {
+      return reply.code(400).send({
+        error: {
+          code: 'INVALID_CONFIRMATION',
+          message: '续跑会以同一参数重新执行脚本，需要明确确认后才允许发起。',
+        },
+      })
+    }
+    try {
+      return await workspaceInitializer.resume(params.data.jobId)
+    } catch (error) {
+      if (error instanceof WorkspaceJobNotFoundError) {
+        return reply.code(404).send({ error: { code: 'WORKSPACE_JOB_NOT_FOUND', message: error.message } })
+      }
+      return workspaceInitializationError(request, reply, error)
+    }
+  })
+
   app.get('/api/v1/devops/groups', async (request, reply) => {
     return relayRead(request, reply, 'DevOps', () => devOps.getGroups())
   })
@@ -629,36 +729,6 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return relayRead(request, reply, 'GitLab', () => gitLab.findProjects(query.data.search))
   })
 
-  app.put('/api/v1/crons/:taskId/mapping', async (request, reply) => {
-    const params = z.object({ taskId: z.string().min(1).max(200) }).safeParse(request.params)
-    const body = z.object({
-      storyId: storyIdSchema,
-      ownerSessionId: z.string().trim().min(1).max(200),
-      mode: z.enum(['query_only', 'query_fix']),
-    }).safeParse(request.body)
-    if (!params.success || !body.success) return invalidParameters(reply)
-    try {
-      const snapshot = await snapshotProvider()
-      const task = snapshot.crons.find((item) => item.id === params.data.taskId)
-      if (!task || task.storyId !== body.data.storyId) {
-        return reply.code(404).send({
-          error: { code: 'CRON_TASK_NOT_FOUND', message: 'The task is not associated with the selected Story.' },
-        })
-      }
-      const mapping = { taskId: task.id, ...body.data }
-      await cronMappings.save(mapping)
-      return mapping
-    } catch (error) {
-      request.log.error({ code: 'CRON_MAPPING_SAVE_FAILED' }, 'Unable to save cron owner mapping')
-      return reply.code(503).send({
-        error: {
-          code: 'CRON_MAPPING_SAVE_FAILED',
-          message: error instanceof Error ? error.message : 'Unable to save cron owner mapping.',
-        },
-      })
-    }
-  })
-
   app.get('/api/v1/gitlab/projects/:projectId/merge-requests', async (request, reply) => {
     const params = z.object({ projectId: z.coerce.number().int().positive() }).safeParse(request.params)
     const query = z.object({ sourceBranch: z.string().min(1).max(250) }).safeParse(request.query)
@@ -675,6 +745,22 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     if (!params.success) return invalidParameters(reply)
     return relayRead(request, reply, 'GitLab', () =>
       gitLab.getMergeRequestDetails(params.data.projectId, params.data.iid))
+  })
+
+  app.get('/api/v1/gitlab/projects/:projectId/merge-requests/:iid/diff-summary', async (request, reply) => {
+    const params = z.object({
+      projectId: z.coerce.number().int().positive(),
+      iid: z.string().min(1).max(100),
+    }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    return relayRead(request, reply, 'GitLab', () =>
+      gitLab.getMergeRequestDiffSummary(params.data.projectId, params.data.iid))
+  })
+
+  app.get('/api/v1/release/facts', async (request, reply) => {
+    const query = z.object({ app: z.string().trim().min(1).max(200) }).safeParse(request.query)
+    if (!query.success) return invalidParameters(reply)
+    return devOps.getReleaseFacts(query.data.app)
   })
 
   app.get('/api/v1/snapshot', async (request, reply) => {
@@ -713,12 +799,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
 function publicStoryService(service: StoryService): {
   storyId: string
+  port: number
   status: StoryService['status']
   updatedAt: string
   error?: string
 } {
   return {
     storyId: service.storyId,
+    port: service.port,
     status: service.status,
     updatedAt: service.updatedAt,
     ...(service.error ? { error: service.error } : {}),
@@ -837,15 +925,50 @@ export async function startServer(): Promise<void> {
   const token = await loadOrCreateToken()
   const storyServiceSupervisor = new StoryServiceSupervisor()
   const workspacesRoot = getWorkspacesRoot()
-  const app = buildServer({ token, storyServiceSupervisor, workspacesRoot })
+  const cronMappings = new CronMappingStore()
+  const scheduledTasks = new ScheduledTaskClient()
+  const auditLog = new AuditLog()
+  const serviceMonitor = new ServiceMonitor({ supervisor: storyServiceSupervisor, workspacesRoot })
+  const app = buildServer({
+    token,
+    storyServiceSupervisor,
+    workspacesRoot,
+    cronMappingStore: cronMappings,
+    scheduledTaskClient: scheduledTasks,
+    auditLog,
+    serviceMonitor,
+  })
   const port = Number(process.env.PORT ?? 7788)
   const host = process.env.HOST ?? '127.0.0.1'
 
+  app.addHook('onClose', async () => {
+    serviceMonitor.stop()
+  })
+
   await app.listen({ port, host })
   app.log.info({ host, port, dataDirectory: getDataDirectory() }, 'DevTask Console server started')
-  void storyServiceSupervisor.recoverPersistedServices(workspacesRoot).catch((error: unknown) => {
-    app.log.error({ error }, 'Unable to recover persisted Story services')
-  })
+  serviceMonitor.start()
+
+  void (async () => {
+    try {
+      await storyServiceSupervisor.recoverPersistedServices(workspacesRoot)
+      // 恢复顺序固定：先恢复服务与 owner，再重新启用被停服暂停的任务
+      const result = await restoreCronOwners({
+        mappings: cronMappings,
+        supervisor: storyServiceSupervisor,
+        client: scheduledTasks,
+        log: (message) => app.log.info({ code: 'CRON_OWNER_RECOVERY' }, message),
+      })
+      if (result.restored.length || result.failed.length) {
+        app.log.info(
+          { restored: result.restored.length, skipped: result.skipped.length, failed: result.failed.length },
+          'Cron owner recovery finished',
+        )
+      }
+    } catch (error) {
+      app.log.error({ error }, 'Unable to recover persisted Story services')
+    }
+  })()
 }
 
 const serverEntrypoint = fileURLToPath(import.meta.url)

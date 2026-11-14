@@ -7,3 +7,4 @@ coverage/
 .devtask-console/
 *.tsbuildinfo
 graphify-out
+.codebuddy/

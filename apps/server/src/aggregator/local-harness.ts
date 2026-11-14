@@ -1,5 +1,5 @@
 import { access, readdir, readFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { HarnessActive, HarnessBug, OpenQuestion, Requirement } from '@devtask/shared'
 
 interface LocalHarnessResult {
@@ -15,6 +15,26 @@ interface HarnessState {
   title?: string
   status?: string
   phase?: number
+}
+
+/**
+ * `story-info.json` 的解析结果。
+ * 这是 Harness 新版工作流写入的 Story 身份文件：轮次归档只会移动 e2e-state.json，
+ * 不会删除它，因此用它识别 Story 才能覆盖已归档的流程。
+ */
+interface StoryInfo {
+  /** Story ID（目录可能被改名，以文件内容为准） */
+  storyId: string
+  /** Story 标题 */
+  title: string
+  /** Harness 启动模式 */
+  mode?: 'run' | 'fixbugs'
+  /** 启动时的阶段；e2e-state.json 缺失时用作当前阶段 */
+  initialPhase?: number
+  /** 关联的 TAPD 需求 ID */
+  tapdStoryId?: string
+  /** Harness 的工作目录绝对路径，用于还原 Story 归属的项目 */
+  workflowRoot?: string
 }
 
 function parseOpenQuestions(storyId: string, value: unknown): OpenQuestion[] {
@@ -210,7 +230,7 @@ async function readHarnessActive(
     const storyId = active.storyId.trim()
     const requirement = requirements.get(storyId)
     if (!requirement) {
-      errors.push(`${relative(root, activePath)} references Harness Story ${storyId} without e2e-state.json.`)
+      errors.push(`${relative(root, activePath)} references Harness Story ${storyId} without story-info.json.`)
     }
     harnessActive.push({
       storyId,
@@ -218,7 +238,8 @@ async function readHarnessActive(
       ...(active.mode === 'run' || active.mode === 'fixbugs' ? { mode: active.mode } : {}),
       ...(requirement?.phase !== undefined ? { phase: requirement.phase } : {}),
       ...(requirement?.status ? { status: requirement.status } : {}),
-      workspacePath: toWorkspacePath(root, directoryFromPlans(plansDirectory)),
+      // 优先复用需求里已解析的工作区路径，保证与流水线归属一致
+      workspacePath: requirement?.workspacePath ?? toWorkspacePath(root, directoryFromPlans(plansDirectory)),
       ...(typeof active.activatedAt === 'string' ? { activatedAt: active.activatedAt } : {}),
     })
   } catch (error) {
@@ -243,51 +264,63 @@ async function readPlans(
   }
 
   for (const plan of plans) {
-    if (!plan.isDirectory() || plan.name === 'archive') continue
-    const statePath = join(plansDirectory, plan.name, 'e2e-state.json')
+    // archive / tmp 是 Harness 的轮次归档目录，不是 Story 本体
+    if (!plan.isDirectory() || plan.name === 'archive' || plan.name === 'tmp') continue
+    const storyDirectory = join(plansDirectory, plan.name)
     try {
-      const state = parseHarnessState(await readFile(statePath, 'utf8'))
-      if (!state.storyId || !state.title) {
-        errors.push(`${relative(root, statePath)} is missing storyId or title.`)
-        continue
-      }
-      if (requirements.has(state.storyId)) {
-        errors.push(`Duplicate Harness storyId ${state.storyId} found at ${relative(root, statePath)}.`)
-        continue
-      }
-      const storyInputPath = join(dirname(statePath), 'story-input.json')
-      let tapdStoryId: string | undefined
+      // story-info.json 是 Story 身份的唯一依据：轮次归档后 e2e-state.json 可能被移走
+      const info = parseStoryInfo(await readOptionalJson(join(storyDirectory, 'story-info.json')))
+      const statePath = join(storyDirectory, 'e2e-state.json')
+      let state: HarnessState | undefined
       try {
-        tapdStoryId = parseTapdStoryId(await readFile(storyInputPath, 'utf8'))
+        state = await readHarnessState(statePath)
       } catch (error) {
-        if (!isMissing(error)) {
-          errors.push(`Cannot read ${relative(root, storyInputPath)}: ${messageOf(error)}`)
-        }
+        // 状态文件损坏不影响 Story 识别，只记录原因
+        errors.push(`Cannot read ${relative(root, statePath)}: ${messageOf(error)}`)
       }
-      const storyDirectory = dirname(statePath)
+      if (!info && !state) continue
+      const storyId = info?.storyId ?? state?.storyId
+      if (!storyId) {
+        errors.push(`${relative(root, storyDirectory)} is missing storyId in story-info.json.`)
+        continue
+      }
+      const title = info?.title ?? state?.title
+      if (!title) {
+        errors.push(`${relative(root, storyDirectory)} is missing title in story-info.json.`)
+        continue
+      }
+      if (requirements.has(storyId)) {
+        errors.push(`Duplicate Harness storyId ${storyId} found at ${relative(root, storyDirectory)}.`)
+        continue
+      }
+      // 运行期状态只来自 e2e-state.json；缺失时退回 story-info 的 initialPhase
+      const phase = state?.phase ?? info?.initialPhase
+      const tapdStoryId = info?.tapdStoryId ?? await readTapdStoryId(storyDirectory, root, errors)
+      const workflowDirectory = resolveWorkflowRoot(root, info?.workflowRoot) ?? directoryFromPlans(plansDirectory)
+
       try {
         const questions = await readOptionalJson(join(storyDirectory, 'open-questions.json'))
-        if (questions !== undefined) openQuestions.push(...parseOpenQuestions(state.storyId, questions))
+        if (questions !== undefined) openQuestions.push(...parseOpenQuestions(storyId, questions))
       } catch (error) {
         errors.push(`Cannot read ${relative(root, join(storyDirectory, 'open-questions.json'))}: ${messageOf(error)}`)
       }
       try {
         const bugList = await readOptionalJson(join(storyDirectory, 'bug-list.json'))
-        if (bugList !== undefined) harnessBugs.push(...parseHarnessBugs(state.storyId, bugList))
+        if (bugList !== undefined) harnessBugs.push(...parseHarnessBugs(storyId, bugList))
       } catch (error) {
         errors.push(`Cannot read ${relative(root, join(storyDirectory, 'bug-list.json'))}: ${messageOf(error)}`)
       }
-      requirements.set(state.storyId, {
-        storyId: state.storyId,
-        title: state.title,
-        status: state.status,
-        phase: state.phase,
-        workspacePath: toWorkspacePath(root, directoryFromPlans(plansDirectory)),
+      requirements.set(storyId, {
+        storyId,
+        title,
+        ...(state?.status ? { status: state.status } : {}),
+        ...(phase !== undefined ? { phase } : {}),
+        workspacePath: toWorkspacePath(root, workflowDirectory),
         ...(tapdStoryId ? { tapdStoryId } : {}),
       })
     } catch (error) {
       if (!isMissing(error)) {
-        errors.push(`Cannot read ${relative(root, statePath)}: ${messageOf(error)}`)
+        errors.push(`Cannot read ${relative(root, storyDirectory)}: ${messageOf(error)}`)
       }
     }
   }
@@ -303,6 +336,92 @@ function parseTapdStoryId(contents: string): string | undefined {
     throw new Error('sources.storyIdInTapd must be a non-empty string.')
   }
   return tapdStoryId.trim()
+}
+
+/**
+ * 解析 `story-info.json`。
+ * 只依赖 storyId/title 两个必需字段，其余字段缺失时忽略，避免旧文件被判为非法。
+ * @param value 已解析的 JSON 值
+ * @returns Story 身份信息；缺少 storyId 时返回 undefined
+ */
+function parseStoryInfo(value: unknown): StoryInfo | undefined {
+  if (!isRecord(value)) return undefined
+  const storyId = typeof value.storyId === 'string' ? value.storyId.trim() : ''
+  if (!storyId) return undefined
+  const title = typeof value.title === 'string' && value.title.trim() ? value.title.trim() : storyId
+  const initialPhase = typeof value.initialPhase === 'number'
+    && Number.isInteger(value.initialPhase)
+    && value.initialPhase >= 0
+    && value.initialPhase <= 6
+    ? value.initialPhase
+    : undefined
+  const sources = isRecord(value.sources) ? value.sources : undefined
+  const tapdStoryId = typeof sources?.storyIdInTapd === 'string' && sources.storyIdInTapd.trim()
+    ? sources.storyIdInTapd.trim()
+    : undefined
+  const workflowRoot = typeof value.workflowRoot === 'string' && value.workflowRoot.trim()
+    ? value.workflowRoot.trim()
+    : undefined
+  return {
+    storyId,
+    title,
+    ...(value.mode === 'run' || value.mode === 'fixbugs' ? { mode: value.mode } : {}),
+    ...(initialPhase !== undefined ? { initialPhase } : {}),
+    ...(tapdStoryId ? { tapdStoryId } : {}),
+    ...(workflowRoot ? { workflowRoot } : {}),
+  }
+}
+
+/**
+ * 读取并解析 e2e-state.json 的运行期状态。
+ * @param path 状态文件绝对路径
+ * @returns 运行期状态；文件不存在时返回 undefined
+ * @throws Error 文件内容不是合法 JSON
+ */
+async function readHarnessState(path: string): Promise<HarnessState | undefined> {
+  try {
+    return parseHarnessState(await readFile(path, 'utf8'))
+  } catch (error) {
+    if (isMissing(error)) return undefined
+    throw error
+  }
+}
+
+/**
+ * 从 story-input.json 读取 TAPD 需求 ID，作为 story-info.json 之外的兼容来源。
+ * @param storyDirectory Story 目录
+ * @param root 工作区扫描根目录（用于错误信息里的相对路径）
+ * @param errors 错误收集数组
+ * @returns TAPD 需求 ID；文件缺失时返回 undefined
+ */
+async function readTapdStoryId(
+  storyDirectory: string,
+  root: string,
+  errors: string[],
+): Promise<string | undefined> {
+  const storyInputPath = join(storyDirectory, 'story-input.json')
+  try {
+    return parseTapdStoryId(await readFile(storyInputPath, 'utf8'))
+  } catch (error) {
+    if (!isMissing(error)) {
+      errors.push(`Cannot read ${relative(root, storyInputPath)}: ${messageOf(error)}`)
+    }
+    return undefined
+  }
+}
+
+/**
+ * 校验 story-info.json 里的 workflowRoot 是否位于工作区扫描根目录之内。
+ * @param root 工作区扫描根目录
+ * @param workflowRoot story-info.json 记录的工作目录
+ * @returns 绝对路径；未配置或越界时返回 undefined
+ */
+function resolveWorkflowRoot(root: string, workflowRoot: string | undefined): string | undefined {
+  if (!workflowRoot) return undefined
+  const candidate = resolve(workflowRoot)
+  const fromRoot = relative(resolve(root), candidate)
+  if (isAbsolute(fromRoot) || fromRoot.startsWith('..')) return undefined
+  return candidate
 }
 
 function parseHarnessState(contents: string): HarnessState {

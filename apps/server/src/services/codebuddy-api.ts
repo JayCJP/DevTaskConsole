@@ -24,6 +24,8 @@ export class CodeBuddyApi {
       signal: AbortSignal.timeout(30_000),
     })
     if (!response.ok) throw new CodeBuddyApiError(response.status, `CodeBuddy request failed with HTTP ${response.status}.`)
+    // 删除类接口（如 DELETE /scheduled-tasks/{id}）返回 204 且没有响应体
+    if (response.status === 204) return undefined
     const contentType = response.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {
       try {
@@ -32,7 +34,8 @@ export class CodeBuddyApi {
         throw new CodeBuddyApiError(502, 'CodeBuddy returned invalid JSON.')
       }
     }
-    return response.text()
+    const text = await response.text()
+    return text.length > 0 ? text : undefined
   }
 
   async openStream(port: number, path: string, signal: AbortSignal, lastEventId?: string): Promise<Response> {

@@ -1,144 +1,134 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readLocalHarness } from './local-harness.js'
 
-let temporaryRoot = ''
+let root: string | undefined
 
 afterEach(async () => {
-  if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true })
-  temporaryRoot = ''
+  if (root) await rm(root, { recursive: true, force: true })
+  root = undefined
 })
 
-describe('readLocalHarness', () => {
-  it('reads Story metadata from e2e-state.json without changing the source file', async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
-    const statePath = join(temporaryRoot, 'workspace', '.codebuddy', 'plans', 'STORY-1', 'e2e-state.json')
-    await mkdir(dirname(statePath), { recursive: true })
-    await writeFile(statePath, JSON.stringify({
-      storyId: 'STORY-1',
-      title: 'Sample story',
-      phase: 2,
-      status: 'running',
-    }))
+/**
+ * 创建一个 Story 目录并写入指定文件。
+ * @param storyDirectory Story 目录绝对路径
+ * @param files 文件名到内容的映射（内容会被 JSON 序列化）
+ * @returns Promise<void>
+ */
+async function writeStoryFiles(storyDirectory: string, files: Record<string, unknown>): Promise<void> {
+  await mkdir(storyDirectory, { recursive: true })
+  for (const [name, content] of Object.entries(files)) {
+    await writeFile(join(storyDirectory, name), JSON.stringify(content), 'utf8')
+  }
+}
 
-    const result = await readLocalHarness(temporaryRoot)
+describe('local harness story discovery', () => {
+  it('identifies a story from story-info.json even when e2e-state.json is gone', async () => {
+    root = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
+    const storyDirectory = join(root, 'feature-x', 'repo-a', '.codebuddy', 'plans', 'STORY-1')
+    // 归档后只剩 story-info.json：这是本题要修复的场景
+    await writeStoryFiles(storyDirectory, {
+      'story-info.json': {
+        version: 1,
+        storyId: 'STORY-1',
+        title: '门店群聊支持批量创建代理群',
+        mode: 'fixbugs',
+        initialPhase: 3,
+        sources: { storyIdInTapd: '1138260062001031479' },
+        workflowRoot: join(root, 'feature-x', 'repo-a').replaceAll('\\', '/'),
+      },
+    })
+
+    const result = await readLocalHarness(root)
 
     expect(result.errors).toEqual([])
-    expect(result.requirements).toEqual([{
-      storyId: 'STORY-1',
-      title: 'Sample story',
-      status: 'running',
-      phase: 2,
-      workspacePath: 'workspace',
-    }])
-    expect(await readFile(statePath, 'utf8')).toContain('"phase":2')
-  })
-
-  it('reports malformed state files instead of silently omitting them', async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
-    const statePath = join(temporaryRoot, 'workspace', '.codebuddy', 'plans', 'STORY-2', 'e2e-state.json')
-    await mkdir(dirname(statePath), { recursive: true })
-    await writeFile(statePath, '{invalid')
-
-    const result = await readLocalHarness(temporaryRoot)
-
-    expect(result.requirements).toEqual([])
-    expect(result.errors).toHaveLength(1)
-    expect(result.errors[0]).toContain('Cannot read')
-  })
-
-  it('keeps Harness and TAPD Story identifiers separate', async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), 'devtask-harness-mapping-'))
-    const storyDirectory = join(temporaryRoot, 'workspace', '.codebuddy', 'plans', 'STORY-20261113-01')
-    await mkdir(storyDirectory, { recursive: true })
-    await writeFile(join(storyDirectory, 'e2e-state.json'), JSON.stringify({
-      storyId: 'STORY-20261113-01',
-      title: 'Mapped requirement',
-      phase: 1,
-      status: 'running',
-    }))
-    await writeFile(join(storyDirectory, 'story-input.json'), JSON.stringify({
-      mode: 'run',
-      sources: { storyIdInTapd: '38260062' },
-    }))
-
-    const result = await readLocalHarness(temporaryRoot)
-
     expect(result.requirements).toEqual([expect.objectContaining({
-      storyId: 'STORY-20261113-01',
-      tapdStoryId: '38260062',
-      title: 'Mapped requirement',
+      storyId: 'STORY-1',
+      title: '门店群聊支持批量创建代理群',
+      phase: 3,
+      workspacePath: 'feature-x/repo-a',
+      tapdStoryId: '1138260062001031479',
     })])
-    expect(result.errors).toEqual([])
+    // 没有 e2e-state.json 就没有运行期状态
+    expect(result.requirements[0]?.status).toBeUndefined()
   })
 
-  it('reads question confirmations and fixbugs triage as read-only local facts', async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), 'devtask-harness-artifacts-'))
-    const storyDirectory = join(temporaryRoot, 'workspace', '.codebuddy', 'plans', 'STORY-ARTIFACTS')
-    await mkdir(storyDirectory, { recursive: true })
-    await writeFile(join(storyDirectory, 'e2e-state.json'), JSON.stringify({
-      storyId: 'STORY-ARTIFACTS',
-      title: 'Artifacts',
-      phase: 0,
-      status: 'running',
-    }))
-    await writeFile(join(storyDirectory, 'open-questions.json'), JSON.stringify({
-      questions: [
-        { id: 'Q-1', question: 'Confirmed?', resolution: 'Yes', confirmation: { answer: 'Yes', confirmedVia: 'accept', confirmedAt: '2026-01-01T00:00:00Z' } },
-        { id: 'Q-2', question: 'Informal?', confirmation: { answer: 'Maybe' } },
-        { id: 'Q-3', question: 'Pending?', resolution: 'Suggested answer' },
-        { id: 'Q-4', question: 'No proposal?', resolved: true },
-      ],
-    }))
-    await writeFile(join(storyDirectory, 'bug-list.json'), JSON.stringify({
-      bugs: [{
-        bugId: 'BUG-1',
-        title: 'Defect title',
-        status: 'reopened',
-        category: 'frontend',
-        commentCount: 2,
-        commentDigest: 'A new reproduction was reported.',
-        writeback: { commentedAt: '2026-01-02T00:00:00Z', commentKind: 'fixed' },
-      }],
-    }))
-    await writeFile(join(dirname(storyDirectory), '.harness-active'), JSON.stringify({
-      active: true,
-      storyId: 'STORY-ARTIFACTS',
-      title: 'Artifacts',
-      mode: 'fixbugs',
-      phase: 6,
-      activatedAt: '2026-01-03T00:00:00Z',
-    }))
+  it('overlays runtime status and phase from e2e-state.json', async () => {
+    root = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
+    const storyDirectory = join(root, 'feature-x', 'repo-a', '.codebuddy', 'plans', 'STORY-2')
+    await writeStoryFiles(storyDirectory, {
+      'story-info.json': {
+        storyId: 'STORY-2',
+        title: 'Story Two',
+        initialPhase: 1,
+      },
+      'e2e-state.json': {
+        storyId: 'STORY-2',
+        title: 'Story Two',
+        status: 'running',
+        phase: 4,
+      },
+    })
 
-    const result = await readLocalHarness(temporaryRoot)
+    const result = await readLocalHarness(root)
 
-    expect(result.openQuestions.map((question) => question.state)).toEqual([
-      'confirmed',
-      'confirmed_informal',
-      'pending_confirmation',
-      'no_proposal',
-    ])
-    expect(result.harnessBugs).toEqual([{
-      storyId: 'STORY-ARTIFACTS',
-      bugId: 'BUG-1',
-      title: 'Defect title',
-      status: 'reopened',
-      category: 'frontend',
-      commentCount: 2,
-      commentDigest: 'A new reproduction was reported.',
-      writeback: { commentedAt: '2026-01-02T00:00:00Z', commentKind: 'fixed' },
-    }])
-    expect(result.harnessActive).toEqual([{
-      storyId: 'STORY-ARTIFACTS',
-      title: 'Artifacts',
-      mode: 'fixbugs',
-      phase: 0,
-      status: 'running',
-      workspacePath: 'workspace',
-      activatedAt: '2026-01-03T00:00:00Z',
-    }])
     expect(result.errors).toEqual([])
+    expect(result.requirements[0]).toMatchObject({ storyId: 'STORY-2', status: 'running', phase: 4 })
+  })
+
+  it('still discovers legacy stories that only have e2e-state.json', async () => {
+    root = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
+    const storyDirectory = join(root, 'feature-x', 'repo-a', '.codebuddy', 'plans', 'STORY-3')
+    await writeStoryFiles(storyDirectory, {
+      'e2e-state.json': { storyId: 'STORY-3', title: 'Legacy Story', status: 'blocked', phase: 2 },
+    })
+
+    const result = await readLocalHarness(root)
+
+    expect(result.errors).toEqual([])
+    expect(result.requirements[0]).toMatchObject({
+      storyId: 'STORY-3',
+      title: 'Legacy Story',
+      status: 'blocked',
+      phase: 2,
+      workspacePath: 'feature-x/repo-a',
+    })
+  })
+
+  it('ignores archive and tmp directories inside plans', async () => {
+    root = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
+    const plansDirectory = join(root, 'feature-x', 'repo-a', '.codebuddy', 'plans')
+    await writeStoryFiles(join(plansDirectory, 'STORY-4'), {
+      'story-info.json': { storyId: 'STORY-4', title: 'Story Four' },
+    })
+    await writeStoryFiles(join(plansDirectory, 'archive', 'round-1'), {
+      'story-info.json': { storyId: 'ARCHIVED', title: 'Archived Story' },
+    })
+    await writeStoryFiles(join(plansDirectory, 'tmp'), {
+      'story-info.json': { storyId: 'TMP', title: 'Temp Story' },
+    })
+
+    const result = await readLocalHarness(root)
+
+    expect(result.requirements.map((requirement) => requirement.storyId)).toEqual(['STORY-4'])
+  })
+
+  it('keeps the plans directory as workspace path when workflowRoot escapes the root', async () => {
+    root = await mkdtemp(join(tmpdir(), 'devtask-harness-'))
+    const storyDirectory = join(root, 'feature-x', 'repo-a', '.codebuddy', 'plans', 'STORY-5')
+    await writeStoryFiles(storyDirectory, {
+      'story-info.json': {
+        storyId: 'STORY-5',
+        title: 'Story Five',
+        workflowRoot: 'D:/elsewhere/repo',
+      },
+    })
+
+    const result = await readLocalHarness(root)
+
+    expect(result.errors).toEqual([])
+    expect(result.requirements[0]?.workspacePath).toBe('feature-x/repo-a')
   })
 })

@@ -7,6 +7,7 @@ import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
 import { WorkspaceInitializer } from './workspaces/initializer.js'
 import { StoryServiceSupervisor } from './services/story-service-supervisor.js'
+import { AuditLog } from './services/audit-log.js'
 import { CronMappingStore } from './aggregator/cron-data.js'
 
 const accessToken = 'c'.repeat(64)
@@ -27,6 +28,8 @@ describe('read-only integration API', () => {
       token: accessToken,
       logger: false,
       cronMappingStore: new CronMappingStore(dataDirectory),
+      // 审计流水必须落在临时目录，避免测试写入真实数据目录
+      auditLog: new AuditLog(dataDirectory),
       snapshotProvider: async () => ({
         snapshotAt: '2026-01-01T00:00:00.000Z',
         channels: {},
@@ -49,20 +52,29 @@ describe('read-only integration API', () => {
       url: '/api/v1/crons/task-1/mapping',
       payload: { storyId: 'STORY-1', ownerSessionId: 'owner-1', mode: 'query_only' },
     })
-    const saved = await app.inject({
+    // 默认要求校验 owner 会话归属；该用例没有启动服务，因此先断言拒绝，再显式关闭校验
+    const unverified = await app.inject({
       method: 'PUT',
       url: '/api/v1/crons/task-1/mapping',
       headers: { 'x-devtask-token': accessToken },
       payload: { storyId: 'STORY-1', ownerSessionId: 'owner-1', mode: 'query_only' },
     })
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/crons/task-1/mapping',
+      headers: { 'x-devtask-token': accessToken },
+      payload: { storyId: 'STORY-1', ownerSessionId: 'owner-1', mode: 'query_only', verify: false },
+    })
     const mismatch = await app.inject({
       method: 'PUT',
       url: '/api/v1/crons/task-1/mapping',
       headers: { 'x-devtask-token': accessToken },
-      payload: { storyId: 'STORY-2', ownerSessionId: 'owner-1', mode: 'query_fix' },
+      payload: { storyId: 'STORY-2', ownerSessionId: 'owner-1', mode: 'query_fix', verify: false },
     })
 
     expect(unauthorized.statusCode).toBe(401)
+    expect(unverified.statusCode).toBe(409)
+    expect(unverified.json()).toMatchObject({ error: { code: 'STORY_SERVICE_NOT_STARTED' } })
     expect(saved.json()).toEqual({
       taskId: 'task-1',
       storyId: 'STORY-1',
@@ -244,6 +256,8 @@ describe('read-only integration API', () => {
     expect(response.statusCode).toBe(200)
     expect(response.json()).toEqual({
       storyId: 'STORY-1',
+      // 端口由服务注册表分配，前端需要它展示「端口就绪」状态
+      port: response.json().port,
       status: 'running',
       updatedAt: '2026-01-01T00:00:00.000Z',
     })

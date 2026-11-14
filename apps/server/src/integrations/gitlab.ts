@@ -1,3 +1,4 @@
+import type { MergeRequestDiffSummary } from '@devtask/shared'
 import { loadMcpServerConfig } from './mcp-config.js'
 
 interface GitLabCredentials {
@@ -180,6 +181,52 @@ export class GitLabAdapter {
     }
   }
 
+  /**
+   * 读取 MR 的 diff 摘要：变更文件数、增删行与热点文件。
+   * 大 MR 的 diff 响应可能非常大，这里限制参与统计的文件数，
+   * 超出时把 truncated 置为 true，只保证「已统计部分」准确。
+   * @param projectId GitLab 项目 ID
+   * @param iid MR 的 iid
+   * @param maxFiles 参与统计的文件数上限，默认 50
+   * @returns diff 摘要
+   */
+  async getMergeRequestDiffSummary(
+    projectId: number,
+    iid: string,
+    maxFiles = 50,
+  ): Promise<MergeRequestDiffSummary> {
+    const credentials = await this.requireCredentials()
+    const result = await this.request(
+      credentials,
+      `/projects/${projectId}/merge_requests/${encodeURIComponent(iid)}/changes`,
+    )
+    if (!isRecord(result) || !Array.isArray(result.changes)) {
+      throw new Error('GitLab returned an invalid merge request changes response.')
+    }
+    const limit = Math.max(1, Math.min(200, Math.trunc(maxFiles)))
+    const changes = result.changes.slice(0, limit)
+    let additions = 0
+    let deletions = 0
+    const hotFiles: Array<{ path: string; weight: number }> = []
+    for (const change of changes) {
+      if (!isRecord(change) || typeof change.new_path !== 'string') {
+        throw new Error('GitLab returned a changed file with an invalid shape.')
+      }
+      const stats = countDiffLines(typeof change.diff === 'string' ? change.diff : '')
+      additions += stats.additions
+      deletions += stats.deletions
+      hotFiles.push({ path: change.new_path, weight: stats.additions + stats.deletions })
+    }
+    hotFiles.sort((left, right) => right.weight - left.weight || left.path.localeCompare(right.path))
+    return {
+      filesChanged: result.changes.length,
+      additions,
+      deletions,
+      hotFiles: hotFiles.slice(0, 5).map((file) => file.path),
+      truncated: result.changes.length > limit,
+    }
+  }
+
   private async getCredentials(): Promise<GitLabCredentials | null> {
     const config = await loadMcpServerConfig('GitLab')
     if (!config) return null
@@ -228,6 +275,23 @@ export class GitLabAdapter {
       throw new Error('GitLab returned invalid JSON.')
     }
   }
+}
+
+/**
+ * 统计单个文件 diff 的新增与删除行数。
+ * 只统计以单个 `+`/`-` 开头的内容行，跳过 diff 头部的 `+++`/`---` 标记。
+ * @param diff 文件 diff 文本
+ * @returns 新增与删除行数
+ */
+function countDiffLines(diff: string): { additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue
+    if (line.startsWith('+')) additions += 1
+    else if (line.startsWith('-')) deletions += 1
+  }
+  return { additions, deletions }
 }
 
 /**

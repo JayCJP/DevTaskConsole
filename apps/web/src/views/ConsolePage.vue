@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Files } from '@element-plus/icons-vue'
 import {
   applicationMappingSchema,
   defaultDevOpsGroup,
+  mergeRequestDiffSummarySchema,
   mergeRequestSchema,
   repositoryCandidateSchema,
   resumableSessionSchema,
@@ -14,9 +14,12 @@ import {
   type Requirement,
   type ApplicationMapping,
   type Cron,
+  type CronMode,
+  type DeployFact,
   type InboxItem,
   type Job,
   type MergeRequest,
+  type MergeRequestDiffSummary,
   type RepositoryCandidate,
   type WorkspaceDeleteResult,
   type WorkspaceInitializationJob,
@@ -25,14 +28,25 @@ import {
   type WorkspaceSummary,
 } from '@devtask/shared'
 import { z } from 'zod'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ApiError, apiRequest } from '../api/client'
+import AuditTrailDrawer from '../components/AuditTrailDrawer.vue'
+import CronEditorDialog from '../components/CronEditorDialog.vue'
+import CronExecutionList from '../components/CronExecutionList.vue'
 import CronTaskRow from '../components/CronTaskRow.vue'
+import PipelineFlow from '../components/PipelineFlow.vue'
+import InstanceStoryCard from '../components/InstanceStoryCard.vue'
+import { useAuditTrail } from '../composables/useAuditTrail'
 import { useBoardStories } from '../composables/useBoardStories'
+import { useCronActions } from '../composables/useCronActions'
+import { useCronExecutions } from '../composables/useCronExecutions'
+import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
 import { useConsoleStore } from '../stores/console'
+import { buildMappingRows } from '../utils/application-mapping'
 import { filterOwnBuilds, filterOwnMergeRequests } from '../utils/release-filter'
 
 const route = useRoute()
+const router = useRouter()
 const store = useConsoleStore()
 /** 看板：TAPD 需求 × 本地工作区绑定 */
 const board = reactive(useBoardStories())
@@ -68,22 +82,65 @@ const detailOpen = computed({
 const search = ref('')
 const repositoryCandidates = ref<RepositoryCandidate[]>([])
 const selectedRepositoryNames = ref<string[]>([])
+/** 已保存的差异映射：服务端只返回与默认约定不一致、经人工确认的记录 */
 const applicationMappings = ref<ApplicationMapping[]>([])
-/** 每个仓库的映射草稿：只有与“同名默认”不一致时才需要保存 */
-const mappingDrafts = ref<Record<string, {
-  gitlabProjectId?: number
-  devopsApp: string
-  devopsGroup: string
-  projects: Array<{ id: number; pathWithNamespace: string }>
-  loadingProjects: boolean
-  saving: boolean
-  /** 是否已保存过差异映射 */
-  saved: boolean
-  error: string
-}>>({})
+/** GitLab 项目候选项，仅用于人工选择 */
+type MappingProjectOption = { id: number; pathWithNamespace: string }
+/** 映射表单弹窗开关 */
+const mappingDialogOpen = ref(false)
+/** 正在编辑的仓库名；null 表示新增 */
+const mappingEditingRepo = ref<string | null>(null)
+/** 新增与编辑共用的表单草稿，留空字段表示沿用默认 */
+const mappingForm = ref({
+  repoName: '',
+  gitlabProjectId: undefined as number | undefined,
+  devopsApp: '',
+  devopsGroup: '',
+})
+/** GitLab 搜索结果只作候选，不会自动采用 */
+const mappingProjectOptions = ref<MappingProjectOption[]>([])
+const mappingProjectsLoading = ref(false)
+const mappingFormError = ref('')
+const mappingSaving = ref(false)
+/** 正在「恢复默认」的仓库名 */
+const mappingRemoving = ref('')
 const candidatesLoading = ref(false)
 const candidatesError = ref('')
 const mappingsError = ref('')
+
+/**
+ * 列表数据 = 一份默认规则 + 人工确认的差异映射。
+ * 同名的仓库不产生数据行，未变动的字段折叠为「沿用默认」，只突出变动项。
+ */
+const mappingRows = computed(() => buildMappingRows(applicationMappings.value))
+
+/** 新增映射时可选的仓库：扫描到的候选中排除已有差异映射的仓库 */
+const mappingRepoOptions = computed(() => {
+  const mapped = new Set(applicationMappings.value.map((mapping) => mapping.repoName))
+  return repositoryCandidates.value.map((candidate) => candidate.name).filter((name) => !mapped.has(name))
+})
+
+/** 弹窗标题：编辑时带仓库名，便于确认操作对象 */
+const mappingDialogTitle = computed(() => mappingEditingRepo.value ? `编辑映射 · ${mappingEditingRepo.value}` : '新增映射')
+
+/**
+ * 表单是否偏离默认约定。与默认一致时无需落盘，避免生成无意义的记录。
+ */
+const mappingFormChanged = computed(() => {
+  const form = mappingForm.value
+  const repoName = form.repoName.trim()
+  return typeof form.gitlabProjectId === 'number'
+    || (form.devopsApp.trim() !== '' && form.devopsApp.trim() !== repoName)
+    || (form.devopsGroup.trim() !== '' && form.devopsGroup.trim() !== defaultDevOpsGroup)
+})
+
+/** 是否允许提交映射表单 */
+const canSubmitMappingForm = computed(() =>
+  mappingForm.value.repoName.trim().length > 0 && mappingFormChanged.value && !mappingSaving.value)
+
+/** 扫描完成但没有候选仓库时才提示，避免与加载态、错误态叠加 */
+const showNoRepositoryHint = computed(() =>
+  !candidatesLoading.value && repositoryCandidates.value.length === 0 && !candidatesError.value)
 const workspaceName = ref('')
 const branch = ref('')
 const baseBranch = ref('')
@@ -137,9 +194,25 @@ const workspaceRunning = computed(() => workspaceJob.value?.status === 'running'
 
 /** 已选项目数量的展示文案 */
 const selectedRepositoryLabel = computed(() => `已选择 ${selectedRepositoryNames.value.length} 个`)
-const storyServices = ref<Record<string, { status: string; updatedAt: string; error?: string }>>({})
-const startingStoryService = ref<string | null>(null)
-const storyServiceError = ref('')
+/**
+ * Story 服务生命周期与运行期监督。
+ * 服务的启动、停止、删除映射与监督事件都由它统一管理，页面只负责渲染。
+ */
+const lifecycle = useServiceLifecycle({ onChange: async () => { await store.refresh() } })
+/** Story ID → 服务状态（模板沿用既有命名） */
+const storyServices = lifecycle.services
+/** 正在操作的 Story ID */
+const startingStoryService = lifecycle.loadingStoryId
+/** 服务操作错误 */
+const storyServiceError = lifecycle.error
+/** 未关闭的运行期监督事件（模板需要顶层绑定才能自动解包） */
+const activeServiceEvents = lifecycle.activeEvents
+/** 是否存在 error 级监督事件 */
+const hasServiceFailure = lifecycle.hasServiceFailure
+/** 关闭一条监督事件 */
+const dismissServiceEvent = lifecycle.dismissEvent
+/** 读取某个 Story 最近的服务操作失败原因 */
+const serviceErrorOf = lifecycle.errorOf
 const storyJobs = ref<Job[]>([])
 const selectedJob = ref<Job | null>(null)
 const selectedStoryId = ref('')
@@ -164,6 +237,119 @@ const cronMappingDrafts = ref<Record<string, {
   saving: boolean
   error: string
 }>>({})
+/** 定时任务写操作错误 */
+const cronError = ref('')
+/** 定时任务搜索关键词 */
+const cronQuery = ref('')
+/** 定时任务状态筛选 */
+const cronStatusFilter = ref<'all' | 'enabled' | 'paused' | 'attention'>('all')
+/** 定时任务写操作：乐观更新、失败回滚与撤销提示 */
+const cronActions = useCronActions({
+  onRefresh: () => store.refresh(),
+  onError: (message: string) => { cronError.value = message },
+})
+/** 行内执行记录 */
+const cronExecutions = useCronExecutions()
+/** 当前展开执行记录的任务 ID */
+const expandedCronId = ref('')
+/** cron 编辑弹层开关 */
+const cronEditorOpen = ref(false)
+/** 正在编辑的任务；为空表示新建 */
+const editingCron = ref<Cron | null>(null)
+/** 新建任务的目标 Story */
+const editorStoryId = ref('')
+/** 编辑保存中 */
+const cronSaving = ref(false)
+/** 编辑保存错误 */
+const cronEditorError = ref('')
+/** 审计抽屉开关 */
+const auditOpen = ref(false)
+/** 审计流水与撤销 */
+const auditTrail = useAuditTrail(async () => { await store.refresh() })
+/* 组合式函数返回的 ref 需要顶层绑定，模板才会自动解包 */
+/** 执行记录列表 */
+const cronExecutionRows = cronExecutions.executions
+/** 执行记录加载中 */
+const cronExecutionsLoading = cronExecutions.loading
+/** 执行记录错误 */
+const cronExecutionsError = cronExecutions.error
+/** 执行记录来源 */
+const cronExecutionsSource = cronExecutions.source
+/** 执行记录兜底告警 */
+const cronExecutionsWarning = cronExecutions.warning
+/** 执行记录是否还有下一页 */
+const cronExecutionsHasMore = cronExecutions.hasMore
+/** 撤销提示条 */
+const cronNotices = cronActions.notices
+/** 正在处理的任务 ID */
+const cronBusyTaskId = cronActions.busyTaskId
+/** 审计条目 */
+const auditEntries = auditTrail.entries
+/** 审计加载中 */
+const auditLoading = auditTrail.loading
+/** 审计错误 */
+const auditError = auditTrail.error
+/** 正在撤销的审计条目 */
+const auditUndoingId = auditTrail.undoingId
+
+/**
+ * 按任务与过滤条件加载执行记录（模板调用的薄封装）。
+ * @param taskId 任务 ID
+ * @param filters 过滤条件
+ * @returns Promise<void>
+ */
+async function loadCronExecutions(
+  taskId: string,
+  filters: { status?: 'queued' | 'running' | 'succeeded' | 'failed'; query?: string },
+): Promise<void> {
+  await cronExecutions.load(taskId, filters)
+}
+
+/**
+ * 加载更多执行记录（模板调用的薄封装）。
+ * @returns Promise<void>
+ */
+async function loadMoreCronExecutions(): Promise<void> {
+  await cronExecutions.loadMore()
+}
+
+/**
+ * 刷新审计流水（模板调用的薄封装）。
+ * @returns Promise<void>
+ */
+async function refreshAuditTrail(): Promise<void> {
+  await auditTrail.refresh()
+}
+
+/**
+ * 撤销一条审计动作（模板调用的薄封装）。
+ * @param id 审计条目 ID
+ * @returns Promise<void>
+ */
+async function undoAuditEntry(id: string): Promise<void> {
+  await auditTrail.undo(id)
+}
+
+/**
+ * 撤销定时任务动作（撤销提示条调用）。
+ * @param auditId 审计条目 ID
+ * @returns Promise<void>
+ */
+async function undoCronAction(auditId: string): Promise<void> {
+  await cronActions.undo(auditId)
+}
+
+/**
+ * 关闭一条撤销提示。
+ * @param id 提示 ID
+ */
+function dismissCronNotice(id: string): void {
+  cronActions.dismiss(id)
+}
+/** 发布口径事实（R16 / R17） */
+const releaseFacts = ref<DeployFact[]>([])
+/** MR diff 摘要，按 `projectId:iid` 缓存 */
+const mergeRequestSummaries = ref<Record<string, MergeRequestDiffSummary>>({})
 let jobStreamController: AbortController | undefined
 let workspacePollTimer: ReturnType<typeof setTimeout> | undefined
 const page = computed(() => String(route.meta.page ?? 'inbox'))
@@ -270,7 +456,11 @@ const inboxGroups = computed<InboxWorkspaceGroup[]>(() => {
     return left.name.localeCompare(right.name, 'zh-Hans-CN')
   })
 })
-const crons = computed(() => store.snapshot?.crons ?? [])
+/** 定时任务列表：快照事实 + 本地乐观覆盖（覆盖仅用于写操作期间的即时反馈） */
+const crons = computed<Cron[]>(() => (store.snapshot?.crons ?? []).map((cron) => {
+  const override = cronActions.overrides.value[cron.id]
+  return override ? { ...cron, ...override } : cron
+}))
 const jobs = computed(() => [...(store.snapshot?.jobs ?? []), ...storyJobs.value])
 const storyServiceRequirements = computed(() => requirements.value.filter((requirement) => requirement.workspacePath))
 /** 工作区流水线视图：一个工作区一条流水线，最多一个 Story */
@@ -398,8 +588,141 @@ const cronGroups = computed<CronGroup[]>(() => {
   return groups
 })
 
+/**
+ * 右侧工作区当前上下文对应的 Story。
+ * 优先从实例分组取（带工作区信息），分组缺失时回退到快照需求，保证深链或数据刷新后不丢上下文。
+ * @returns 当前 Story；未选择时返回 undefined
+ */
+const currentStory = computed<Requirement | undefined>(() => {
+  if (!selectedStoryId.value) return undefined
+  const grouped = instanceGroups.value
+    .flatMap((group) => group.stories)
+    .find((requirement) => requirement.storyId === selectedStoryId.value)
+  if (grouped) return grouped
+  return store.snapshot?.requirements.find((row) => row.storyId === selectedStoryId.value)
+})
+
+/** 当前 Story 的服务登记（未启动时缺省） */
+const currentService = computed<StoryServiceInfo | undefined>(() => (
+  selectedStoryId.value ? storyServices.value[selectedStoryId.value] : undefined
+))
+
+/** 当前服务的状态点样式 */
+const currentServiceDot = computed(() => {
+  const status = currentService.value?.status
+  if (status === 'running') return 'is-active'
+  if (status === 'failed') return 'is-error'
+  return ''
+})
+
+/** 当前服务的中文状态 */
+const currentServiceLabel = computed(() => {
+  const status = currentService.value?.status
+  if (status === 'running') return '运行中'
+  if (status === 'starting') return '启动中'
+  if (status === 'failed') return '异常'
+  if (status === 'stopped') return '已停止'
+  return '未启动'
+})
+
+/** 当前服务状态徽标样式 */
+const currentServiceClass = computed(() => {
+  const status = currentService.value?.status
+  if (status === 'running') return 'tag-success'
+  if (status === 'failed') return 'tag-danger'
+  if (status === 'stopped') return ''
+  return 'tag-warning'
+})
+
+/** 当前服务的端口文案 */
+const currentPortLabel = computed(() => (
+  currentService.value?.port ? `端口 ${currentService.value.port}` : '端口未分配'
+))
+
+/** 当前 Story 的服务是否在运行；未运行时禁止创建实例/恢复会话 */
+const currentServiceRunning = computed(() => currentService.value?.status === 'running')
+
+/** 当前选中实例的状态徽标样式 */
+const currentJobClass = computed(() => (selectedJob.value?.status === 'busy' ? 'tag-success' : ''))
+
+/** 当前选中实例的状态文案 */
+const currentJobLabel = computed(() => (selectedJob.value?.status === 'busy' ? '执行中' : '空闲'))
+
+/** 当前选中实例的 session 摘要，长 ID 只保留尾段以便辨认 */
+const currentJobSession = computed(() => {
+  const sessionId = selectedJob.value?.sessionId
+  if (!sessionId) return '无 session'
+  return sessionId.length > 12 ? `session …${sessionId.slice(-8)}` : `session ${sessionId}`
+})
+
 /** 定时页是否一条任务都没有（用于空态提示） */
 const cronGroupsEmpty = computed(() => crons.value.length === 0)
+/** 运行中的任务数量 */
+const activeCronCount = computed(() => crons.value.filter((cron) => cron.enabled === true).length)
+/** 已暂停的任务数量 */
+const pausedCronCount = computed(() => crons.value.filter((cron) => cron.enabled === false).length)
+
+/**
+ * 判断任务是否缺少必要配置或尚未完成归属校验。
+ * @param cron 定时任务
+ * @returns 需要处理时返回 true
+ */
+function cronNeedsAttention(cron: Cron): boolean {
+  return !cron.storyId || !cron.ownerSessionId || !cron.ownerVerifiedAt || !cron.mode
+}
+
+/** 待完善配置的任务数量 */
+const attentionCronCount = computed(() => crons.value.filter(cronNeedsAttention).length)
+
+/**
+ * 判断任务是否匹配当前关键词与状态筛选。
+ * @param cron 定时任务
+ * @param query 已转为小写的搜索关键词
+ * @returns 匹配时返回 true
+ */
+function matchesCronFilters(cron: Cron, query: string): boolean {
+  const matchesStatus = cronStatusFilter.value === 'all'
+    || (cronStatusFilter.value === 'enabled' && cron.enabled === true)
+    || (cronStatusFilter.value === 'paused' && cron.enabled === false)
+    || (cronStatusFilter.value === 'attention' && cronNeedsAttention(cron))
+  if (!matchesStatus) return false
+  if (!query) return true
+  const searchable = [cron.id, cron.storyTitle, cron.storyId, cron.cron, cron.promptFirstLine, cron.ownerSessionId]
+    .filter(Boolean)
+    .join(' ')
+    .toLocaleLowerCase()
+  return searchable.includes(query)
+}
+
+/** 应用搜索与状态筛选后的定时任务分组 */
+const visibleCronGroups = computed<CronGroup[]>(() => {
+  const query = cronQuery.value.trim().toLocaleLowerCase()
+  return cronGroups.value.map((group) => ({
+    ...group,
+    stories: group.stories.map((story) => ({
+      ...story,
+      crons: story.crons.filter((cron) => matchesCronFilters(cron, query)),
+    })).filter((story) => story.crons.length > 0),
+    looseCrons: group.looseCrons.filter((cron) => matchesCronFilters(cron, query)),
+    unassignedCrons: group.unassignedCrons.filter((cron) => matchesCronFilters(cron, query)),
+  })).filter((group) => group.stories.length > 0 || group.looseCrons.length > 0 || group.unassignedCrons.length > 0)
+})
+
+/** 当前筛选结果中的任务数量 */
+const filteredCronCount = computed(() => visibleCronGroups.value.reduce((total, group) => (
+  total + group.looseCrons.length + group.unassignedCrons.length
+  + group.stories.reduce((storyTotal, story) => storyTotal + story.crons.length, 0)
+), 0))
+
+/** 是否已设置搜索或筛选条件 */
+const cronHasActiveFilters = computed(() => Boolean(cronQuery.value.trim()) || cronStatusFilter.value !== 'all')
+
+/** 清空定时任务搜索与状态筛选。 */
+function resetCronFilters(): void {
+  cronQuery.value = ''
+  cronStatusFilter.value = 'all'
+}
+
 const pageHeading = computed(() => page.value === 'tools' ? '连接与配置' : String(route.meta.title ?? 'DevTask'))
 
 watch([page, () => store.snapshot?.requirements.length], ([value]) => {
@@ -410,11 +733,15 @@ watch([page, () => store.snapshot?.requirements.length], ([value]) => {
   if (value === 'instances') void refreshStoryServices()
   // 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取
   if (value === 'board') void board.load()
+  // 发布页需要额外的部署口径事实，与其他页面数据分开拉取
+  if (value === 'releases') void loadReleaseFacts()
 }, { immediate: true })
 
 // 刷新页面或直接进入深链接时，确保快照至少拉取一次，避免首屏空数据
 onMounted(() => {
   void store.ensureLoaded()
+  // 运行期监督事件由后端巡检产生，页面按固定间隔拉取
+  lifecycle.startEventPolling()
 })
 
 watch(crons, (rows) => {
@@ -451,6 +778,22 @@ function openRequirement(requirement: Requirement): void {
   selectedRequirement.value = requirement
 }
 
+/**
+ * 打开最近一次构建的制品页（只读跳转）。
+ * @param build 构建记录
+ */
+function openBuildArtifact(build: { fileUrl?: string }): void {
+  if (build.fileUrl) window.open(build.fileUrl, '_blank', 'noreferrer')
+}
+
+/**
+ * 流水线定时节点跳转到定时任务页。
+ * @returns Promise<void>，忽略导航结果
+ */
+function goCrons(): void {
+  void router.push('/crons')
+}
+
 async function openMergeRequest(mergeRequest: MergeRequest): Promise<void> {
   mergeRequestLoading.value = true
   mergeRequestError.value = ''
@@ -464,80 +807,291 @@ async function openMergeRequest(mergeRequest: MergeRequest): Promise<void> {
   } finally {
     mergeRequestLoading.value = false
   }
+  // diff 摘要属于增强信息，单独请求，失败不影响审批与文件清单展示
+  await loadMergeRequestSummary(mergeRequest)
 }
 
+/**
+ * 拉取 MR diff 摘要（变更文件数、增删行、热点文件）。
+ * @param mergeRequest 目标 MR
+ * @returns Promise<void>
+ */
+async function loadMergeRequestSummary(mergeRequest: MergeRequest): Promise<void> {
+  const key = `${mergeRequest.projectId}:${mergeRequest.id}`
+  if (mergeRequestSummaries.value[key]) return
+  try {
+    const summary = mergeRequestDiffSummarySchema.parse(await apiRequest<unknown>(
+      `/api/v1/gitlab/projects/${mergeRequest.projectId}/merge-requests/${encodeURIComponent(mergeRequest.id)}/diff-summary`,
+    ))
+    mergeRequestSummaries.value = { ...mergeRequestSummaries.value, [key]: summary }
+  } catch {
+    // 摘要失败时保持缺省，页面对应位置显示「无法确认」
+  }
+}
+
+/**
+ * 读取 MR 的 diff 摘要缓存。
+ * @param mergeRequest 目标 MR
+ * @returns 摘要；未加载或不支持时返回 undefined
+ */
+function mergeRequestSummary(mergeRequest: MergeRequest): MergeRequestDiffSummary | undefined {
+  return mergeRequestSummaries.value[`${mergeRequest.projectId}:${mergeRequest.id}`]
+}
+
+/**
+ * 判断 MR 是否处于「Phase 4 但未合并」的阻断状态。
+ * 属于该 Story 且当前阶段为 4、MR 尚未合并时需要提示「确认已合并再进入 Phase 5」。
+ * @param mergeRequest 目标 MR
+ * @returns 需要阻断提示时返回 true
+ */
+function isMergeBlocked(mergeRequest: MergeRequest): boolean {
+  if (!mergeRequest.storyId) return false
+  const requirement = store.snapshot?.requirements.find((row) => row.storyId === mergeRequest.storyId)
+  return requirement?.phase === 4 && mergeRequest.state !== 'merged'
+}
+
+/**
+ * 拉取发布口径事实（R16 部署版本、R17 dev/test 关系）。
+ * 应用名取本页第一条构建或分支记录的应用；无数据时不发请求。
+ * @returns Promise<void>
+ */
+async function loadReleaseFacts(): Promise<void> {
+  const app = myBuilds.value[0]?.app ?? branches.value[0]?.app
+  if (!app) return
+  try {
+    const facts = await apiRequest<{ deployment: DeployFact; environment: DeployFact }>(
+      `/api/v1/release/facts?app=${encodeURIComponent(app)}`,
+    )
+    releaseFacts.value = [facts.deployment, facts.environment]
+  } catch {
+    releaseFacts.value = []
+  }
+}
+
+/**
+ * 保存 owner 映射。服务端会先校验 session 属于该 Story 工作区，校验失败直接拒绝。
+ * @param taskId 任务 ID
+ * @returns Promise<void>
+ */
 async function saveCronMapping(taskId: string): Promise<void> {
   const draft = cronMappingDrafts.value[taskId]
-  if (!draft || !draft.storyId || !draft.ownerSessionId.trim() || !draft.mode) return
+  if (!draft) return
   draft.saving = true
   draft.error = ''
   try {
-    await apiRequest(`/api/v1/crons/${encodeURIComponent(taskId)}/mapping`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        storyId: draft.storyId,
-        ownerSessionId: draft.ownerSessionId.trim(),
-        mode: draft.mode,
-      }),
+    const saved = await cronActions.saveOwner(taskId, {
+      storyId: draft.storyId,
+      ownerSessionId: draft.ownerSessionId,
+      mode: draft.mode as CronMode | '',
     })
-    await store.refresh()
-  } catch (cause) {
-    draft.error = cause instanceof Error ? cause.message : 'Unable to save the task owner mapping.'
+    if (!saved) draft.error = '保存失败：请确认 Story 服务已启动且 session 属于该工作区。'
   } finally {
     draft.saving = false
   }
 }
 
-async function startStoryService(requirement: Requirement): Promise<void> {
-  if (!requirement.workspacePath || startingStoryService.value) return
-  startingStoryService.value = requirement.storyId
-  storyServiceError.value = ''
+/**
+ * 切换任务的启用状态。
+ * @param cron 任务
+ * @param enabled 目标状态
+ * @returns Promise<void>
+ */
+async function toggleCron(cron: Cron, enabled: boolean): Promise<void> {
+  await cronActions.toggle(cron, enabled)
+}
+
+/**
+ * 打开编辑弹层。
+ * @param cron 任务
+ */
+function openCronEditor(cron: Cron): void {
+  editingCron.value = cron
+  editorStoryId.value = cron.storyId ?? ''
+  cronEditorError.value = ''
+  cronEditorOpen.value = true
+}
+
+/**
+ * 打开新建弹层。
+ * @param storyId 目标 Story
+ */
+function openCronCreator(storyId: string): void {
+  editingCron.value = null
+  editorStoryId.value = storyId
+  cronEditorError.value = ''
+  cronEditorOpen.value = true
+}
+
+/** 编辑弹层对应的 Story 是否有可用服务端口 */
+const editorServiceReady = computed(() => storyServices.value[editorStoryId.value]?.status === 'running')
+
+/**
+ * 提交编辑弹层：新建走创建接口，编辑走更新接口。
+ * @param payload 表达式与可选提示词
+ * @returns Promise<void>
+ */
+async function submitCronEditor(payload: { cron: string; prompt?: string }): Promise<void> {
+  cronSaving.value = true
+  cronEditorError.value = ''
   try {
-    const service = await apiRequest<{ storyId: string; status: string; updatedAt: string; error?: string }>(
-      `/api/v1/stories/${encodeURIComponent(requirement.storyId)}/service`,
-      { method: 'POST' },
-    )
-    storyServices.value = { ...storyServices.value, [service.storyId]: service }
-    await refreshStoryServices()
+    if (editingCron.value) {
+      const ok = await cronActions.update(editingCron.value, payload)
+      if (ok) cronEditorOpen.value = false
+      return
+    }
+    await apiRequest('/api/v1/crons', {
+      method: 'POST',
+      body: JSON.stringify({ storyId: editorStoryId.value, cron: payload.cron, prompt: payload.prompt }),
+    })
+    await store.refresh()
+    cronEditorOpen.value = false
   } catch (cause) {
-    storyServiceError.value = cause instanceof Error ? cause.message : 'Unable to start the Story service.'
+    cronEditorError.value = cause instanceof Error ? cause.message : '保存定时任务失败。'
   } finally {
-    startingStoryService.value = null
+    cronSaving.value = false
   }
 }
 
-async function refreshStoryServices(): Promise<void> {
-  storyServiceError.value = ''
-  try {
-    const services = await apiRequest<Array<{
-      storyId: string
-      status: string
-      updatedAt: string
-      error?: string
-    }>>('/api/v1/stories/services')
-    storyServices.value = Object.fromEntries(services.map((service) => [service.storyId, service]))
-    const activeRequirements = storyServiceRequirements.value.filter(
-      (requirement) => storyServices.value[requirement.storyId]?.status === 'running',
-    )
-    const jobLists = await Promise.all(activeRequirements.map(async (requirement) => {
-      try {
-        return await apiRequest<Job[]>(`/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs`)
-      } catch (cause) {
-        storyServices.value = {
-          ...storyServices.value,
-          [requirement.storyId]: {
-            ...storyServices.value[requirement.storyId],
-            status: 'failed',
-            error: cause instanceof Error ? cause.message : 'Unable to list Story jobs.',
-          },
-        }
-        return []
-      }
-    }))
-    storyJobs.value = jobLists.flat()
-  } catch (cause) {
-    storyServiceError.value = cause instanceof Error ? cause.message : 'Unable to read Story service status.'
+/**
+ * 展开或收起行内执行记录。
+ * @param cron 任务
+ * @returns Promise<void>
+ */
+async function toggleCronExecutions(cron: Cron): Promise<void> {
+  if (expandedCronId.value === cron.id) {
+    expandedCronId.value = ''
+    cronExecutions.reset()
+    return
   }
+  expandedCronId.value = cron.id
+  await cronExecutions.load(cron.id)
+}
+
+/**
+ * 续期任务。
+ * @param cron 任务
+ * @returns Promise<void>
+ */
+async function renewCron(cron: Cron): Promise<void> {
+  await cronActions.renew(cron)
+}
+
+/**
+ * 派发到独立 StoryRound 轮次。
+ * @param cron 任务
+ * @returns Promise<void>
+ */
+async function dispatchCron(cron: Cron): Promise<void> {
+  const confirmed = window.confirm(
+    `将任务「${cron.id}」派发为一个独立的 StoryRound Job（提示词 \`/start fixbugs ${cron.storyId}\`）？`,
+  )
+  if (confirmed) await cronActions.dispatch(cron)
+}
+
+/**
+ * 删除任务（组件内已二次确认）。
+ * @param cron 任务
+ * @returns Promise<void>
+ */
+async function removeCron(cron: Cron): Promise<void> {
+  expandedCronId.value = ''
+  await cronActions.remove(cron)
+}
+
+/**
+ * 复制文本到剪贴板。
+ * @param text 待复制文本
+ * @returns Promise<void>
+ */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 剪贴板可能被浏览器策略禁用，失败时保持静默
+  }
+}
+
+/**
+ * 打开审计抽屉并刷新流水。
+ * @returns Promise<void>
+ */
+async function openAuditTrail(): Promise<void> {
+  auditOpen.value = true
+  await auditTrail.refresh()
+}
+
+/**
+ * 启动或接管 Story 服务。
+ * @param requirement 需求
+ * @returns Promise<void>
+ */
+/**
+ * 把某个 Story 设为右侧当前关注对象。
+ * 已经在该 Story 的实例里查看时不打断实例视图；否则回到创建实例视图。
+ * @param storyId Story 标识
+ */
+function focusStory(storyId: string): void {
+  if (selectedStoryId.value === storyId) return
+  selectedStoryId.value = storyId
+  if (selectedJob.value && selectedJob.value.storyId !== storyId) {
+    jobStreamController?.abort()
+    selectedJob.value = null
+  }
+}
+
+async function startStoryService(requirement: Requirement): Promise<void> {
+  if (!requirement.workspacePath) return
+  // 启动后把该 Story 设为当前上下文，右侧立刻显示它对应的服务信息
+  if (!selectedJob.value) selectedStoryId.value = requirement.storyId
+  await lifecycle.start(requirement.storyId)
+  await loadStoryJobs()
+}
+
+/**
+ * 停止 Story 服务（服务端会先暂停关联定时任务）。
+ * @param storyId Story 标识
+ * @returns Promise<void>
+ */
+async function stopStoryService(storyId: string): Promise<void> {
+  await lifecycle.stop(storyId)
+  await loadStoryJobs()
+}
+
+/**
+ * 删除服务映射。
+ * @param storyId Story 标识
+ * @returns Promise<void>
+ */
+async function removeStoryService(storyId: string): Promise<void> {
+  await lifecycle.remove(storyId)
+  await loadStoryJobs()
+}
+
+/**
+ * 刷新服务状态并重新加载已运行服务的实例列表。
+ * @returns Promise<void>
+ */
+async function refreshStoryServices(): Promise<void> {
+  await lifecycle.refresh()
+  await loadStoryJobs()
+}
+
+/**
+ * 拉取已运行 Story 下的实例列表。
+ * @returns Promise<void>
+ */
+async function loadStoryJobs(): Promise<void> {
+  const activeRequirements = storyServiceRequirements.value.filter(
+    (requirement) => storyServices.value[requirement.storyId]?.status === 'running',
+  )
+  const jobLists = await Promise.all(activeRequirements.map(async (requirement) => {
+    try {
+      return await apiRequest<Job[]>(`/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs`)
+    } catch {
+      return []
+    }
+  }))
+  storyJobs.value = jobLists.flat()
 }
 
 function prepareJob(requirement: Requirement, mode: 'run' | 'fixbugs'): void {
@@ -603,6 +1157,8 @@ async function createJob(): Promise<void> {
 async function openJob(job: Job): Promise<void> {
   jobStreamController?.abort()
   selectedJob.value = job
+  // 同步记录实例所属 Story：右侧上下文与左侧高亮都依赖它，否则多服务并存时看不出在看哪个
+  if (job.storyId) selectedStoryId.value = job.storyId
   renameDraft.value = job.name
   jobTranscript.value = ''
   jobOutput.value = ''
@@ -782,111 +1338,144 @@ async function refreshRepositoryCandidates(): Promise<void> {
   }
 }
 
+/**
+ * 读取已保存的差异映射。服务端只返回人工确认且与默认不一致的记录。
+ * @returns Promise<void>，错误写入 mappingsError
+ */
 async function loadApplicationMappings(): Promise<void> {
   mappingsError.value = ''
   try {
     applicationMappings.value = applicationMappingSchema.array().parse(
       await apiRequest<unknown>('/api/v1/application-mappings'),
     )
-    const savedByRepo = new Map(applicationMappings.value.map((mapping) => [mapping.repoName, mapping]))
-    mappingDrafts.value = Object.fromEntries(repositoryCandidates.value.map((candidate) => {
-      const saved = savedByRepo.get(candidate.name)
-      return [candidate.name, {
-        gitlabProjectId: saved?.gitlabProjectId,
-        // 差异映射才预填；否则留空表示沿用同名默认
-        devopsApp: saved?.devopsApp ?? '',
-        devopsGroup: saved?.devopsGroup ?? defaultDevOpsGroup,
-        projects: [],
-        loadingProjects: false,
-        saving: false,
-        saved: saved !== undefined,
-        error: '',
-      }]
-    }))
   } catch (cause) {
     mappingsError.value = cause instanceof Error ? cause.message : 'Unable to load application mappings.'
   }
 }
 
-async function searchGitLabProjects(repoName: string): Promise<void> {
-  const draft = mappingDrafts.value[repoName]
-  if (!draft) return
-  draft.loadingProjects = true
-  draft.error = ''
+/**
+ * 打开映射表单：新增时清空草稿，编辑时只预填已发生变动的字段。
+ * @param repoName 要编辑的仓库名；省略表示新增
+ * @returns void
+ */
+function openMappingDialog(repoName?: string): void {
+  mappingFormError.value = ''
+  const saved = repoName ? applicationMappings.value.find((mapping) => mapping.repoName === repoName) : undefined
+  const savedProjectId = saved?.gitlabProjectId
+  mappingEditingRepo.value = saved ? saved.repoName : null
+  const form = mappingForm.value
+  form.repoName = saved?.repoName ?? ''
+  form.gitlabProjectId = savedProjectId
+  form.devopsApp = saved?.devopsApp !== undefined && saved.devopsApp !== saved.repoName ? saved.devopsApp : ''
+  form.devopsGroup = saved?.devopsGroup !== undefined && saved.devopsGroup !== defaultDevOpsGroup
+    ? saved.devopsGroup
+    : ''
+  // 编辑时已保存的项目 ID 需要一个占位选项，否则下拉无法显示已选值
+  mappingProjectOptions.value = savedProjectId !== undefined
+    ? [{ id: savedProjectId, pathWithNamespace: `GitLab 项目 #${savedProjectId}（已保存）` }]
+    : []
+  mappingDialogOpen.value = true
+  if (form.repoName) void loadMappingProjectOptions(form.repoName)
+}
+
+/**
+ * 关闭映射表单并清理草稿与搜索候选。
+ * @returns void
+ */
+function closeMappingDialog(): void {
+  mappingDialogOpen.value = false
+  mappingEditingRepo.value = null
+  mappingFormError.value = ''
+  mappingProjectOptions.value = []
+}
+
+/**
+ * 按关键字搜索 GitLab 项目，结果只作为人工选择候选，不写库也不自动采用。
+ * 编辑态保留已保存项目的占位选项，避免搜索结果变化导致已选值丢失。
+ * @param query 搜索关键字（通常为仓库名）
+ * @returns Promise<void>，错误写入 mappingFormError
+ */
+async function loadMappingProjectOptions(query: string): Promise<void> {
+  const keyword = query.trim()
+  if (!keyword) {
+    mappingProjectOptions.value = []
+    return
+  }
+  mappingProjectsLoading.value = true
   try {
-    const query = new URLSearchParams({ search: repoName })
-    const result: unknown = await apiRequest(`/api/v1/gitlab/projects?${query}`)
-    draft.projects = gitLabProjectSchema.array().parse(result)
+    const search = new URLSearchParams({ search: keyword })
+    const result: unknown = await apiRequest(`/api/v1/gitlab/projects?${search}`)
+    const projects = gitLabProjectSchema.array().parse(result)
+    const savedProjectId = applicationMappings.value
+      .find((mapping) => mapping.repoName === mappingEditingRepo.value)?.gitlabProjectId
+    const savedOption = mappingProjectOptions.value.find((option) => option.id === savedProjectId)
+    mappingProjectOptions.value = [
+      ...(savedOption && !projects.some((project) => project.id === savedProjectId) ? [savedOption] : []),
+      ...projects,
+    ]
   } catch (cause) {
-    draft.error = cause instanceof Error ? cause.message : 'GitLab project search failed.'
+    mappingFormError.value = cause instanceof Error ? cause.message : 'GitLab project search failed.'
   } finally {
-    draft.loadingProjects = false
+    mappingProjectsLoading.value = false
   }
 }
 
 /**
- * 保存仓库的差异映射。
- * 应用名留空表示沿用“仓库名 == DevOps 应用名”，此时服务端不会写入记录。
- * @param repoName git 仓库名
- * @returns Promise<void>，错误写入行内 draft.error
+ * 提交新增或编辑的映射。与默认约定完全一致时拒绝写入，沿用默认即可。
+ * @returns Promise<void>，错误写入 mappingFormError
  */
-async function saveApplicationMapping(repoName: string): Promise<void> {
-  const draft = mappingDrafts.value[repoName]
-  if (!draft) return
-  draft.error = ''
-  const input = {
+async function submitMappingForm(): Promise<void> {
+  mappingFormError.value = ''
+  const form = mappingForm.value
+  const repoName = form.repoName.trim()
+  if (!repoName || !mappingFormChanged.value) {
+    mappingFormError.value = '与默认规则一致，无需单独保存；如需移除已有映射请点击「恢复默认」。'
+    return
+  }
+  const input: ApplicationMapping = {
     repoName,
-    devopsApp: draft.devopsApp.trim() || repoName,
-    devopsGroup: draft.devopsGroup.trim() || defaultDevOpsGroup,
-    ...(draft.gitlabProjectId ? { gitlabProjectId: draft.gitlabProjectId } : {}),
+    devopsApp: form.devopsApp.trim() || repoName,
+    devopsGroup: form.devopsGroup.trim() || defaultDevOpsGroup,
+    ...(typeof form.gitlabProjectId === 'number'
+      ? { gitlabProjectId: form.gitlabProjectId }
+      : {}),
   }
   const parsed = applicationMappingSchema.safeParse(input)
   if (!parsed.success) {
-    draft.error = parsed.error.issues.map((issue) => issue.message).join(' ')
+    mappingFormError.value = parsed.error.issues.map((issue) => issue.message).join(' ')
     return
   }
-  draft.saving = true
+  mappingSaving.value = true
   try {
     applicationMappings.value = applicationMappingSchema.array().parse(await apiRequest<unknown>(
       '/api/v1/application-mappings',
       { method: 'PUT', body: JSON.stringify(parsed.data) },
     ))
-    draft.saved = applicationMappings.value.some((mapping) => mapping.repoName === repoName)
-    if (!draft.saved) {
-      // 与默认同名约定一致，服务端已清除差异映射
-      draft.devopsApp = ''
-      draft.devopsGroup = defaultDevOpsGroup
-    }
+    closeMappingDialog()
   } catch (cause) {
-    draft.error = cause instanceof Error ? cause.message : 'Unable to save application mapping.'
+    mappingFormError.value = cause instanceof Error ? cause.message : 'Unable to save application mapping.'
   } finally {
-    draft.saving = false
+    mappingSaving.value = false
   }
 }
 
 /**
- * 删除仓库的差异映射，回到“同名默认”约定。
+ * 删除差异映射，使该仓库回到默认约定。
  * @param repoName git 仓库名
- * @returns Promise<void>
+ * @returns Promise<void>，错误写入 mappingsError
  */
-async function resetApplicationMapping(repoName: string): Promise<void> {
-  const draft = mappingDrafts.value[repoName]
-  if (!draft) return
-  draft.error = ''
-  draft.saving = true
+async function removeApplicationMapping(repoName: string): Promise<void> {
+  mappingRemoving.value = repoName
+  mappingsError.value = ''
   try {
     applicationMappings.value = applicationMappingSchema.array().parse(await apiRequest<unknown>(
       `/api/v1/application-mappings/${encodeURIComponent(repoName)}`,
       { method: 'DELETE' },
     ))
-    draft.gitlabProjectId = undefined
-    draft.devopsApp = ''
-    draft.devopsGroup = defaultDevOpsGroup
-    draft.saved = false
   } catch (cause) {
-    draft.error = cause instanceof Error ? cause.message : 'Unable to remove application mapping.'
+    mappingsError.value = cause instanceof Error ? cause.message : 'Unable to remove application mapping.'
   } finally {
-    draft.saving = false
+    mappingRemoving.value = ''
   }
 }
 
@@ -947,6 +1536,34 @@ function pollWorkspaceJob(jobId: string): void {
       workspaceError.value = cause instanceof Error ? cause.message : 'Unable to read initialization progress.'
     }
   }, 1000)
+}
+
+/** 初始化任务是否可续跑：中断或失败，且保存了原始参数 */
+const canResumeWorkspaceJob = computed(() => {
+  const job = workspaceJob.value
+  if (!job) return false
+  if (job.status !== 'interrupted' && job.status !== 'failed') return false
+  return Boolean(job.request)
+})
+
+/**
+ * 续跑中断的初始化任务。
+ * 服务端以同一参数重放幂等脚本，无法重新附着原进程，因此需要显式确认。
+ * @returns Promise<void>
+ */
+async function resumeWorkspaceJob(): Promise<void> {
+  const job = workspaceJob.value
+  if (!job) return
+  workspaceError.value = ''
+  try {
+    workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>(
+      `/api/v1/workspaces/initialize/${job.id}/resume`,
+      { method: 'POST', body: JSON.stringify({ acknowledgeRerun: true }) },
+    ))
+    pollWorkspaceJob(job.id)
+  } catch (cause) {
+    workspaceError.value = cause instanceof Error ? cause.message : '续跑初始化任务失败。'
+  }
 }
 
 /* ------------------------- 工作区管理：列表 / 详情 / 删除 ------------------------- */
@@ -1210,35 +1827,13 @@ function formatWorkspaceTime(value?: string): string {
           <div><strong>Harness 活跃流程：{{ workflow.title }}</strong><p>{{ workflow.storyId }} · {{ workflow.mode || '模式未知' }} · Phase {{ workflow.phase ?? '未知' }} · {{ workflow.status || '状态未知' }} · {{ workflow.workspacePath }}</p></div>
         </div>
 
-        <div v-for="pipeline in workspacePipelines" :key="`pipeline:${pipeline.path}`" class="workspace-block">
-          <div class="workspace-block-head">
-            <div class="workspace-main"><strong>{{ pipeline.name }}</strong><small><code>{{ pipeline.path }}</code></small></div>
-            <span v-if="pipeline.missingProjects.length" class="tag tag-danger">{{ pipeline.missingProjects.length }} 个目录缺失</span>
-            <span v-if="pipeline.storyCandidates > 1" class="tag tag-warning">检测到 {{ pipeline.storyCandidates }} 份 Story，仅展示 1 份</span>
-          </div>
-
-          <article class="project-block">
-            <div class="project-head">
-              <strong v-if="pipeline.primaryProject">{{ pipeline.primaryProject.name }}</strong>
-              <strong v-else>未声明项目</strong>
-              <code v-if="pipeline.primaryProject?.branch">{{ pipeline.primaryProject?.branch }}</code>
-              <span v-if="pipeline.primaryProject" class="tag" :class="pipeline.primaryProject.worktree ? 'tag-success' : ''">{{ pipeline.primaryProject.worktree ? 'worktree' : '独立克隆' }}</span>
-              <small class="muted">{{ pipeline.mergeRequests.length }} 个 MR · {{ pipeline.builds.length }} 条构建 · {{ pipeline.crons.length }} 个定时</small>
-            </div>
-            <div v-if="!pipeline.story" class="project-empty">第一个项目里还没有 .codebuddy/plans 中的 Story。</div>
-            <article v-else class="pipeline-row" @click="openRequirement(pipeline.story.requirement)">
-              <div class="pipeline-title"><strong>{{ pipeline.story?.requirement.title }}</strong><code>{{ pipeline.story?.requirement.storyId }}</code></div>
-              <div class="pipeline-steps">
-                <span>Harness {{ pipeline.story?.requirement.phase === undefined ? '—' : `P${pipeline.story?.requirement.phase}` }}</span><i>→</i>
-                <span :class="{ 'pipeline-step-active': pipeline.story?.mergeRequests.length }">MR {{ pipeline.story?.mergeRequests.length }}</span><i>→</i>
-                <span :class="{ 'pipeline-step-active': pipeline.builds.length }">构建 {{ pipeline.builds.length }}</span><i>→</i>
-                <span :class="{ 'pipeline-step-active': pipeline.story?.crons.length }">定时 {{ pipeline.story?.crons.length }}</span>
-              </div>
-              <span v-if="pipeline.story?.harnessActive" class="tag tag-warning">流程活跃</span>
-              <el-icon class="row-arrow"><Files /></el-icon>
-            </article>
-          </article>
-        </div>
+        <PipelineFlow
+          :pipelines="workspacePipelines"
+          @open-story="openRequirement"
+          @open-merge-request="openMergeRequest"
+          @open-build="openBuildArtifact"
+          @go-crons="goCrons"
+        />
 
         <div v-if="!workspacePipelines.length && !snapshotLoaded" class="empty-compact">正在加载快照…</div>
         <div v-else-if="!workspacePipelines.length" class="empty-state"><strong>还没有工作区</strong><p>先在「工作区」页新建工作区；Story 需要放在第一个项目的 .codebuddy/plans 下。</p></div>
@@ -1246,6 +1841,19 @@ function formatWorkspaceTime(value?: string): string {
     </template>
 
     <template v-else-if="page === 'instances'">
+      <div v-if="activeServiceEvents.length" class="service-event-bar" role="status">
+        <div
+          v-for="event in activeServiceEvents"
+          :key="event.id"
+          class="service-event"
+          :class="{ 'is-error': event.level === 'error', 'is-warning': event.level === 'warning' }"
+        >
+          <span class="status-dot" :class="hasServiceFailure ? 'is-error' : 'is-active'" />
+          <span><strong>{{ event.storyId }}</strong> · {{ event.message }}</span>
+          <small class="muted">{{ new Date(event.createdAt).toLocaleTimeString() }}</small>
+          <el-button link size="small" @click="dismissServiceEvent(event.id)">关闭</el-button>
+        </div>
+      </div>
       <div class="split-layout">
         <section class="surface split-list">
           <div class="section-heading"><div><h2>CodeBuddy 实例</h2><p>以工作区为根：工作区 → 第一个项目 → Story 实例；服务与执行轮次分开管理</p></div><span class="count-pill">{{ jobs.length }}</span></div>
@@ -1261,19 +1869,17 @@ function formatWorkspaceTime(value?: string): string {
               </div>
               <div v-if="!group.stories.length" class="project-empty">第一个项目还没有 Story，无需启动实例。</div>
               <template v-for="requirement in group.stories" :key="requirement.storyId">
-                <div class="simple-list-row">
-                  <span class="status-dot" :class="storyServices[requirement.storyId]?.status === 'running' ? 'is-active' : ''" />
-                  <span><strong>{{ requirement.title }}</strong><small>{{ requirement.storyId }} · {{ requirement.workspacePath }}</small></span>
-                  <span v-if="storyServices[requirement.storyId]" class="tag" :class="storyServices[requirement.storyId].status === 'running' ? 'tag-success' : 'tag-danger'">{{ storyServices[requirement.storyId].status }}</span>
-                  <template v-if="storyServices[requirement.storyId]?.status === 'running'">
-                    <el-button size="small" @click="prepareJob(requirement, 'run')">需求开发</el-button>
-                    <el-button size="small" type="warning" @click="prepareJob(requirement, 'fixbugs')">Bug 修复</el-button>
-                    <el-button size="small" @click="loadResumableSessions(requirement)">加载可恢复会话</el-button>
-                  </template>
-                  <el-button v-else size="small" type="primary" :loading="startingStoryService === requirement.storyId" :disabled="startingStoryService !== null" @click="startStoryService(requirement)">启动 / 接管</el-button>
-                </div>
-                <small v-if="storyServices[requirement.storyId]?.error" class="mapping-error">{{ storyServices[requirement.storyId].error }}</small>
-                <button v-for="job in jobsByStory(requirement.storyId)" :key="job.id" class="simple-list-row instance-job-row" :class="{ 'is-selected': selectedJob?.id === job.id }" type="button" @click="openJob(job)"><span class="status-dot" :class="job.status === 'busy' ? 'is-active' : ''" /><span><strong>{{ job.name }}</strong><small>{{ job.id }} · {{ job.cwd }}</small></span><code>{{ job.state }}</code></button>
+                <InstanceStoryCard
+                  :story-id="requirement.storyId"
+                  :title="requirement.title"
+                  :workspace-path="requirement.workspacePath"
+                  :service="storyServices[requirement.storyId]"
+                  :job-count="jobsByStory(requirement.storyId).length"
+                  :active="selectedStoryId === requirement.storyId"
+                  :error="serviceErrorOf(requirement.storyId)"
+                  @focus="focusStory(requirement.storyId)"
+                />
+                <button v-for="job in jobsByStory(requirement.storyId)" :key="job.id" class="simple-list-row instance-job-row" :class="{ 'is-selected': selectedJob?.id === job.id }" type="button" @click="openJob(job)"><span class="status-dot" :class="job.status === 'busy' ? 'is-active' : ''" /><span><strong>{{ job.name }}</strong><small>{{ job.id }}</small></span><code>{{ job.state }}</code></button>
               </template>
             </article>
           </div>
@@ -1282,28 +1888,97 @@ function formatWorkspaceTime(value?: string): string {
           <p v-if="storyServiceError" class="mapping-error" role="alert">{{ storyServiceError }}</p>
         </section>
         <section class="surface instance-workspace">
+          <!-- 当前上下文：多个服务同时运行时，右侧始终标明「在看哪个 Story / 哪台服务」 -->
+          <div v-if="currentStory" class="instance-context" aria-label="当前 Story 上下文">
+            <span class="status-dot" :class="currentServiceDot" :aria-label="`服务状态：${currentServiceLabel}`" />
+            <div class="instance-context-main">
+              <p class="eyebrow">CURRENT STORY</p>
+              <strong>{{ currentStory.title }}</strong>
+              <small><code>{{ currentStory.storyId }}</code> · {{ currentStory.workspacePath || '未关联工作区' }}</small>
+            </div>
+            <span class="tag" :class="currentServiceClass">{{ currentServiceLabel }}</span>
+            <code class="service-port">{{ currentPortLabel }}</code>
+          </div>
+          <!-- 服务与实例操作统一放在右侧：左侧列表只负责「选中哪个 Story」，避免卡片被按钮挤满 -->
+          <div v-if="currentStory" class="instance-toolbar">
+            <el-button
+              v-if="currentService?.status !== 'running'"
+              type="primary"
+              :loading="startingStoryService === currentStory.storyId"
+              @click="startStoryService(currentStory)"
+            >
+              启动 / 接管
+            </el-button>
+            <template v-else>
+              <el-button type="primary" @click="prepareJob(currentStory, 'run')">需求开发</el-button>
+              <el-button type="warning" plain @click="prepareJob(currentStory, 'fixbugs')">Bug 修复</el-button>
+              <el-button @click="loadResumableSessions(currentStory)">恢复会话</el-button>
+              <el-button plain :loading="startingStoryService === currentStory.storyId" @click="stopStoryService(currentStory.storyId)">
+                停止服务
+              </el-button>
+            </template>
+            <el-button
+              type="danger"
+              plain
+              :disabled="currentService?.status !== 'stopped'"
+              @click="removeStoryService(currentStory.storyId)"
+            >
+              删除映射
+            </el-button>
+          </div>
+          <p v-if="currentStory && serviceErrorOf(currentStory.storyId)" class="mapping-error" role="alert">
+            {{ serviceErrorOf(currentStory.storyId) }}
+          </p>
           <template v-if="selectedStoryId && !selectedJob">
             <p class="eyebrow">NEW STORY ROUND</p><h2>创建实例</h2>
-            <el-input v-model="jobName" class="job-input" placeholder="实例名称" />
-            <el-input v-model="jobPrompt" type="textarea" :rows="5" placeholder="发送给 CodeBuddy 的提示词" />
-            <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim()" @click="createJob">创建实例</el-button>
-            <div class="job-rename"><el-select v-model="selectedResumableSession" :loading="resumableLoading" placeholder="选择可恢复会话">
-              <el-option v-for="session in resumableSessions" :key="session.sessionId" :label="session.name || session.sessionId" :value="session.sessionId" />
-            </el-select><el-button :loading="jobActionLoading" :disabled="!selectedResumableSession" @click="resumeSession">恢复</el-button></div>
+            <p v-if="!currentServiceRunning" class="muted">
+              该 Story 的服务尚未运行，请先点上方「启动 / 接管」，再创建实例。
+            </p>
+            <div class="instance-form">
+              <label class="instance-field">
+                <span>实例名称</span>
+                <el-input v-model="jobName" placeholder="例如：需求开发 · 第 1 轮" />
+              </label>
+              <label class="instance-field">
+                <span>提示词</span>
+                <el-input v-model="jobPrompt" type="textarea" :rows="5" placeholder="发送给 CodeBuddy 的提示词" />
+              </label>
+              <div class="instance-form-actions">
+                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim() || !currentServiceRunning" @click="createJob">创建实例</el-button>
+              </div>
+            </div>
+            <div class="instance-resume">
+              <h3>恢复已有会话</h3>
+              <p class="muted">继续该 Story 的历史会话，而不是新开一轮。</p>
+              <div class="job-rename"><el-select v-model="selectedResumableSession" :loading="resumableLoading" placeholder="选择可恢复会话">
+                <el-option v-for="session in resumableSessions" :key="session.sessionId" :label="session.name || session.sessionId" :value="session.sessionId" />
+              </el-select><el-button :loading="jobActionLoading" :disabled="!selectedResumableSession || !currentServiceRunning" @click="resumeSession">恢复</el-button></div>
+            </div>
           </template>
           <template v-else-if="selectedJob">
-            <p class="eyebrow">SESSION OUTPUT · {{ selectedJob.storyId }}</p>
-            <div class="section-heading"><div><h2>{{ selectedJob.name }}</h2><p>{{ selectedJob.state }} · {{ selectedJob.status }} · {{ selectedJob.sessionId || '无 session ID' }}</p></div>
+            <p class="eyebrow">SESSION OUTPUT</p>
+            <div class="section-heading">
+              <div>
+                <h2>{{ selectedJob.name }}</h2>
+                <p>
+                  <span class="tag" :class="currentJobClass">{{ currentJobLabel }}</span>
+                  {{ selectedJob.state }} · {{ selectedJob.id }} · {{ currentJobSession }}
+                </p>
+              </div>
               <div class="job-actions"><el-button size="small" :loading="jobActionLoading" @click="controlJob('stop')">暂停</el-button><el-button size="small" :loading="jobActionLoading" @click="controlJob('respawn')">重启</el-button><el-button size="small" type="danger" :loading="jobActionLoading" @click="controlJob('delete')">删除</el-button></div>
             </div>
             <div class="job-rename"><el-input v-model="renameDraft" size="small" placeholder="实例名称" /><el-button size="small" :loading="jobActionLoading" @click="renameJob">重命名</el-button></div>
             <pre class="job-transcript">{{ jobTranscript || '暂无历史对话' }}</pre>
             <pre class="job-output">{{ jobOutput || '等待实时输出…' }}</pre>
-            <el-input v-model="jobReply" type="textarea" :rows="3" placeholder="回复实例（不执行 bash）" />
-            <el-button type="primary" :loading="jobActionLoading" :disabled="!jobReply.trim()" @click="replyToJob">发送</el-button>
+            <div class="instance-reply">
+              <el-input v-model="jobReply" type="textarea" :rows="3" placeholder="回复实例（不执行 bash）" />
+              <div class="instance-form-actions">
+                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobReply.trim()" @click="replyToJob">发送</el-button>
+              </div>
+            </div>
           </template>
           <template v-else>
-            <p class="eyebrow">SESSION OUTPUT</p><h2>选择一个实例</h2><p class="muted">每个 Story 服务复用端口，每轮 run/fixbugs 是独立 Job/session；cron owner 与执行轮次分离。</p><div class="terminal-placeholder">等待实例选择<span>_</span></div>
+            <p class="eyebrow">SESSION OUTPUT</p><h2>选择一个实例</h2><p class="muted">从左侧点选某个 Story 下的实例即可查看它的对话与实时输出；同一 Story 共用一台服务与端口，每轮 run/fixbugs 是独立 Job/session。</p><div class="terminal-placeholder">等待实例选择<span>_</span></div>
           </template>
           <p v-if="jobError" class="mapping-error" role="alert">{{ jobError }}</p>
         </section>
@@ -1311,9 +1986,30 @@ function formatWorkspaceTime(value?: string): string {
     </template>
 
     <template v-else-if="page === 'crons'">
-      <section class="surface">
-        <div class="section-heading"><div><h2>定时任务</h2><p>以工作区为根：工作区 → 第一个项目 → Story 定时任务；任务读自项目目录下的 .codebuddy/scheduled_tasks.json，这里只保存显式 Story、模式和 owner session 映射。</p></div><span class="count-pill">{{ crons.length }} 个</span></div>
-        <div v-for="group in cronGroups" :key="group.key" class="workspace-block">
+      <section class="surface cron-surface">
+        <div class="section-heading">
+          <div><h2>任务调度</h2><p>按工作区查看任务；归属设置按需展开，执行记录在卡片内查看。</p></div>
+          <el-button @click="openAuditTrail">操作审计</el-button>
+        </div>
+        <div class="cron-overview" aria-label="定时任务概览">
+          <div><span>全部任务</span><strong>{{ crons.length }}</strong></div>
+          <div><span class="status-dot is-active" /><span>运行中</span><strong>{{ activeCronCount }}</strong></div>
+          <div><span class="status-dot cron-paused-dot" /><span>已暂停</span><strong>{{ pausedCronCount }}</strong></div>
+          <div :class="{ 'has-attention': attentionCronCount > 0 }"><span>待完善配置</span><strong>{{ attentionCronCount }}</strong></div>
+        </div>
+        <div class="cron-toolbar">
+          <el-input v-model="cronQuery" class="cron-search" placeholder="搜索任务、Story 或 cron 表达式" clearable />
+          <el-select v-model="cronStatusFilter" class="cron-status-filter" aria-label="筛选任务状态">
+            <el-option label="全部状态" value="all" />
+            <el-option label="运行中" value="enabled" />
+            <el-option label="已暂停" value="paused" />
+            <el-option label="待完善配置" value="attention" />
+          </el-select>
+          <span v-if="cronHasActiveFilters" class="cron-filter-result">{{ filteredCronCount }} / {{ crons.length }} 个任务</span>
+          <el-button v-if="cronHasActiveFilters" link type="primary" @click="resetCronFilters">清除筛选</el-button>
+        </div>
+        <p v-if="cronError" class="mapping-error" role="alert">{{ cronError }}</p>
+        <div v-for="group in visibleCronGroups" :key="group.key" class="workspace-block cron-workspace-block">
           <div class="workspace-block-head">
             <div class="workspace-main"><strong>{{ group.name }}</strong><small><code>{{ group.path }}</code></small></div>
           </div>
@@ -1324,25 +2020,139 @@ function formatWorkspaceTime(value?: string): string {
               <small class="muted">{{ group.stories.length }} 个 Story 有任务 · {{ group.looseCrons.length }} 个未关联任务</small>
             </div>
             <div v-if="!group.stories.length && !group.looseCrons.length" class="project-empty">第一个项目暂无定时任务。</div>
-            <CronTaskRow v-for="cron in group.looseCrons" :key="`loose:${cron.id}`" :cron="cron" :draft="cronMappingDrafts[cron.id]" @save="saveCronMapping" />
+            <CronTaskRow
+              v-for="cron in group.looseCrons"
+              :key="`loose:${cron.id}`"
+              :cron="cron"
+              :draft="cronMappingDrafts[cron.id]"
+              :busy="cronBusyTaskId === cron.id"
+              :expanded="expandedCronId === cron.id"
+              @save="saveCronMapping"
+              @toggle="toggleCron(cron, $event)"
+              @edit="openCronEditor(cron)"
+              @executions="toggleCronExecutions(cron)"
+              @renew="renewCron(cron)"
+              @dispatch="dispatchCron(cron)"
+              @remove="removeCron(cron)"
+            >
+              <template #executions>
+                <CronExecutionList
+                  v-if="expandedCronId === cron.id"
+                  :executions="cronExecutionRows"
+                  :loading="cronExecutionsLoading"
+                  :error="cronExecutionsError"
+                  :source="cronExecutionsSource"
+                  :warning="cronExecutionsWarning"
+                  :has-more="cronExecutionsHasMore"
+                  @filter="loadCronExecutions(cron.id, $event)"
+                  @more="loadMoreCronExecutions()"
+                  @copy="copyText"
+                />
+              </template>
+            </CronTaskRow>
             <template v-for="story in group.stories" :key="story.requirement.storyId">
-              <div class="cron-story-head"><strong>{{ story.requirement.title }}</strong><code>{{ story.requirement.storyId }}</code></div>
-              <CronTaskRow v-for="cron in story.crons" :key="cron.id" :cron="cron" :draft="cronMappingDrafts[cron.id]" @save="saveCronMapping" />
+              <div class="cron-story-head">
+                <strong>{{ story.requirement.title }}</strong>
+                <code>{{ story.requirement.storyId }}</code>
+                <el-button size="small" type="primary" plain @click="openCronCreator(story.requirement.storyId)">
+                  新建任务
+                </el-button>
+              </div>
+              <CronTaskRow
+                v-for="cron in story.crons"
+                :key="cron.id"
+                :cron="cron"
+                :draft="cronMappingDrafts[cron.id]"
+                :busy="cronBusyTaskId === cron.id"
+                :expanded="expandedCronId === cron.id"
+                @save="saveCronMapping"
+                @toggle="toggleCron(cron, $event)"
+                @edit="openCronEditor(cron)"
+                @executions="toggleCronExecutions(cron)"
+                @renew="renewCron(cron)"
+                @dispatch="dispatchCron(cron)"
+                @remove="removeCron(cron)"
+              >
+                <template #executions>
+                  <CronExecutionList
+                    v-if="expandedCronId === cron.id"
+                    :executions="cronExecutionRows"
+                    :loading="cronExecutionsLoading"
+                    :error="cronExecutionsError"
+                    :source="cronExecutionsSource"
+                    :warning="cronExecutionsWarning"
+                    :has-more="cronExecutionsHasMore"
+                    @filter="loadCronExecutions(cron.id, $event)"
+                    @more="loadMoreCronExecutions()"
+                    @copy="copyText"
+                  />
+                </template>
+              </CronTaskRow>
             </template>
           </article>
           <template v-if="group.unassignedCrons.length">
             <div class="cron-story-head"><strong>未归属任务</strong></div>
-            <CronTaskRow v-for="cron in group.unassignedCrons" :key="cron.id" :cron="cron" :draft="cronMappingDrafts[cron.id]" @save="saveCronMapping" />
+            <CronTaskRow
+              v-for="cron in group.unassignedCrons"
+              :key="cron.id"
+              :cron="cron"
+              :draft="cronMappingDrafts[cron.id]"
+              :busy="cronBusyTaskId === cron.id"
+              :expanded="expandedCronId === cron.id"
+              @save="saveCronMapping"
+              @toggle="toggleCron(cron, $event)"
+              @edit="openCronEditor(cron)"
+              @executions="toggleCronExecutions(cron)"
+              @renew="renewCron(cron)"
+              @dispatch="dispatchCron(cron)"
+              @remove="removeCron(cron)"
+            >
+              <template #executions>
+                <CronExecutionList
+                  v-if="expandedCronId === cron.id"
+                  :executions="cronExecutionRows"
+                  :loading="cronExecutionsLoading"
+                  :error="cronExecutionsError"
+                  :source="cronExecutionsSource"
+                  :warning="cronExecutionsWarning"
+                  :has-more="cronExecutionsHasMore"
+                  @filter="loadCronExecutions(cron.id, $event)"
+                  @more="loadMoreCronExecutions()"
+                  @copy="copyText"
+                />
+              </template>
+            </CronTaskRow>
           </template>
         </div>
-        <div v-if="cronGroupsEmpty" class="empty-state"><strong>暂无定时任务</strong><p>检查需求工作区中的 .codebuddy/scheduled_tasks.json。修改、暂停与删除保持禁用，直到 CodeBuddy scheduled-task API 语义经过验证。</p></div>
+        <div v-if="cronGroupsEmpty" class="empty-state"><strong>暂无定时任务</strong><p>检查需求工作区中的 .codebuddy/scheduled_tasks.json，或在 Story 行点击「新建任务」通过 API 创建。</p></div>
+        <div v-else-if="!filteredCronCount" class="empty-state"><strong>没有符合条件的任务</strong><p>试试其他关键词或状态。</p><el-button size="small" @click="resetCronFilters">清除筛选</el-button></div>
       </section>
     </template>
 
     <template v-else-if="page === 'releases'">
       <div class="notice notice-danger"><span class="notice-symbol">!</span><div><strong>发布写操作暂不可用</strong><p>R16 部署数据口径和 R17 dev/test 关系尚待确认；自动化和手动写操作在确认前必须保持禁用。</p></div></div>
+      <div v-if="releaseFacts.length" class="service-event-bar" role="status">
+        <div v-for="fact in releaseFacts" :key="fact.statement" class="service-event is-warning">
+          <span class="status-dot" />
+          <span>{{ fact.statement }}</span>
+          <span class="tag tag-warning">{{ fact.fact === 'unknown' ? '无法确认' : '已观察到' }}</span>
+        </div>
+      </div>
       <section class="surface"><div class="section-heading"><div><h2>构建与合并记录</h2><p>只读展示本人的 GitLab MR 与 DevOps 构建；分支为项目级事实</p></div></div>
-        <div v-for="mr in myMergeRequests" :key="`${mr.projectId}:${mr.id}`" class="release-row"><span class="tag">{{ mr.state }}</span><strong>{{ mr.title }}</strong><code>{{ mr.sourceBranch }} → {{ mr.targetBranch }}</code><span v-if="mr.mergeStatus">合并状态：{{ mr.mergeStatus }}</span><span v-if="mr.mergedAt">合并于 {{ new Date(mr.mergedAt).toLocaleString() }}</span><a v-if="mr.webUrl" :href="mr.webUrl" target="_blank" rel="noreferrer">打开 MR</a><el-button size="small" :loading="mergeRequestLoading" @click="openMergeRequest(mr)">详情</el-button></div>
+        <div v-for="mr in myMergeRequests" :key="`${mr.projectId}:${mr.id}`" class="release-row">
+          <span v-if="isMergeBlocked(mr)" class="tag tag-danger">未合并阻断</span>
+          <span class="tag">{{ mr.state }}</span>
+          <strong>{{ mr.title }}</strong>
+          <code>{{ mr.sourceBranch }} → {{ mr.targetBranch }}</code>
+          <span v-if="mr.mergeStatus">合并状态：{{ mr.mergeStatus }}</span>
+          <span v-if="mr.mergedAt">合并于 {{ new Date(mr.mergedAt).toLocaleString() }}</span>
+          <span v-if="mergeRequestSummary(mr)" class="muted">
+            {{ mergeRequestSummary(mr)?.filesChanged }} 个文件 · +{{ mergeRequestSummary(mr)?.additions ?? '?' }}
+            / -{{ mergeRequestSummary(mr)?.deletions ?? '?' }} 行
+          </span>
+          <a v-if="mr.webUrl" :href="mr.webUrl" target="_blank" rel="noreferrer">打开 MR</a>
+          <el-button size="small" :loading="mergeRequestLoading" @click="openMergeRequest(mr)">详情</el-button>
+        </div>
         <p v-if="mergeRequestError" class="mapping-error" role="alert">{{ mergeRequestError }}</p>
         <div v-for="branchRecord in branches" :key="`${branchRecord.group}:${branchRecord.app}:${branchRecord.name}`" class="release-row"><span class="tag">{{ branchRecord.group || '分支' }}</span><strong>{{ branchRecord.app }}</strong><code>{{ branchRecord.name }} · {{ branchRecord.commitId || 'commit 未知' }}</code><span>{{ branchRecord.lastCommitTime ? new Date(branchRecord.lastCommitTime).toLocaleString() : '最后提交时间未知' }}</span></div>
         <div v-for="build in myBuilds" :key="build.id" class="release-row"><span class="tag" :class="build.succeed === false ? 'tag-danger' : 'tag-success'">{{ build.succeed === null ? '运行中' : build.succeed ? '成功' : '失败' }}</span><strong>{{ build.app }}<small v-if="build.group"> · {{ build.group }}</small></strong><code>{{ build.number ? `#${build.number} · ` : '' }}{{ build.branch || '分支未知' }} · {{ build.commitId || 'commit 未知' }}</code><span>{{ build.buildDate ? new Date(build.buildDate).toLocaleString() : '时间未知' }}</span><span v-if="build.durationTime !== undefined || build.operator">{{ build.durationTime !== undefined ? `${build.durationTime}s` : '' }}{{ build.durationTime !== undefined && build.operator ? ' · ' : '' }}{{ build.operator || '' }}</span><a v-if="build.fileUrl" :href="build.fileUrl" target="_blank" rel="noreferrer">制品</a></div>
@@ -1381,38 +2191,33 @@ function formatWorkspaceTime(value?: string): string {
       </section>
 
       <section class="surface">
-        <div class="section-heading"><div><h2>源系统映射</h2><p>默认 git 仓库名 = DevOps 应用名，同名无需映射；只保存名称不一致的人工确认结果，GitLab 搜索结果不会自动采用。</p></div><el-button :loading="candidatesLoading" @click="refreshRepositoryCandidates()">刷新映射</el-button></div>
-        <div v-if="candidatesError" class="notice notice-warning" role="status"><span class="notice-symbol">!</span><div><strong>无法扫描仓库</strong><p>{{ candidatesError }}</p></div></div>
-        <p v-if="mappingsError" class="notice notice-warning">{{ mappingsError }}</p>
-        <div v-for="candidate in repositoryCandidates" :key="`mapping:${candidate.name}`" class="mapping-card">
-          <div class="mapping-card-head">
-            <strong>{{ candidate.name }}</strong>
-            <span class="tag" :class="mappingDrafts[candidate.name]?.saved ? 'tag-warning' : 'tag-success'">
-              {{ mappingDrafts[candidate.name]?.saved ? '已保存差异映射' : '默认同名映射' }}
-            </span>
+        <div class="section-heading">
+          <div><h2>源系统映射</h2><p>一份默认规则覆盖所有同名仓库；下方只列出人工确认的差异映射，GitLab 搜索结果不会自动采用。</p></div>
+          <div class="mapping-head-actions">
+            <el-button :loading="candidatesLoading" @click="refreshRepositoryCandidates()">刷新</el-button>
+            <el-button type="primary" @click="openMappingDialog()">新增映射</el-button>
           </div>
-          <p class="mapping-hint">
-            默认：GitLab 项目按「{{ candidate.name }}」精确匹配，DevOps 应用 = {{ candidate.name }}，分组 = {{ defaultDevOpsGroup }}。
-            名称不一致时在下方人工填写并保存。
-          </p>
-          <div class="mapping-controls">
-            <div class="mapping-control">
-              <span>GitLab 项目（差异时人工选择）</span>
-              <div class="mapping-inline">
-                <el-button size="small" :loading="mappingDrafts[candidate.name]?.loadingProjects" @click="searchGitLabProjects(candidate.name)">搜索</el-button>
-                <el-select v-if="mappingDrafts[candidate.name]" v-model="mappingDrafts[candidate.name].gitlabProjectId" clearable filterable placeholder="留空 = 按仓库名精确匹配">
-                  <el-option v-for="project in mappingDrafts[candidate.name].projects" :key="project.id" :label="project.pathWithNamespace" :value="project.id" />
-                </el-select>
-              </div>
-            </div>
-            <label class="mapping-control"><span>DevOps 分组</span><el-input v-if="mappingDrafts[candidate.name]" v-model="mappingDrafts[candidate.name].devopsGroup" :placeholder="defaultDevOpsGroup" /></label>
-            <label class="mapping-control"><span>DevOps 应用</span><el-input v-if="mappingDrafts[candidate.name]" v-model="mappingDrafts[candidate.name].devopsApp" :placeholder="`${candidate.name}（默认同名，留空即可）`" /></label>
-            <el-button size="small" type="primary" :loading="mappingDrafts[candidate.name]?.saving" @click="saveApplicationMapping(candidate.name)">保存映射</el-button>
-            <el-button size="small" :disabled="!mappingDrafts[candidate.name]?.saved" :loading="mappingDrafts[candidate.name]?.saving" @click="resetApplicationMapping(candidate.name)">恢复默认</el-button>
-          </div>
-          <small v-if="mappingDrafts[candidate.name]?.error" class="mapping-error">{{ mappingDrafts[candidate.name].error }}</small>
         </div>
-        <div v-if="!candidatesLoading && !repositoryCandidates.length && !candidatesError" class="empty-state"><strong>未发现 Git 仓库</strong><p>检查源仓库根目录配置，或刷新扫描。</p></div>
+        <div v-if="candidatesError" class="notice notice-warning" role="status"><span class="notice-symbol">!</span><div><strong>无法扫描仓库</strong><p>{{ candidatesError }}</p></div></div>
+        <p v-if="mappingsError" class="notice notice-warning" role="alert">{{ mappingsError }}</p>
+        <div class="mapping-table">
+          <div class="mapping-table-head">
+            <span>Git 仓库</span><span>GitLab 项目</span><span>DevOps 应用</span><span>DevOps 分组</span><span>操作</span>
+          </div>
+          <div v-for="row in mappingRows" :key="row.key" class="mapping-table-row" :class="{ 'is-default': row.isDefault }">
+            <strong>{{ row.repoName }}</strong>
+            <span v-for="cell in row.cells" :key="cell.key" class="mapping-cell" :class="{ 'is-changed': cell.changed }">{{ cell.value }}</span>
+            <div class="mapping-row-actions">
+              <span v-if="row.isDefault" class="tag tag-success">默认规则</span>
+              <template v-else>
+                <el-button link size="small" @click="openMappingDialog(row.repoName)">编辑</el-button>
+                <el-button link size="small" type="danger" :loading="mappingRemoving === row.repoName" @click="removeApplicationMapping(row.repoName)">恢复默认</el-button>
+              </template>
+            </div>
+          </div>
+        </div>
+        <p v-if="mappingRows.length === 1" class="mapping-footnote">当前没有差异映射，所有仓库沿用上方默认规则。</p>
+        <p v-if="showNoRepositoryHint" class="mapping-footnote">未发现 Git 仓库，仍可手动输入仓库名新增映射。</p>
       </section>
     </template>
 
@@ -1482,7 +2287,26 @@ function formatWorkspaceTime(value?: string): string {
         <span>审批</span><strong>{{ selectedMergeRequest.approvals?.approved ? '已批准' : '未批准' }}</strong>
         <span>批准人</span><strong>{{ selectedMergeRequest.approvals?.approvedBy.join('、') || '无' }}</strong>
         <span>变更文件</span><strong>{{ selectedMergeRequest.changesCount ?? '未知' }}</strong>
+        <span>增删行</span>
+        <strong>
+          <template v-if="mergeRequestSummary(selectedMergeRequest)">
+            +{{ mergeRequestSummary(selectedMergeRequest)?.additions ?? '?' }} /
+            -{{ mergeRequestSummary(selectedMergeRequest)?.deletions ?? '?' }}
+            <small v-if="mergeRequestSummary(selectedMergeRequest)?.truncated" class="muted">（仅统计部分文件）</small>
+          </template>
+          <template v-else>无法确认</template>
+        </strong>
       </div>
+      <section v-if="isMergeBlocked(selectedMergeRequest)" class="bug-detail-list">
+        <h3>Phase 4 合并阻断</h3>
+        <p class="muted">该 Story 处于 Phase 4 且此 MR 尚未合并；请确认已合并后再进入 Phase 5。</p>
+      </section>
+      <section v-if="mergeRequestSummary(selectedMergeRequest)?.hotFiles.length" class="bug-detail-list">
+        <h3>变更热点文件</h3>
+        <ul>
+          <li v-for="file in mergeRequestSummary(selectedMergeRequest)?.hotFiles" :key="file"><code>{{ file }}</code></li>
+        </ul>
+      </section>
       <section class="bug-detail-list">
         <h3>文件列表</h3>
         <ul v-if="selectedMergeRequest.changedFiles?.length">
@@ -1577,8 +2401,65 @@ function formatWorkspaceTime(value?: string): string {
     </section>
     <template #footer>
       <el-button :disabled="workspaceRunning" @click="closeCreateDialog">关闭</el-button>
+      <el-button v-if="canResumeWorkspaceJob" :disabled="workspaceRunning" @click="resumeWorkspaceJob">
+        从记录阶段续跑
+      </el-button>
       <el-button :loading="candidatesLoading" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceRunning" @click="previewWorkspace">DryRun 预演</el-button>
       <el-button type="primary" :loading="workspaceRunning" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceRunning" @click="startWorkspace">确认并创建</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 源系统映射：新增 / 编辑差异映射；与默认一致的仓库不需要录入 -->
+  <el-dialog
+    v-model="mappingDialogOpen"
+    :title="mappingDialogTitle"
+    width="min(600px, 94vw)"
+    :close-on-click-modal="false"
+    @close="closeMappingDialog"
+  >
+    <div class="mapping-form">
+      <label class="mapping-control">
+        <span>Git 仓库名</span>
+        <el-select
+          v-model="mappingForm.repoName"
+          filterable
+          allow-create
+          default-first-option
+          :disabled="mappingEditingRepo !== null"
+          placeholder="选择仓库，或输入名称后回车"
+        >
+          <el-option v-for="name in mappingRepoOptions" :key="name" :label="name" :value="name" />
+        </el-select>
+      </label>
+      <label class="mapping-control">
+        <span>GitLab 项目（输入关键字搜索，留空沿用默认）</span>
+        <el-select
+          v-model="mappingForm.gitlabProjectId"
+          filterable
+          clearable
+          remote
+          reserve-keyword
+          :remote-method="loadMappingProjectOptions"
+          :loading="mappingProjectsLoading"
+          placeholder="留空 = 按仓库名精确匹配"
+        >
+          <el-option v-for="project in mappingProjectOptions" :key="project.id" :label="project.pathWithNamespace" :value="project.id" />
+        </el-select>
+      </label>
+      <label class="mapping-control">
+        <span>DevOps 应用</span>
+        <el-input v-model="mappingForm.devopsApp" :placeholder="`${mappingForm.repoName || '仓库名'}（留空沿用同名默认）`" />
+      </label>
+      <label class="mapping-control">
+        <span>DevOps 分组</span>
+        <el-input v-model="mappingForm.devopsGroup" :placeholder="defaultDevOpsGroup" />
+      </label>
+    </div>
+    <p class="mapping-hint">默认规则：git 仓库名 = DevOps 应用名、分组 = {{ defaultDevOpsGroup }}、GitLab 按仓库名精确匹配。只有与默认不一致的字段才会保存，搜索结果仅作候选，不会自动采用。</p>
+    <p v-if="mappingFormError" class="mapping-error" role="alert">{{ mappingFormError }}</p>
+    <template #footer>
+      <el-button @click="closeMappingDialog()">取消</el-button>
+      <el-button type="primary" :loading="mappingSaving" :disabled="!canSubmitMappingForm" @click="submitMappingForm()">保存映射</el-button>
     </template>
   </el-dialog>
 
@@ -1613,4 +2494,36 @@ function formatWorkspaceTime(value?: string): string {
       <el-button type="danger" :loading="deleting" :disabled="!canConfirmDelete || deleting || Boolean(deleteResult)" @click="confirmDeleteWorkspace">确认删除</el-button>
     </template>
   </el-dialog>
+
+  <!-- 定时任务编辑弹层：预设、实时校验与下次运行预览 -->
+  <CronEditorDialog
+    v-model="cronEditorOpen"
+    :cron="editingCron"
+    :service-ready="editorServiceReady"
+    :saving="cronSaving"
+    :error="cronEditorError"
+    @save="submitCronEditor"
+  />
+
+  <!-- 操作审计抽屉：白名单动作可撤销 -->
+  <AuditTrailDrawer
+    v-model="auditOpen"
+    :entries="auditEntries"
+    :loading="auditLoading"
+    :error="auditError"
+    :undoing-id="auditUndoingId"
+    @refresh="refreshAuditTrail()"
+    @undo="undoAuditEntry($event)"
+  />
+
+  <!-- 撤销提示条：不打断流程，超时自动消失 -->
+  <div v-if="cronNotices.length" class="undo-toasts" role="status">
+    <div v-for="notice in cronNotices" :key="notice.id" class="undo-toast">
+      <span>{{ notice.message }}</span>
+      <el-button v-if="notice.auditId" link type="primary" size="small" @click="undoCronAction(notice.auditId)">
+        撤销
+      </el-button>
+      <el-button link size="small" @click="dismissCronNotice(notice.id)">关闭</el-button>
+    </div>
+  </div>
 </template>

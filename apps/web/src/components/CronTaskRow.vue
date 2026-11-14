@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { Cron } from '@devtask/shared'
+import { computed, ref, watch } from 'vue'
+import { ArrowDown } from '@element-plus/icons-vue'
+import { describeCron, type Cron } from '@devtask/shared'
 
 /** 定时任务 owner 映射草稿，由父页面维护 */
 interface CronMappingDraft {
@@ -11,59 +13,317 @@ interface CronMappingDraft {
 }
 
 const props = defineProps<{
-  /** 单条定时任务事实（只读，来自工作区 scheduled_tasks.json） */
+  /** 单条定时任务事实（快照 + 服务端实时字段的合并结果） */
   cron: Cron
   /** 该任务的 owner 映射草稿；未初始化时保存按钮不可用 */
   draft?: CronMappingDraft
+  /** 该行是否有操作在进行中 */
+  busy?: boolean
+  /** 执行记录区是否已展开 */
+  expanded?: boolean
 }>()
 
 const emit = defineEmits<{
-  /** 请求父页面保存 owner 映射，参数为任务 ID */
+  /** 保存 owner 映射 */
   save: [taskId: string]
+  /** 切换启用状态 */
+  toggle: [enabled: boolean]
+  /** 打开编辑弹层 */
+  edit: []
+  /** 展开/收起执行记录 */
+  executions: []
+  /** 续期 */
+  renew: []
+  /** 派发到独立轮次 */
+  dispatch: []
+  /** 删除任务 */
+  remove: []
 }>()
 
-/**
- * 任务模式的展示文案。
- * @param mode 任务模式
- * @returns 中文文案
- */
-function modeLabel(mode: Cron['mode']): string {
-  if (mode === 'query_fix') return '查询 + 修复'
-  if (mode === 'query_only') return '只查询'
+/** 归属设置是否展开；默认收起，避免每个任务都展示完整表单 */
+const mappingOpen = ref(false)
+
+/** 任务模式的中文文案 */
+const modeLabel = computed(() => {
+  if (props.cron.mode === 'query_fix') return '查询 + 修复'
+  if (props.cron.mode === 'query_only') return '只查询'
   return '模式待确认'
+})
+
+/** 状态的展示文案 */
+const statusLabel = computed(() => {
+  if (props.cron.enabled === true) return '运行中'
+  if (props.cron.enabled === false) return '已暂停'
+  return '状态未知'
+})
+
+/** 状态徽标的样式类 */
+const statusClass = computed(() => {
+  if (props.cron.enabled === true) return 'tag-success'
+  if (props.cron.enabled === false) return 'tag-warning'
+  return ''
+})
+
+/** 状态指示点样式 */
+const statusDotClass = computed(() => {
+  if (props.cron.enabled === true) return 'is-active'
+  if (props.cron.enabled === false) return 'is-paused'
+  return ''
+})
+
+/** 是否处于修复模式：需要在卡片内提示风险 */
+const isFixMode = computed(() => props.cron.mode === 'query_fix')
+
+/** 是否已校验 owner：未校验时提示需要重新保存映射 */
+const ownerUnverified = computed(() => Boolean(props.cron.ownerSessionId) && !props.cron.ownerVerifiedAt)
+
+/** 是否需要用户补充或修正归属配置 */
+const mappingNeedsAttention = computed(() => !props.cron.storyId || !props.cron.ownerSessionId || ownerUnverified.value || !props.cron.mode)
+
+/** 是否存在需要在任务摘要下方展示的风险提示 */
+const hasWarnings = computed(() => isFixMode.value || ownerUnverified.value)
+
+/** 归属设置按钮文案 */
+const mappingButtonLabel = computed(() => mappingOpen.value ? '收起设置' : '归属设置')
+
+/** 下次运行时间的可读文本 */
+const nextRunText = computed(() => {
+  if (!props.cron.nextRun) return '时间未知'
+  return new Date(props.cron.nextRun).toLocaleString()
+})
+
+/** 到期日的可读文本 */
+const expiresText = computed(() => (props.cron.expiresAt ? new Date(props.cron.expiresAt).toLocaleDateString() : ''))
+
+/** cron 表达式的中文描述 */
+const scheduleLabel = computed(() => describeCron(props.cron.cron))
+
+watch(ownerUnverified, (unverified) => {
+  if (unverified) mappingOpen.value = true
+}, { immediate: true })
+
+/**
+ * 切换归属设置面板。
+ */
+function toggleMapping(): void {
+  mappingOpen.value = !mappingOpen.value
 }
 
 /**
- * 解析时间字段为本地可读文本。
- * @param value ISO 时间字符串
- * @returns 本地时间文本；缺省时返回空串
+ * 处理低频操作菜单。
+ * @param command 菜单动作标识
  */
-function formatTime(value?: string): string {
-  return value ? new Date(value).toLocaleString() : ''
+function handleMoreCommand(command: string): void {
+  if (command === 'renew') emit('renew')
+  if (command === 'dispatch') emit('dispatch')
+  if (command === 'remove') confirmRemove()
+}
+
+/**
+ * 删除前二次确认：删除不可撤销。
+ */
+function confirmRemove(): void {
+  if (window.confirm(`删除定时任务「${props.cron.id}」？该操作不可撤销。`)) emit('remove')
 }
 </script>
 
 <template>
-  <div class="cron-row">
-    <div class="cron-primary">
-      <strong>{{ props.cron.storyTitle || '未关联 Story' }}</strong>
-      <small><code>{{ props.cron.id }}</code> · {{ props.cron.storyId || 'Story 未映射' }} · {{ modeLabel(props.cron.mode) }} · owner {{ props.cron.ownerSessionId || '未关联' }}</small>
-      <small v-if="props.cron.promptFirstLine" class="cron-prompt-line">{{ props.cron.promptFirstLine }}</small>
-      <small v-if="props.cron.mode === 'query_fix'" class="cron-risk">修复模式可能修改代码或写回 TAPD；当前控制台不触发 scheduled task。</small>
+  <article class="cron-card" :class="{ 'is-busy': props.busy, 'is-expanded': props.expanded }">
+    <div class="cron-card-heading">
+      <div class="cron-primary">
+        <div class="cron-title-line">
+          <span class="status-dot" :class="statusDotClass" />
+          <strong :title="props.cron.storyTitle || '未关联 Story'">{{ props.cron.storyTitle || '未关联 Story' }}</strong>
+          <span class="tag" :class="statusClass">{{ statusLabel }}</span>
+          <span class="cron-mode">{{ modeLabel }}</span>
+        </div>
+        <div class="cron-meta">
+          <code>{{ props.cron.id }}</code>
+          <span>{{ props.cron.storyId || 'Story 未映射' }}</span>
+        </div>
+        <p v-if="props.cron.promptFirstLine" class="cron-prompt-line" :title="props.cron.promptFirstLine">
+          {{ props.cron.promptFirstLine }}
+        </p>
+      </div>
+      <el-button
+        class="cron-history-button"
+        size="small"
+        :type="props.expanded ? 'primary' : undefined"
+        :plain="props.expanded"
+        :aria-expanded="props.expanded"
+        @click="emit('executions')"
+      >
+        {{ props.expanded ? '收起记录' : '执行记录' }}
+      </el-button>
     </div>
-    <code>{{ props.cron.cron }}</code>
-    <span class="tag" :class="props.cron.enabled === true ? 'tag-success' : props.cron.enabled === false ? 'tag-warning' : ''">{{ props.cron.enabled === true ? '运行中' : props.cron.enabled === false ? '已暂停' : '状态未知' }}</span>
-    <span>{{ formatTime(props.cron.nextRun) || '下次运行未知' }}</span>
-    <span v-if="props.cron.expiresAt">到期 {{ new Date(props.cron.expiresAt).toLocaleDateString() }}</span>
-    <div v-if="props.draft" class="cron-mapping">
-      <span>{{ props.draft.storyId }} · {{ props.cron.storyTitle }}</span>
-      <el-select v-model="props.draft.mode" placeholder="确认任务类型">
-        <el-option label="只查询" value="query_only" />
-        <el-option label="查询 + 修复" value="query_fix" />
-      </el-select>
-      <el-input v-model="props.draft.ownerSessionId" placeholder="专属 owner session ID" />
-      <el-button type="primary" size="small" :loading="props.draft.saving" :disabled="!props.draft.ownerSessionId.trim() || !props.draft.mode" @click="emit('save', props.cron.id)">保存 owner 映射</el-button>
-      <p v-if="props.draft.error" class="mapping-error" role="alert">{{ props.draft.error }}</p>
+
+    <div class="cron-facts">
+      <div class="cron-fact">
+        <span>调度规则</span>
+        <strong>{{ scheduleLabel }}</strong>
+        <code>{{ props.cron.cron }}</code>
+      </div>
+      <div class="cron-fact">
+        <span>下次运行</span>
+        <strong>{{ nextRunText }}</strong>
+        <small v-if="expiresText">有效期至 {{ expiresText }}</small>
+        <small v-else>未设置到期时间</small>
+      </div>
+      <div class="cron-fact cron-owner-fact">
+        <span>执行归属</span>
+        <strong :title="props.cron.ownerSessionId || '未关联 owner'">{{ props.cron.ownerSessionId || '未关联 owner' }}</strong>
+        <small>{{ props.cron.durable ? '持久化任务' : '临时任务' }}</small>
+      </div>
     </div>
-  </div>
+
+    <div v-if="hasWarnings" class="cron-warnings">
+      <span v-if="isFixMode">修复模式可能修改代码或写回 TAPD。</span>
+      <span v-if="ownerUnverified">owner 尚未通过归属校验，请重新保存映射。</span>
+    </div>
+
+    <footer class="cron-footer">
+      <div class="cron-actions">
+        <el-button
+          size="small"
+          :type="props.cron.enabled === false ? 'primary' : undefined"
+          :plain="props.cron.enabled === false"
+          :loading="props.busy"
+          @click="emit('toggle', !props.cron.enabled)"
+        >
+          {{ props.cron.enabled === false ? '启用任务' : '暂停任务' }}
+        </el-button>
+        <el-button size="small" :disabled="props.busy" @click="emit('edit')">编辑调度</el-button>
+        <el-button
+          size="small"
+          :disabled="!props.draft || props.busy"
+          :aria-expanded="mappingOpen"
+          @click="toggleMapping"
+        >
+          {{ mappingButtonLabel }}
+          <span v-if="mappingNeedsAttention" class="cron-attention-dot" title="归属配置需要处理" />
+        </el-button>
+      </div>
+      <el-dropdown trigger="click" :disabled="props.busy" @command="handleMoreCommand">
+        <el-button size="small" :disabled="props.busy">
+          更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="renew" :disabled="!props.cron.durable">续期任务</el-dropdown-item>
+            <el-dropdown-item command="dispatch" :disabled="!props.cron.storyId">立即派发</el-dropdown-item>
+            <el-dropdown-item command="remove" divided><span class="cron-danger-action">删除任务</span></el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </footer>
+
+    <el-collapse-transition>
+      <section v-show="mappingOpen && props.draft" class="cron-mapping">
+        <div class="cron-mapping-heading">
+          <div>
+            <strong>执行归属</strong>
+            <p>任务将由指定 Story 的专属 CodeBuddy session 执行。</p>
+          </div>
+          <code>{{ props.draft?.storyId || 'Story 未映射' }}</code>
+        </div>
+        <div v-if="props.draft" class="cron-mapping-fields">
+          <label>
+            <span>任务类型</span>
+            <el-select v-model="props.draft.mode" placeholder="确认任务类型" :disabled="props.busy">
+              <el-option label="只查询" value="query_only" />
+              <el-option label="查询 + 修复" value="query_fix" />
+            </el-select>
+          </label>
+          <label>
+            <span>Owner session ID</span>
+            <el-input v-model="props.draft.ownerSessionId" placeholder="输入专属 owner session ID" :disabled="props.busy" />
+          </label>
+          <el-button
+            type="primary"
+            size="small"
+            :loading="props.draft.saving"
+            :disabled="!props.draft.ownerSessionId.trim() || !props.draft.mode"
+            @click="emit('save', props.cron.id)"
+          >
+            校验并保存
+          </el-button>
+        </div>
+        <p v-if="props.draft?.error" class="mapping-error" role="alert">{{ props.draft.error }}</p>
+      </section>
+    </el-collapse-transition>
+
+    <slot name="executions" />
+  </article>
 </template>
+
+<style scoped>
+.cron-card {
+  position: relative;
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.cron-card:hover { border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); }
+.cron-card.is-expanded { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.cron-card.is-busy { background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised)); }
+.cron-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.cron-primary { display: grid; min-width: 0; flex: 1; gap: 6px; }
+.cron-title-line { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cron-title-line > strong { overflow: hidden; max-width: min(100%, 520px); color: var(--text); font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.cron-title-line .status-dot { flex: 0 0 7px; }
+.status-dot.is-paused { background: var(--amber); }
+.cron-mode { color: var(--muted); font-size: 11px; }
+.cron-meta { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px 12px; color: var(--faint); font-size: 11px; }
+.cron-meta code { overflow-wrap: anywhere; color: var(--muted); }
+.cron-prompt-line { overflow: hidden; margin: 0; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.cron-history-button { flex: 0 0 auto; }
+.cron-facts { display: grid; grid-template-columns: minmax(160px, .85fr) minmax(210px, 1fr) minmax(180px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.cron-fact { display: grid; min-width: 0; align-content: start; gap: 4px; padding: 12px 14px; }
+.cron-fact + .cron-fact { border-left: 1px solid var(--line); }
+.cron-fact > span { color: var(--faint); font-size: 10px; }
+.cron-fact > strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.cron-fact > code, .cron-fact > small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.cron-warnings { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: -6px; color: var(--amber); font-size: 11px; }
+.cron-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cron-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cron-actions .el-button, .cron-footer > .el-dropdown .el-button { margin: 0; }
+.cron-attention-dot { width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--amber); }
+.cron-danger-action { color: var(--red); }
+.cron-mapping { display: grid; width: auto; grid-template-columns: minmax(0, 1fr); align-items: stretch; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.cron-mapping-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cron-mapping-heading strong { color: var(--text); font-size: 12px; }
+.cron-mapping-heading p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.cron-mapping-heading code { color: var(--faint); font-size: 10px; }
+.cron-mapping-fields { display: grid; grid-template-columns: minmax(160px, .6fr) minmax(240px, 1.4fr) auto; align-items: end; gap: 10px; }
+.cron-mapping-fields label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+.cron-mapping .mapping-error { margin: 0; }
+.cron-card :deep(.cron-executions) { margin-top: 0; }
+
+@media (max-width: 1050px) {
+  .cron-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cron-owner-fact { grid-column: 1 / -1; border-top: 1px solid var(--line); border-left: 0 !important; }
+  .cron-mapping-fields { grid-template-columns: minmax(150px, .7fr) minmax(210px, 1.3fr); }
+  .cron-mapping-fields > .el-button { grid-column: 1 / -1; justify-self: start; }
+}
+
+@media (max-width: 640px) {
+  .cron-card { gap: 14px; padding: 14px; }
+  .cron-card-heading { gap: 10px; }
+  .cron-title-line > strong { flex-basis: calc(100% - 18px); max-width: calc(100% - 18px); }
+  .cron-history-button { padding-inline: 10px; }
+  .cron-facts { grid-template-columns: minmax(0, 1fr); }
+  .cron-fact + .cron-fact, .cron-owner-fact { grid-column: auto; border-top: 1px solid var(--line); border-left: 0; }
+  .cron-fact > strong, .cron-fact > code, .cron-fact > small { white-space: normal; overflow-wrap: anywhere; }
+  .cron-footer { align-items: flex-start; }
+  .cron-actions { flex: 1; }
+  .cron-mapping { padding: 13px; }
+  .cron-mapping-heading { flex-direction: column; }
+  .cron-mapping-fields { grid-template-columns: minmax(0, 1fr); }
+  .cron-mapping-fields > .el-button { grid-column: auto; width: 100%; }
+}
+</style>

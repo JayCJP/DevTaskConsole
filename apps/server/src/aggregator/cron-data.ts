@@ -12,6 +12,10 @@ export interface CronTaskMapping {
   storyId: string
   ownerSessionId: string
   mode: 'query_only' | 'query_fix'
+  /** owner session 最近一次通过校验的时间；缺省表示人工录入但尚未校验 */
+  ownerVerifiedAt?: string
+  /** 是否因为 Story 服务被停止而由站点暂停；服务恢复后可据此自动重新启用 */
+  pausedByServiceStop?: boolean
 }
 
 export class CronMappingStore {
@@ -50,14 +54,67 @@ export class CronMappingStore {
       const mappings = await this.list()
       const next = [...mappings.filter((item) => item.taskId !== mapping.taskId), mapping]
         .sort((left, right) => left.taskId.localeCompare(right.taskId))
-      await mkdir(dirname(this.filePath), { recursive: true })
-      const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
-      await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-      })
-      await rename(temporaryPath, this.filePath)
+      await this.writeAll(next)
     })
+  }
+
+  /**
+   * 查询单个任务的映射。
+   * @param taskId 定时任务 ID
+   * @returns 映射记录；不存在时返回 undefined
+   */
+  async find(taskId: string): Promise<CronTaskMapping | undefined> {
+    return (await this.list()).find((mapping) => mapping.taskId === taskId)
+  }
+
+  /**
+   * 局部更新映射（例如写入 owner 校验时间、标记因停服而暂停）。
+   * @param taskId 定时任务 ID
+   * @param patch 待合并字段
+   * @returns 更新后的映射；任务不存在时返回 undefined
+   */
+  async update(taskId: string, patch: Partial<Omit<CronTaskMapping, 'taskId'>>): Promise<CronTaskMapping | undefined> {
+    return this.serialize(async () => {
+      const mappings = await this.list()
+      const current = mappings.find((mapping) => mapping.taskId === taskId)
+      if (!current) return undefined
+      const updated: CronTaskMapping = { ...current, ...patch, taskId }
+      const next = mappings
+        .map((mapping) => (mapping.taskId === taskId ? updated : mapping))
+        .sort((left, right) => left.taskId.localeCompare(right.taskId))
+      await this.writeAll(next)
+      return updated
+    })
+  }
+
+  /**
+   * 删除映射（任务被删除或服务映射被清理时使用）。
+   * @param taskId 定时任务 ID
+   * @returns 是否确实删除了记录
+   */
+  async remove(taskId: string): Promise<boolean> {
+    return this.serialize(async () => {
+      const mappings = await this.list()
+      const next = mappings.filter((mapping) => mapping.taskId !== taskId)
+      if (next.length === mappings.length) return false
+      await this.writeAll(next)
+      return true
+    })
+  }
+
+  /**
+   * 原子写入整份映射文件。
+   * @param mappings 完整映射列表
+   * @returns Promise<void>
+   */
+  private async writeAll(mappings: CronTaskMapping[]): Promise<void> {
+    await mkdir(dirname(this.filePath), { recursive: true })
+    const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
+    await writeFile(temporaryPath, `${JSON.stringify(mappings, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+    await rename(temporaryPath, this.filePath)
   }
 
   private async serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -206,6 +263,10 @@ export async function readLocalCrons(
         ...(task.enabled !== undefined ? { enabled: task.enabled } : {}),
         ...(mapping?.mode ?? taskMode ? { mode: mapping?.mode ?? taskMode } : {}),
         ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
+        ...(mapping?.ownerVerifiedAt ? { ownerVerifiedAt: mapping.ownerVerifiedAt } : {}),
+        ...(task.durable !== undefined ? { durable: task.durable } : {}),
+        ...(task.recurring !== undefined ? { recurring: task.recurring } : {}),
+        ...(task.expiryDays !== undefined ? { expiryDays: task.expiryDays } : {}),
         ...(task.nextRun ? { nextRun: task.nextRun } : {}),
         ...(task.expiresAt ? { expiresAt: task.expiresAt } : {}),
         ...(task.prompt ? { promptFirstLine: task.prompt.split(/\r?\n/, 1)[0]?.slice(0, 200) } : {}),
@@ -223,6 +284,9 @@ interface ParsedTask {
   mode?: string
   nextRun?: string
   expiresAt?: string
+  durable?: boolean
+  recurring?: boolean
+  expiryDays?: number
 }
 
 function parseTask(value: unknown): ParsedTask | undefined {
@@ -249,6 +313,11 @@ function parseTask(value: unknown): ParsedTask | undefined {
     ...(typeof value.mode === 'string' ? { mode: value.mode } : {}),
     ...(nextRun ? { nextRun } : {}),
     ...(expiresAt ? { expiresAt } : {}),
+    ...(typeof value.durable === 'boolean' ? { durable: value.durable } : {}),
+    ...(typeof value.recurring === 'boolean' ? { recurring: value.recurring } : {}),
+    ...(typeof value.expiryDays === 'number' && Number.isInteger(value.expiryDays)
+      ? { expiryDays: value.expiryDays }
+      : {}),
   }
 }
 
@@ -274,14 +343,19 @@ function normalizeDate(value: unknown): string | undefined {
 }
 
 function isCronTaskMapping(value: unknown): value is CronTaskMapping {
-  return isRecord(value)
-    && typeof value.taskId === 'string'
+  if (!isRecord(value)) return false
+  const baseValid = typeof value.taskId === 'string'
     && value.taskId.length > 0
     && typeof value.storyId === 'string'
     && value.storyId.length > 0
     && typeof value.ownerSessionId === 'string'
     && value.ownerSessionId.length > 0
     && (value.mode === 'query_only' || value.mode === 'query_fix')
+  if (!baseValid) return false
+  // 新字段全部可选，保证早期仅含四个必填字段的映射文件仍可读取
+  if (value.ownerVerifiedAt !== undefined && !dateTimeSchema.safeParse(value.ownerVerifiedAt).success) return false
+  if (value.pausedByServiceStop !== undefined && typeof value.pausedByServiceStop !== 'boolean') return false
+  return true
 }
 
 function isInside(root: string, candidate: string): boolean {

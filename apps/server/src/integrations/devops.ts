@@ -1,4 +1,4 @@
-import type { Branch, Build } from '@devtask/shared'
+import type { Branch, Build, DeployFact } from '@devtask/shared'
 import { loadMcpServerConfig } from './mcp-config.js'
 
 interface DevOpsCredentials {
@@ -75,6 +75,28 @@ export class DevOpsAdapter {
       throw new Error('DevOps returned an invalid build records response.')
     }
     return result.detail.map((record) => parseBuild(record, app))
+  }
+
+  /**
+   * 输出发布口径事实（R16 / R17）。
+   * DevOps 现有工具只提供构建记录，没有部署状态查询，因此：
+   * - 构建成功不能被表述为「已部署」；只能说明无法确认线上版本。
+   * - dev 与 test 是否为同一环境尚未确认，发布链按钮口径不可靠。
+   * 这里固定返回 unknown 与明确文案，避免前端或调用方臆断。
+   * @param app DevOps 应用名，用于文案中指名对象
+   * @returns 部署事实与环境关系事实
+   */
+  getReleaseFacts(app: string): { deployment: DeployFact; environment: DeployFact } {
+    return {
+      deployment: {
+        fact: 'unknown',
+        statement: `无法确认 ${app} 的当前线上部署版本：DevOps 只提供构建记录，构建成功不等于已部署。`,
+      },
+      environment: {
+        fact: 'unknown',
+        statement: 'dev 与 test 环境的关系尚未确认，发布链按钮口径不可靠，因此触发构建、部署等写操作保持禁用。',
+      },
+    }
   }
 
   /**

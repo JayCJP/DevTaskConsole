@@ -174,6 +174,41 @@ describe('GitLab read adapter', () => {
       changedFiles: ['old.ts → new.ts'],
     })
   })
+
+  it('aggregates merge request diff stats and marks truncated results', async () => {
+    let requestPath = ''
+    server = createServer((request, response) => {
+      requestPath = request.url ?? ''
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        changes: [
+          {
+            old_path: 'src/a.ts',
+            new_path: 'src/a.ts',
+            diff: '@@ -1,2 +1,3 @@\n--- a/src/a.ts\n+++ b/src/a.ts\n-old line\n+new line\n+another line',
+          },
+          {
+            old_path: 'src/b.ts',
+            new_path: 'src/b.ts',
+            diff: '@@ -1 +1,2 @@\n+brand new\n+second',
+          },
+        ],
+      }))
+    })
+    await listen(server)
+    await configureServer(server)
+
+    const summary = await new GitLabAdapter().getMergeRequestDiffSummary(12, '9', 1)
+
+    expect(requestPath).toBe('/api/v4/projects/12/merge_requests/9/changes')
+    expect(summary).toMatchObject({
+      filesChanged: 2,
+      additions: 2,
+      deletions: 1,
+      truncated: true,
+      hotFiles: ['src/a.ts'],
+    })
+  })
 })
 
 async function configureServer(target: Server): Promise<void> {
