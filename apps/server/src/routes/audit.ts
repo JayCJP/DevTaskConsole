@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import type { Snapshot } from '@devtask/shared'
+import type { CronFacts } from '../aggregator/snapshot.js'
 import type { CronMappingStore } from '../aggregator/cron-data.js'
 import { isReversibleAction, type AuditLog } from '../services/audit-log.js'
 import type { ScheduledTaskClient } from '../services/scheduled-tasks.js'
@@ -11,8 +11,8 @@ import { RouteError, controlError, invalidParameters } from './support.js'
 export interface AuditRouteDeps {
   /** 审计流水 */
   audit: AuditLog
-  /** 快照读取，用于把审计目标定位到 Story 与端口 */
-  snapshotProvider: () => Promise<Snapshot>
+  /** 只读定时任务事实：撤销只需要任务的 Story 归属，不触发上游聚合 */
+  cronFacts: () => Promise<CronFacts>
   /** 服务注册表 */
   supervisor: StoryServiceSupervisor
   /** CodeBuddy 定时任务客户端 */
@@ -124,8 +124,8 @@ async function locateTarget(
   deps: AuditRouteDeps,
   taskId: string,
 ): Promise<{ port: number; storyId: string; service: StoryService; ownerSessionId?: string }> {
-  const snapshot = await deps.snapshotProvider()
-  const cron = snapshot.crons.find((item) => item.id === taskId)
+  const facts = await deps.cronFacts()
+  const cron = facts.crons.find((item) => item.id === taskId)
   if (!cron?.storyId) {
     throw new RouteError(409, 'CRON_STORY_UNMAPPED', '无法定位该任务的 Story，撤销需要服务端口。')
   }

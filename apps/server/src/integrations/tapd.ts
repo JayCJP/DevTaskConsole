@@ -1,5 +1,5 @@
 import { defaultTapdWorkspaceId, type Bug, type Requirement, type TapdStory } from '@devtask/shared'
-import { mcpClientRegistry, type McpClientRegistry } from './mcp-client.js'
+import { McpConnectError, mcpClientRegistry, type McpClientRegistry } from './mcp-client.js'
 
 const requiredReadTools = ['get_stories_or_tasks', 'get_related_bugs', 'get_bug', 'get_iterations']
 type ToolListing = Awaited<ReturnType<McpClientRegistry['listTools']>>
@@ -11,6 +11,28 @@ const ownedStoryFields = `${storyFields},created`
 /** TAPD 未返回 url_template 时使用的需求详情链接模板 */
 const defaultStoryUrlTemplate = 'https://www.tapd.cn/38260062/prong/stories/view/{id}'
 const bugFields = 'id,title,status,current_owner,created,module,description'
+
+/** TAPD 需求增强字段的缓存时长：60 秒内的重复快照复用上次结果，手动刷新可穿透 */
+const enrichmentTtlMs = 60_000
+
+/** `aggregate()` 的返回结果 */
+export interface TapdAggregateResult {
+  requirements: Requirement[]
+  bugs: Bug[]
+  /** 本次结果中最早一条缓存的时间（ISO 时间字符串）；全部来自实时请求时缺省 */
+  cachedAt?: string
+}
+
+/** TAPD 侧返回、可缓存到需求上的增强字段 */
+interface StoryEnrichment {
+  title?: string
+  status?: string
+  priority?: string
+  owner?: string
+  iterationName?: string
+  bugNew?: number
+  bugReopened?: number
+}
 
 interface RelatedBug {
   bugId: string
@@ -30,6 +52,18 @@ interface StoryDetails {
 export class TapdAdapter {
   /** TAPD 需求状态码到中文名的映射缓存，避免每次查询需求都重复拉取 */
   private storyStatusLabels?: Promise<Map<string, string>>
+  /**
+   * 需求增强字段的按 Story 缓存。
+   *
+   * 只缓存 TAPD 侧返回的字段（标题/状态/负责人/迭代/缺陷数与其缺陷明细），
+   * 合并时仍以调用方传入的当前本地需求为骨架，因此本地新增或删除需求会立即生效，
+   * 不会出现「本地改了却被旧数组覆盖」的不同步。
+   */
+  private readonly enrichmentCache = new Map<string, {
+    at: number
+    enrichment: StoryEnrichment
+    bugs: Array<Omit<Bug, 'storyId'>>
+  }>()
 
   constructor(
     private readonly tools: Pick<McpClientRegistry, 'listTools' | 'callTool'> = mcpClientRegistry,
@@ -41,8 +75,14 @@ export class TapdAdapter {
       listing = await this.tools.listTools('TAPD_MCP_Server')
     } catch (error) {
       const code = safeErrorCode(error)
-      const detail = code ? ` (${code})` : ''
-      throw new Error(`TAPD MCP connection failed${detail}. Check its local command and configuration.`, { cause: error })
+      const codeDetail = code ? ` (${code})` : ''
+      // 只透出 MCP 客户端已脱敏的启动错误（含 429 限流、子进程输出等），避免转发未净化的原始错误
+      const reason = error instanceof McpConnectError ? describeError(error) : ''
+      throw new Error(
+        `TAPD MCP connection failed${codeDetail}${reason ? `: ${reason}` : ''}. `
+        + 'Check its local command and configuration.',
+        { cause: error },
+      )
     }
     if (!listing) return false
     const available = new Set(listing.tools.map((tool) => tool.name))
@@ -53,7 +93,20 @@ export class TapdAdapter {
     return true
   }
 
-  async aggregate(requirements: Requirement[]): Promise<{ requirements: Requirement[]; bugs: Bug[] }> {
+  /**
+   * 用 TAPD 数据增强本地需求，并返回按 Story 关联的缺陷。
+   *
+   * TAPD 侧字段按 Story 缓存 60 秒（`options.force` 可强制穿透），
+   * 合并时始终以传入的本地需求为骨架，因此本地改动立刻生效。
+   *
+   * @param requirements 当前本地 Harness 需求
+   * @param options.force 是否忽略缓存重新拉取 TAPD
+   * @returns 增强后的需求与匹配到的缺陷
+   */
+  async aggregate(
+    requirements: Requirement[],
+    options: { force?: boolean } = {},
+  ): Promise<TapdAggregateResult> {
     const mappedRequirements = requirements.filter(
       (requirement): requirement is Requirement & { tapdStoryId: string } =>
         typeof requirement.tapdStoryId === 'string' && requirement.tapdStoryId.trim().length > 0,
@@ -68,6 +121,64 @@ export class TapdAdapter {
       }
       harnessStoriesByTapdId.set(requirement.tapdStoryId, requirement.storyId)
     }
+
+    const now = Date.now()
+    const staleStoryIds = storyIds.filter((storyId) =>
+      options.force === true || !this.isEnrichmentFresh(storyId, now))
+    if (staleStoryIds.length) {
+      const fetched = await this.fetchEnrichment(staleStoryIds)
+      for (const [storyId, entry] of fetched) {
+        this.enrichmentCache.set(storyId, { at: now, ...entry })
+      }
+    }
+
+    const bugs: Bug[] = []
+    const seenBugs = new Set<string>()
+    const cacheTimes: number[] = []
+    // 本次刚拉取过的 ID 不算“复用缓存”，否则会把新鲜数据误标成 stale
+    const fetchedStoryIds = new Set(staleStoryIds)
+    const enrichedRequirements = requirements.map((requirement) => {
+      const tapdStoryId = requirement.tapdStoryId
+      if (!tapdStoryId) return requirement
+      const cached = this.enrichmentCache.get(tapdStoryId)
+      if (!cached) return { ...requirement, tapdWorkspaceId }
+      // 记录实际复用的缓存时间，供快照如实标注数据新鲜度
+      if (!fetchedStoryIds.has(tapdStoryId)) cacheTimes.push(cached.at)
+      for (const bug of cached.bugs) {
+        const key = `${requirement.storyId}:${bug.id}`
+        if (seenBugs.has(key)) continue
+        seenBugs.add(key)
+        bugs.push({ ...bug, storyId: requirement.storyId })
+      }
+      return { ...requirement, tapdWorkspaceId, ...cached.enrichment }
+    })
+    return {
+      requirements: enrichedRequirements,
+      bugs,
+      // 有任一需求复用了缓存，就按最早的那次时间标注
+      ...(cacheTimes.length ? { cachedAt: new Date(Math.min(...cacheTimes)).toISOString() } : {}),
+    }
+  }
+
+  /**
+   * 判断某个 TAPD 需求的增强字段缓存是否仍然有效。
+   * @param storyId TAPD 需求 ID
+   * @param now 当前时间戳
+   * @returns 是否在 TTL 内
+   */
+  private isEnrichmentFresh(storyId: string, now: number): boolean {
+    const cached = this.enrichmentCache.get(storyId)
+    return cached !== undefined && now - cached.at < enrichmentTtlMs
+  }
+
+  /**
+   * 从 TAPD 拉取指定需求的增强字段与关联缺陷。
+   * @param storyIds 需要拉取的 TAPD 需求 ID
+   * @returns 需求 ID 到增强字段和缺陷明细的映射
+   */
+  private async fetchEnrichment(
+    storyIds: string[],
+  ): Promise<Map<string, { enrichment: StoryEnrichment; bugs: Array<Omit<Bug, 'storyId'>> }>> {
     const [storiesResponse, relatedResponse] = await Promise.all([
       this.callJsonTool('get_stories_or_tasks', {
         workspace_id: tapdWorkspaceId,
@@ -125,50 +236,47 @@ export class TapdAdapter {
       bugIdsForStory.add(related.bugId)
       relatedByStory.set(related.storyId, bugIdsForStory)
     }
-
     const bugsById = new Map(bugs.map((bug) => [bug.id, bug]))
-    const matchedBugs: Bug[] = []
-    const enrichedRequirements = requirements.map((requirement) => {
-      const tapdStoryId = requirement.tapdStoryId
-      const story = tapdStoryId ? storyById.get(tapdStoryId) : undefined
-      const bugIdsForStory = tapdStoryId ? relatedByStory.get(tapdStoryId) : undefined
-      if (!story && !bugIdsForStory) {
-        return tapdStoryId ? { ...requirement, tapdWorkspaceId } : requirement
-      }
-      const matchingBugs = bugs.filter((bug) =>
-        bugIdsForStory?.has(bug.id) === true
-        && hasOwnerMatch(bug.currentOwner, story?.owner),
-      )
-      for (const bug of matchingBugs) {
-        const detail = bugsById.get(bug.id)
-        if (detail) matchedBugs.push({
-          id: detail.id,
-          storyId: requirement.storyId,
-          status: detail.status,
-          currentOwner: detail.currentOwner,
-          ...(detail.title ? { title: detail.title } : {}),
-          ...(detail.created ? { created: detail.created } : {}),
-          ...(detail.module ? { module: detail.module } : {}),
-          ...(detail.description ? { description: detail.description } : {}),
-        })
-      }
-      return {
-        ...requirement,
-        ...(tapdStoryId ? { tapdWorkspaceId } : {}),
-        ...(story?.title ? { title: story.title } : {}),
-        ...(story?.status ? { status: story.status } : {}),
-        ...(story?.priority ? { priority: story.priority } : {}),
-        ...(story?.owner ? { owner: story.owner } : {}),
-        ...(story?.iterationName ? { iterationName: story.iterationName } : {}),
-        ...(story?.owner
-          ? {
-              bugNew: matchingBugs.filter((bug) => bug.status === 'new').length,
-              bugReopened: matchingBugs.filter((bug) => bug.status === 'reopened').length,
-            }
-          : {}),
-      }
-    })
-    return { requirements: enrichedRequirements, bugs: matchedBugs }
+
+    const result = new Map<string, { enrichment: StoryEnrichment; bugs: Array<Omit<Bug, 'storyId'>> }>()
+    for (const storyId of storyIds) {
+      const story = storyById.get(storyId)
+      const bugIdsForStory = relatedByStory.get(storyId)
+      const matchingBugs = bugIds.length
+        ? bugs.filter((bug) =>
+            bugIdsForStory?.has(bug.id) === true && hasOwnerMatch(bug.currentOwner, story?.owner))
+        : []
+      result.set(storyId, {
+        enrichment: {
+          ...(story?.title ? { title: story.title } : {}),
+          ...(story?.status ? { status: story.status } : {}),
+          ...(story?.priority ? { priority: story.priority } : {}),
+          ...(story?.owner ? { owner: story.owner } : {}),
+          ...(story?.iterationName ? { iterationName: story.iterationName } : {}),
+          ...(story?.owner
+            ? {
+                bugNew: matchingBugs.filter((bug) => bug.status === 'new').length,
+                bugReopened: matchingBugs.filter((bug) => bug.status === 'reopened').length,
+              }
+            : {}),
+        },
+        bugs: matchingBugs.flatMap((bug) => {
+          const detail = bugsById.get(bug.id)
+          return detail
+            ? [{
+                id: detail.id,
+                status: detail.status,
+                currentOwner: detail.currentOwner,
+                ...(detail.title ? { title: detail.title } : {}),
+                ...(detail.created ? { created: detail.created } : {}),
+                ...(detail.module ? { module: detail.module } : {}),
+                ...(detail.description ? { description: detail.description } : {}),
+              }]
+            : []
+        }),
+      })
+    }
+    return result
   }
 
   async enrichRequirements(requirements: Requirement[]): Promise<Requirement[]> {
@@ -475,6 +583,16 @@ function parseCount(value: unknown): number | undefined {
     }
   }
   return undefined
+}
+
+/**
+ * 把已脱敏的错误转成单行可读文本，并限制长度。
+ * @param error 捕获到的错误
+ * @returns 单行错误信息（最多 400 字符）
+ */
+function describeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/\s+/g, ' ').trim().slice(0, 400)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

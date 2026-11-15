@@ -9,9 +9,9 @@ import {
   cronUpdateRequestSchema,
   validateCronExpression,
   type Cron,
-  type Snapshot,
 } from '@devtask/shared'
 import { mergeCronFacts } from '../aggregator/cron-merge.js'
+import type { CronFacts } from '../aggregator/snapshot.js'
 import type { CronMappingStore } from '../aggregator/cron-data.js'
 import type { AuditLog } from '../services/audit-log.js'
 import type { CodeBuddyApi } from '../services/codebuddy-api.js'
@@ -23,8 +23,8 @@ import { RouteError, controlError, invalidParameters } from './support.js'
 
 /** 定时任务路由依赖 */
 export interface CronRouteDeps {
-  /** 读取当前快照，用于把任务 ID 定位到 Story 与工作区目录 */
-  snapshotProvider: () => Promise<Snapshot>
+  /** 只读定时任务事实：不触发 TAPD/GitLab/DevOps 聚合 */
+  cronFacts: () => Promise<CronFacts>
   /** 工作区根目录 */
   workspacesRoot: string
   /** Story 服务注册表：端口一律由它解析，不做全局回退 */
@@ -127,8 +127,9 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
    * @returns 定位结果
    */
   const locate = async (taskId: string): Promise<LocatedCron> => {
-    const snapshot = await deps.snapshotProvider()
-    const cron = snapshot.crons.find((item) => item.id === taskId)
+    // 只读本地定时任务事实：任务归属与工作区定位与 TAPD 无关
+    const facts = await deps.cronFacts()
+    const cron = facts.crons.find((item) => item.id === taskId)
     if (!cron) {
       throw new RouteError(404, 'CRON_TASK_NOT_FOUND', `定时任务 ${taskId} 不存在或不在任何已登记工作区中。`)
     }
@@ -152,10 +153,11 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
     const query = z.object({ storyId: z.string().min(1).max(200).optional() }).safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
     try {
-      const snapshot = await deps.snapshotProvider()
+      // 任务列表只依赖本地文件与本地服务，不需要整份快照（也就不会顺带打 TAPD）
+      const facts = await deps.cronFacts()
       const localCrons = query.data.storyId
-        ? snapshot.crons.filter((cron) => cron.storyId === query.data.storyId)
-        : snapshot.crons
+        ? facts.crons.filter((cron) => cron.storyId === query.data.storyId)
+        : facts.crons
       if (!query.data.storyId) {
         return { source: 'file', tasks: localCrons }
       }
@@ -176,7 +178,7 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
         )
         const tasks = await deps.client.list(service.port, { sessionId })
         // 实时数据只提供运行期事实，归属与模式仍以本地文件/映射为准，否则前端会丢归属
-        const workspacePath = snapshot.requirements.find((item) => item.storyId === query.data.storyId)?.workspacePath
+        const workspacePath = facts.requirements.find((item) => item.storyId === query.data.storyId)?.workspacePath
         const merged = mergeCronFacts(
           localCrons,
           [

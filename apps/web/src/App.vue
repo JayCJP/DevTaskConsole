@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   FolderOpened,
@@ -31,7 +31,6 @@ const commandInput = ref<HTMLInputElement | null>(null)
 const darkMode = ref(localStorage.getItem('devtask-theme') !== 'light')
 const pendingG = ref(false)
 let pendingGTimeout: ReturnType<typeof setTimeout> | undefined
-let refreshTimer: ReturnType<typeof setInterval> | undefined
 
 const commandItems = computed(() => {
   const query = commandQuery.value.trim().toLocaleLowerCase()
@@ -139,15 +138,9 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-watch(authenticated, (isAuthenticated) => {
-  if (refreshTimer) clearInterval(refreshTimer)
-  refreshTimer = undefined
-  if (isAuthenticated) {
-    refreshTimer = setInterval(() => {
-      if (!store.loading) void store.refresh()
-    }, 30_000)
-  }
-})
+// 不做快照定时自动刷新：每次刷新都会触发后端聚合 TAPD/GitLab/DevOps，
+// 既消耗上游接口配额（TAPD 易触发 429），也会把用户正在看的状态刷掉。
+// 数据只在登录、进入页面、手动点「刷新/重新检测/重试」以及写操作完成后更新。
 
 onMounted(() => {
   document.documentElement.dataset.theme = darkMode.value ? 'dark' : 'light'
@@ -158,7 +151,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   if (pendingGTimeout) clearTimeout(pendingGTimeout)
-  if (refreshTimer) clearInterval(refreshTimer)
 })
 </script>
 

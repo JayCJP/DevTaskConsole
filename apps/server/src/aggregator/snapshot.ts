@@ -57,7 +57,16 @@ export function getWorkspacesRoot(): string {
   return join(homedir(), 'devtask-workspaces')
 }
 
-export async function buildSnapshot(workspacesRoot = getWorkspacesRoot()): Promise<Snapshot> {
+/**
+ * 构建控制台统一快照。
+ * @param workspacesRoot 工作区根目录
+ * @param options.forceTapd 是否跳过 TAPD 增强字段缓存（手动刷新时使用）
+ * @returns 快照
+ */
+export async function buildSnapshot(
+  workspacesRoot = getWorkspacesRoot(),
+  options: { forceTapd?: boolean } = {},
+): Promise<Snapshot> {
   const snapshotAt = new Date().toISOString()
   const localResult = await readLocalHarness(workspacesRoot)
   const localRootAvailable = await directoryExists(workspacesRoot)
@@ -74,7 +83,7 @@ export async function buildSnapshot(workspacesRoot = getWorkspacesRoot()): Promi
   const releaseTargets = buildReleaseTargets(localResult.requirements, workspaceScan.workspaces, workspacesRoot)
   const localErrors = [...localResult.errors, ...(workspaceScan.error ? [workspaceScan.error] : [])]
   const [tapdResult, gitlabResult, devopsResult, codeBuddyResult, cronResult, viewer] = await Promise.all([
-    loadTapdSnapshot(snapshotAt, localResult.requirements),
+    loadTapdSnapshot(snapshotAt, localResult.requirements, options.forceTapd === true),
     loadGitLabSnapshot(snapshotAt, releaseTargets, identities),
     loadDevOpsSnapshot(snapshotAt, identities),
     loadCodeBuddySnapshot(snapshotAt, workspacesRoot, localResult.requirements),
@@ -129,6 +138,47 @@ export async function buildSnapshot(workspacesRoot = getWorkspacesRoot()): Promi
     branches: devopsResult.branches,
     mergeRequests: gitlabResult.mergeRequests,
     ...pipelines,
+  }
+}
+
+/** 定时任务事实：只含本地文件、工作区扫描与本地服务实时数据，不触达 TAPD/GitLab/DevOps */
+export interface CronFacts {
+  fetchedAt: string
+  channel: ChannelState
+  crons: Snapshot['crons']
+  /** 本地 Harness 需求（用于 Story 与工作区归属，不含 TAPD 增强字段） */
+  requirements: Snapshot['requirements']
+  workspaces: WorkspaceSummary[]
+}
+
+/**
+ * 只构建定时任务所需的事实，跳过 TAPD/GitLab/DevOps/CodeBuddy 聚合。
+ *
+ * 定时任务的归属、工作区定位与 session 绑定都来自本地文件与本地服务，
+ * 与 TAPD 数据无关；cron 路由若为此构建整份快照，每次操作都会顺带打一次
+ * TAPD（2~4 个请求），既慢又容易触发上游限流。
+ *
+ * @param workspacesRoot 工作区根目录
+ * @returns 定时任务事实（含通道状态）
+ */
+export async function buildCronFacts(workspacesRoot = getWorkspacesRoot()): Promise<CronFacts> {
+  const fetchedAt = new Date().toISOString()
+  const [localResult, workspaceScan] = await Promise.all([
+    readLocalHarness(workspacesRoot),
+    loadWorkspaceScan(workspacesRoot),
+  ])
+  const cronResult = await loadCronSnapshot(
+    fetchedAt,
+    workspacesRoot,
+    localResult.requirements,
+    workspaceScan.workspaces,
+  )
+  return {
+    fetchedAt,
+    channel: cronResult.channel,
+    crons: cronResult.crons,
+    requirements: localResult.requirements,
+    workspaces: workspaceScan.workspaces,
   }
 }
 
@@ -568,6 +618,7 @@ function requirementInDirectory(
 async function loadTapdSnapshot(
   fetchedAt: string,
   requirements: Snapshot['requirements'],
+  forceTapd: boolean,
 ): Promise<{ channel: ChannelState; requirements: Snapshot['requirements']; bugs: Snapshot['bugs'] }> {
   try {
     const configured = await tapd.checkConnection()
@@ -578,9 +629,14 @@ async function loadTapdSnapshot(
         bugs: [],
       }
     }
-    const data = await tapd.aggregate(requirements)
+    const data = await tapd.aggregate(requirements, { force: forceTapd })
     return {
-      channel: { fetchedAt, ok: true, stale: false },
+      channel: {
+        // 复用缓存时如实回传缓存时间并标记 stale，避免把 60 秒前的数据说成刚拉取
+        fetchedAt: data.cachedAt ?? fetchedAt,
+        ok: true,
+        stale: data.cachedAt !== undefined,
+      },
       requirements: data.requirements,
       bugs: data.bugs,
     }

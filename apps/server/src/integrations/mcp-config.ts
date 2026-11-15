@@ -8,6 +8,8 @@ const serverConfigSchema = z.object({
   args: z.array(z.string()).default([]),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  /** 子进程握手超时（毫秒），缺省由客户端使用内置默认值 */
+  timeout: z.number().int().positive().max(600_000).optional(),
 })
 
 export type McpServerConfig = z.infer<typeof serverConfigSchema>

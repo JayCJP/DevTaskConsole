@@ -10,20 +10,23 @@ export const useConsoleStore = defineStore('console', () => {
   const refreshedAt = ref('')
   /** 首次加载标记：用于区分“尚未加载”与“加载完成但确实没有数据” */
   const loaded = ref(false)
-  let inflight: Promise<void> | null = null
+  /** 在途请求：按“是否强制刷新”分开去重，手动刷新不会被在途的增量刷新吞掉 */
+  const inflight = new Map<boolean, Promise<void>>()
 
   /**
    * 拉取控制台统一快照。
-   * 同一个请求在途时复用同一个 Promise，避免页面挂载与定时器重复触发。
+   * 同一个请求在途时复用同一个 Promise，避免页面挂载与操作回调重复触发。
+   * @param force 为 true 时跳过服务端 TAPD 增强字段缓存（用户手动刷新时使用）
    * @returns Promise<void>，失败信息写入 error 并保留上一次成功的快照
    */
-  async function refresh(): Promise<void> {
-    if (inflight) return inflight
-    inflight = (async () => {
+  async function refresh(force = false): Promise<void> {
+    const existing = inflight.get(force)
+    if (existing) return existing
+    const task = (async () => {
       loading.value = true
       error.value = ''
       try {
-        const payload: unknown = await apiRequest('/api/v1/snapshot')
+        const payload: unknown = await apiRequest(force ? '/api/v1/snapshot?refresh=1' : '/api/v1/snapshot')
         snapshot.value = snapshotSchema.parse(payload)
         refreshedAt.value = new Date().toISOString()
       } catch (cause) {
@@ -34,10 +37,11 @@ export const useConsoleStore = defineStore('console', () => {
       } finally {
         loading.value = false
         loaded.value = true
-        inflight = null
+        inflight.delete(force)
       }
     })()
-    return inflight
+    inflight.set(force, task)
+    return task
   }
 
   /**

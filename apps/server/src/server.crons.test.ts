@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CronExecutionPage, Snapshot } from '@devtask/shared'
+import type { CronFacts } from './aggregator/snapshot.js'
 import { buildServer } from './server.js'
 import { AuditLog } from './services/audit-log.js'
 import { CronDispatchStore } from './services/cron-dispatch.js'
@@ -159,6 +160,21 @@ function stubClient(overrides: Partial<Record<string, unknown>> = {}): {
 }
 
 /**
+ * 把快照桩转换成 cron 路由需要的本地事实。
+ * @param value 快照桩
+ * @returns 定时任务事实
+ */
+function toCronFacts(value: Snapshot): CronFacts {
+  return {
+    fetchedAt: value.snapshotAt,
+    channel: { fetchedAt: value.snapshotAt, ok: true, stale: false },
+    crons: value.crons,
+    requirements: value.requirements,
+    workspaces: [],
+  }
+}
+
+/**
  * 构造可用的 app，注入桩依赖。
  * @param options 覆盖项
  * @returns app 与桩引用
@@ -181,10 +197,13 @@ async function buildApp(options: {
   const client = options.client ?? stubClient()
   const mappings = new CronMappingStore(dataDirectory)
   const audit = new AuditLog(dataDirectory)
+  const snapshotProvider = options.snapshotProvider ?? (async () => snapshot())
   const app = buildServer({
     token: accessToken,
     logger: false,
-    snapshotProvider: options.snapshotProvider ?? (async () => snapshot()),
+    snapshotProvider,
+    // cron 路由只读本地事实：用同一份快照桩顶替真实工作区扫描
+    cronFactsProvider: async () => toCronFacts(await snapshotProvider()),
     storyServiceSupervisor: supervisor.supervisor,
     scheduledTaskClient: client.client,
     cronMappingStore: mappings,

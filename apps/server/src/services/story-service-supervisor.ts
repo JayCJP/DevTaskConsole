@@ -43,14 +43,15 @@ interface StoryServiceSupervisorOptions {
   dataDirectory?: string
   portStart?: number
   portEnd?: number
-  launch?: (cwd: string, port: number) => Promise<number>
+  /** 启动实现；第三个参数为 Story 标识，供 herdr 等外部托管方式定位专属工作区 */
+  launch?: (cwd: string, port: number, storyId: string) => Promise<number>
   isPortAvailable?: (port: number) => Promise<boolean>
   isHealthy?: (port: number) => Promise<boolean>
   wait?: (milliseconds: number) => Promise<void>
   retryWait?: (milliseconds: number) => Promise<void>
   startupTimeoutMs?: number
   /** 结束进程树的实现；默认 Windows 用 taskkill /T /F，其它平台用负 PID 分组信号 */
-  killProcessTree?: (pid: number) => Promise<void>
+  killProcessTree?: (pid: number, storyId?: string) => Promise<void>
   /** 停止后等待端口释放的超时时间 */
   stopTimeoutMs?: number
 }
@@ -59,12 +60,12 @@ export class StoryServiceSupervisor {
   private readonly filePath: string
   private readonly portStart: number
   private readonly portEnd: number
-  private readonly launch: (cwd: string, port: number) => Promise<number>
+  private readonly launch: (cwd: string, port: number, storyId: string) => Promise<number>
   private readonly isPortAvailable: (port: number) => Promise<boolean>
   private readonly isHealthy: (port: number) => Promise<boolean>
   private readonly wait: (milliseconds: number) => Promise<void>
   private readonly retryWait: (milliseconds: number) => Promise<void>
-  private readonly killProcessTree: (pid: number) => Promise<void>
+  private readonly killProcessTree: (pid: number, storyId?: string) => Promise<void>
   private readonly startupTimeoutMs: number
   private readonly stopTimeoutMs: number
   private queue: Promise<void> = Promise.resolve()
@@ -154,7 +155,7 @@ export class StoryServiceSupervisor {
             `Port ${service.port} is still in use but no PID is recorded; refusing to report the service as stopped.`,
           )
         }
-        await this.killProcessTree(service.pid)
+        await this.killProcessTree(service.pid, service.storyId)
       }
       const released = await this.waitUntilPortReleased(service.port)
       if (!released) {
@@ -274,7 +275,7 @@ export class StoryServiceSupervisor {
       }
 
       try {
-        const pid = await this.launch(service.cwd, service.port)
+        const pid = await this.launch(service.cwd, service.port, service.storyId)
         await this.upsert(services, { ...service, pid, updatedAt: new Date().toISOString() })
         await this.waitUntilHealthy(service.port)
         const running = { ...service, pid, status: 'running' as const, updatedAt: new Date().toISOString() }
@@ -483,10 +484,11 @@ function isStoryService(value: unknown): value is StoryService {
  * Windows 用 `taskkill /T /F`（子进程由 cmd 派生，只有 /T 才能带走整棵树）；
  * 其它平台对负 PID 发 SIGTERM，等价于结束进程组。
  * 进程已退出或命令返回非 0 不算失败，最终以端口是否释放为准。
+ * 对外导出是为了让 herdr 等外部托管实现在 pane 已消失时复用同一套兜底逻辑。
  * @param pid 进程 ID
  * @returns Promise<void>
  */
-async function killProcessTree(pid: number): Promise<void> {
+export async function killProcessTree(pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid process ID for Story service stop.')
   await new Promise<void>((resolvePromise, reject) => {
     const windows = process.platform === 'win32'

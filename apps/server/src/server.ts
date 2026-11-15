@@ -24,7 +24,7 @@ import {
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
-import { buildSnapshot, getWorkspacesRoot } from './aggregator/snapshot.js'
+import { buildCronFacts, buildSnapshot, getWorkspacesRoot, type CronFacts } from './aggregator/snapshot.js'
 import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
 import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
@@ -55,6 +55,7 @@ import {
   WorkspaceBindingStore,
 } from './workspaces/bindings.js'
 import { StoryServiceSupervisor, type StoryService } from './services/story-service-supervisor.js'
+import { createHerdrLifecycle, createHerdrRunner, resolveStoryServiceLauncher } from './services/herdr-story-service.js'
 import { CodeBuddyApi, CodeBuddyApiError, extractJob, extractJobList, extractJobPrefs } from './services/codebuddy-api.js'
 import { ScheduledTaskClient } from './services/scheduled-tasks.js'
 import { CronExecutionReader } from './services/cron-executions.js'
@@ -69,7 +70,10 @@ import { restoreCronOwners } from './services/cron-recovery.js'
 export interface ServerOptions {
   token: string
   logger?: boolean
-  snapshotProvider?: () => Promise<Snapshot>
+  /** 快照构建器；`force` 为 true 时跳过 TAPD 增强字段缓存 */
+  snapshotProvider?: (force?: boolean) => Promise<Snapshot>
+  /** 只读定时任务事实的构建器，测试时可注入替身 */
+  cronFactsProvider?: () => Promise<CronFacts>
   devOpsAdapter?: DevOpsAdapter
   gitLabAdapter?: GitLabAdapter
   tapdAdapter?: Pick<TapdAdapter, 'listOwnedStories'>
@@ -91,6 +95,23 @@ export interface ServerOptions {
   cronExecutionReader?: CronExecutionReader
   /** CodeBuddy 原始 API；测试可注入桩，用于派发轮次等直连调用 */
   codeBuddyApi?: CodeBuddyApi
+}
+
+/**
+ * 构造 Story 服务监督器。
+ * 默认由 herdr 的持久 pane 托管进程：服务不随启动它的终端窗口消失，
+ * 也不会在 Windows 上弹出独立控制台窗口。
+ * 设置 `DEVTASK_STORY_LAUNCHER=spawn` 可回退到内置的 detached 实现。
+ * 两种实现共用同一套端口分配、健康检查、退避重启与注册表逻辑。
+ * @returns 已装配启动/停止实现的监督器
+ */
+function createStoryServiceSupervisor(): StoryServiceSupervisor {
+  if (resolveStoryServiceLauncher() === 'spawn') return new StoryServiceSupervisor()
+  const lifecycle = createHerdrLifecycle(createHerdrRunner())
+  return new StoryServiceSupervisor({
+    launch: lifecycle.launch,
+    killProcessTree: lifecycle.stop,
+  })
 }
 
 const storyIdSchema = z.string().min(1).max(200)
@@ -128,17 +149,26 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const workspaceBindings = options.workspaceBindingStore ?? new WorkspaceBindingStore()
   const tapd = options.tapdAdapter ?? new TapdAdapter()
   const workspaceInitializer = options.workspaceInitializer ?? new WorkspaceInitializer()
-  const storyServiceSupervisor = options.storyServiceSupervisor ?? new StoryServiceSupervisor()
+  const storyServiceSupervisor = options.storyServiceSupervisor ?? createStoryServiceSupervisor()
   const codeBuddyApi = options.codeBuddyApi ?? new CodeBuddyApi()
   const workspacesRoot = options.workspacesRoot ?? getWorkspacesRoot()
   app.addHook('onClose', async () => {
     await workspaceInitializer.flush()
     await mcpClientRegistry.close()
   })
-  const snapshotProvider = options.snapshotProvider ?? buildSnapshot
+  // 多个页面/标签页可能同时请求快照：并发时共享同一次构建，避免重复打 TAPD/GitLab/DevOps
+  const snapshotProvider = createSingleFlight(
+    options.snapshotProvider
+      ?? ((force?: boolean) => buildSnapshot(workspacesRoot, { forceTapd: force === true })),
+  )
+  // 定时任务只读事实：并发去重，且完全不触达上游系统
+  const cronFactsProvider = createSingleFlight(
+    options.cronFactsProvider ?? (() => buildCronFacts(workspacesRoot)),
+  )
   const webDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
   const ensureStoryService = async (storyId: string): Promise<StoryService> => {
-    const snapshot = await snapshotProvider()
+    // 显式传 false：与快照接口的非强制请求共用同一次构建（单飞按参数区分）
+    const snapshot = await snapshotProvider(false)
     const requirement = snapshot.requirements.find((item) => item.storyId === storyId)
     if (!requirement?.workspacePath) {
       throw new StoryWorkspaceUnavailableError()
@@ -156,7 +186,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // 定时任务、服务生命周期与审计三组路由共享同一套端口解析与审计流水
   registerCronRoutes(app, {
-    snapshotProvider,
+    cronFacts: cronFactsProvider,
     workspacesRoot,
     supervisor: storyServiceSupervisor,
     client: scheduledTasks,
@@ -176,7 +206,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
   registerAuditRoutes(app, {
     audit: auditLog,
-    snapshotProvider,
+    cronFacts: cronFactsProvider,
     supervisor: storyServiceSupervisor,
     client: scheduledTasks,
     mappings: cronMappings,
@@ -392,7 +422,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const params = z.object({ storyId: z.string().min(1).max(200) }).safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     try {
-      const snapshot = await snapshotProvider()
+      const snapshot = await snapshotProvider(false)
       const requirement = snapshot.requirements.find((item) => item.storyId === params.data.storyId)
       if (!requirement?.workspacePath) {
         return reply.code(409).send({
@@ -856,7 +886,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/snapshot', async (request, reply) => {
-    const snapshot = await snapshotProvider()
+    // refresh=1：用户手动刷新，跳过 TAPD 增强字段缓存，确保看到的是最新上游数据
+    const query = z.object({ refresh: z.enum(['0', '1', 'true', 'false']).optional() }).safeParse(request.query)
+    if (!query.success) return invalidParameters(reply)
+    const snapshot = await snapshotProvider(query.data.refresh === '1' || query.data.refresh === 'true')
     const parsed = snapshotSchema.safeParse(snapshot)
     if (!parsed.success) {
       request.log.error({ issues: parsed.error.issues }, 'Snapshot validation failed')
@@ -991,6 +1024,29 @@ async function relayRead(
   }
 }
 
+/**
+ * 把快照构建包装成单飞（single-flight）：
+ * 同一时刻的并发请求共享同一次构建结果，构建结束后立即复位，
+ * 因此不会缓存数据、也不会让页面看到过期快照。
+ * @param provider 原始快照构建函数
+ * @returns 带并发去重的快照获取函数
+ */
+function createSingleFlight<TArgs extends unknown[], TResult>(
+  provider: (...args: TArgs) => Promise<TResult>,
+): (...args: TArgs) => Promise<TResult> {
+  const inflight = new Map<string, Promise<TResult>>()
+  return (...args: TArgs) => {
+    // 参数（如是否强制刷新）不同的请求不能互相复用结果
+    const key = JSON.stringify(args)
+    let pending = inflight.get(key)
+    if (!pending) {
+      pending = provider(...args).finally(() => inflight.delete(key))
+      inflight.set(key, pending)
+    }
+    return pending
+  }
+}
+
 function invalidParameters(reply: FastifyReply): FastifyReply {
   return reply.code(400).send({
     error: { code: 'INVALID_PARAMETERS', message: 'The request parameters are invalid.' },
@@ -1017,7 +1073,7 @@ function workspaceInitializationError(
 
 export async function startServer(): Promise<void> {
   const token = await loadOrCreateToken()
-  const storyServiceSupervisor = new StoryServiceSupervisor()
+  const storyServiceSupervisor = createStoryServiceSupervisor()
   const workspacesRoot = getWorkspacesRoot()
   const cronMappings = new CronMappingStore()
   const scheduledTasks = new ScheduledTaskClient()
@@ -1040,7 +1096,15 @@ export async function startServer(): Promise<void> {
   })
 
   await app.listen({ port, host })
-  app.log.info({ host, port, dataDirectory: getDataDirectory() }, 'DevTask Console server started')
+  app.log.info(
+    {
+      host,
+      port,
+      dataDirectory: getDataDirectory(),
+      storyServiceLauncher: resolveStoryServiceLauncher(),
+    },
+    'DevTask Console server started',
+  )
   serviceMonitor.start()
 
   void (async () => {

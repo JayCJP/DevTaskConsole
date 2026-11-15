@@ -20,7 +20,6 @@ import {
   type ApplicationMapping,
   type Cron,
   type CronMode,
-  type DeployFact,
   type InboxItem,
   type Job,
   type MergeRequest,
@@ -55,7 +54,6 @@ import { useJobExtras } from '../composables/useJobExtras'
 import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
 import { useConsoleStore } from '../stores/console'
 import { buildMappingRows } from '../utils/application-mapping'
-import { filterOwnBuilds, filterOwnMergeRequests } from '../utils/release-filter'
 
 const route = useRoute()
 const router = useRouter()
@@ -74,10 +72,11 @@ const snapshotLoading = computed(() => store.loading)
 
 /**
  * 触发一次快照刷新，供模板按钮调用。
+ * @param force 是否跳过服务端 TAPD 增强字段缓存（手动刷新/重新检测时传 true）
  * @returns Promise<void>
  */
-async function refreshSnapshot(): Promise<void> {
-  await store.refresh()
+async function refreshSnapshot(force = false): Promise<void> {
+  await store.refresh(force)
 }
 const gitLabProjectSchema = z.object({ id: z.number().int().positive(), pathWithNamespace: z.string() })
 const mergeRequestDetailsSchema = z.object({
@@ -291,13 +290,6 @@ const jobActionLoading = ref(false)
 const selectedMergeRequest = ref<MergeRequest | null>(null)
 const mergeRequestLoading = ref(false)
 const mergeRequestError = ref('')
-const cronMappingDrafts = ref<Record<string, {
-  storyId: string
-  ownerSessionId: string
-  mode: '' | 'query_only' | 'query_fix'
-  saving: boolean
-  error: string
-}>>({})
 /** 定时任务写操作错误 */
 const cronError = ref('')
 /** 定时任务搜索关键词 */
@@ -413,8 +405,6 @@ async function undoCronAction(auditId: string): Promise<void> {
 function dismissCronNotice(id: string): void {
   cronActions.dismiss(id)
 }
-/** 发布口径事实（R16 / R17） */
-const releaseFacts = ref<DeployFact[]>([])
 /** MR diff 摘要，按 `projectId:iid` 缓存 */
 const mergeRequestSummaries = ref<Record<string, MergeRequestDiffSummary>>({})
 let jobStreamController: AbortController | undefined
@@ -557,21 +547,7 @@ const assignedCronIds = computed(() => new Set(workspacePipelines.value.flatMap(
 /** 未能归属到工作区项目的定时任务（例如工作区扫描失败时的兜底数据） */
 const unassignedCrons = computed<Cron[]>(() => crons.value.filter((cron) => !assignedCronIds.value.has(cron.id)))
 const activeWorkflows = computed(() => store.snapshot?.harnessActive ?? [])
-const builds = computed(() => store.snapshot?.builds ?? [])
-const branches = computed(() => store.snapshot?.branches ?? [])
-const mergeRequests = computed(() => store.snapshot?.mergeRequests ?? [])
 const channels = computed(() => Object.entries(store.snapshot?.channels ?? {}))
-
-/* ------------------------- 发布页：只显示本人的记录 ------------------------- */
-
-/** 当前查看者身份；快照未识别出身份时缺省 */
-const viewer = computed(() => store.snapshot?.viewer)
-
-/** 发布页展示的合并请求：只保留本人创建的 MR，识别不到身份时退回全量 */
-const myMergeRequests = computed(() => filterOwnMergeRequests(mergeRequests.value, viewer.value))
-
-/** 发布页展示的构建记录：只保留本人触发的构建，识别不到身份时退回全量 */
-const myBuilds = computed(() => filterOwnBuilds(builds.value, viewer.value))
 
 /**
  * 取某个 Story 关联的实例列表：快照聚合的实例与本地新拉的实例合并后按 storyId 过滤。
@@ -585,6 +561,59 @@ function jobsByStory(storyId: string): Job[] {
     .filter((job) => jobMatchesFilter(job))
     // 置顶的实例排在前面，多个实例时不用翻找正在关注的那个
     .sort((left, right) => Number(pinned.has(right.id)) - Number(pinned.has(left.id)))
+}
+
+/**
+ * 判断主会话是否被直接选中；查看子任务时父级只保留弱归属高亮。
+ * @param storyId Story 标识
+ * @returns 正在查看该主会话时返回 true
+ */
+function isMainSessionSelected(storyId: string): boolean {
+  return selectedStoryId.value === storyId && !selectedJob.value
+}
+
+/**
+ * 判断 Story 是否包含当前查看的 Job 子任务。
+ * @param storyId Story 标识
+ * @returns 子任务属于该 Story 时返回 true
+ */
+function hasSelectedJob(storyId: string): boolean {
+  return selectedJob.value?.storyId === storyId
+}
+
+/**
+ * 判断 Job 子任务是否为当前查看对象，同时校验 Story 避免跨服务 ID 冲突。
+ * @param job 待判断的 Job 子任务
+ * @returns 当前选中时返回 true
+ */
+function isJobSelected(job: Job): boolean {
+  const current = selectedJob.value
+  return current?.id === job.id && current.storyId === job.storyId
+}
+
+/**
+ * 获取 Job 子任务的状态点样式。
+ * @param job Job 子任务
+ * @returns 对应状态点 CSS 类名
+ */
+function jobDotClass(job: Job): string {
+  if (job.state === 'failed') return 'is-error'
+  if (job.status === 'busy' || job.state === 'working') return 'is-active'
+  return ''
+}
+
+/**
+ * 获取 Job 子任务的中文状态文案，未知状态保留上游原值。
+ * @param job Job 子任务
+ * @returns 用于列表展示的状态文案
+ */
+function jobStateLabel(job: Job): string {
+  if (job.state === 'working') return '执行中'
+  if (job.state === 'done') return '已完成'
+  if (job.state === 'stopped') return '已停止'
+  if (job.state === 'failed') return '异常'
+  if (job.state === 'queued') return '等待中'
+  return job.state
 }
 
 /**
@@ -803,9 +832,7 @@ const pausedCronCount = computed(() => crons.value.filter((cron) => cron.enabled
  * @returns 需要处理时返回 true
  */
 function cronNeedsAttention(cron: Cron): boolean {
-  const boundSessionId = cron.ownerSessionId ?? cron.sessionId
-  const ownerUnverified = Boolean(cron.ownerSessionId) && !cron.ownerVerifiedAt
-  return !cron.storyId || !boundSessionId || ownerUnverified
+  return !cron.storyId || !(cron.sessionId ?? cron.ownerSessionId)
 }
 
 /** 待完善配置的任务数量 */
@@ -871,8 +898,6 @@ watch([page, () => store.snapshot?.requirements.length], ([value]) => {
   if (value === 'instances') void refreshStoryServices()
   // 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取
   if (value === 'board') void board.load()
-  // 发布页需要额外的部署口径事实，与其他页面数据分开拉取
-  if (value === 'releases') void loadReleaseFacts()
 }, { immediate: true })
 
 // 刷新页面或直接进入深链接时，确保快照至少拉取一次，避免首屏空数据
@@ -888,19 +913,6 @@ onMounted(() => {
     void refreshStoryServices()
   }, 20_000)
 })
-
-watch(crons, (rows) => {
-  for (const cron of rows) {
-    if (cronMappingDrafts.value[cron.id]) continue
-    cronMappingDrafts.value[cron.id] = {
-      storyId: cron.storyId ?? '',
-      ownerSessionId: cron.ownerSessionId ?? cron.sessionId ?? '',
-      mode: cron.mode ?? '',
-      saving: false,
-      error: '',
-    }
-  }
-}, { immediate: true })
 
 watch([page, () => route.query.storyId], ([value, storyId]) => {
   if (value !== 'board' || typeof storyId !== 'string') return
@@ -995,46 +1007,6 @@ function isMergeBlocked(mergeRequest: MergeRequest): boolean {
   if (!mergeRequest.storyId) return false
   const requirement = store.snapshot?.requirements.find((row) => row.storyId === mergeRequest.storyId)
   return requirement?.phase === 4 && mergeRequest.state !== 'merged'
-}
-
-/**
- * 拉取发布口径事实（R16 部署版本、R17 dev/test 关系）。
- * 应用名取本页第一条构建或分支记录的应用；无数据时不发请求。
- * @returns Promise<void>
- */
-async function loadReleaseFacts(): Promise<void> {
-  const app = myBuilds.value[0]?.app ?? branches.value[0]?.app
-  if (!app) return
-  try {
-    const facts = await apiRequest<{ deployment: DeployFact; environment: DeployFact }>(
-      `/api/v1/release/facts?app=${encodeURIComponent(app)}`,
-    )
-    releaseFacts.value = [facts.deployment, facts.environment]
-  } catch {
-    releaseFacts.value = []
-  }
-}
-
-/**
- * 保存 owner 映射。服务端会先校验 session 属于该 Story 工作区，校验失败直接拒绝。
- * @param taskId 任务 ID
- * @returns Promise<void>
- */
-async function saveCronMapping(taskId: string): Promise<void> {
-  const draft = cronMappingDrafts.value[taskId]
-  if (!draft) return
-  draft.saving = true
-  draft.error = ''
-  try {
-    const saved = await cronActions.saveOwner(taskId, {
-      storyId: draft.storyId,
-      ownerSessionId: draft.ownerSessionId,
-      mode: draft.mode as CronMode | '',
-    })
-    if (!saved) draft.error = '保存失败：请确认 Story 服务已启动且 session 属于该工作区。'
-  } finally {
-    draft.saving = false
-  }
 }
 
 /**
@@ -1229,18 +1201,20 @@ async function openAuditTrail(): Promise<void> {
  * @returns Promise<void>
  */
 /**
- * 把某个 Story 设为右侧当前关注对象。
- * 已经在该 Story 的实例里查看时不打断实例视图；否则回到创建实例视图。
+ * 打开某个 Story 的主会话总览。
+ * 即使 Story 没有变化，也会退出当前 Job 子任务，保证左侧主会话始终可作为返回入口。
  * @param storyId Story 标识
+ * @returns 无返回值
  */
 function focusStory(storyId: string): void {
-  if (selectedStoryId.value === storyId) return
   selectedStoryId.value = storyId
-  if (selectedJob.value && selectedJob.value.storyId !== storyId) {
-    jobStreamController?.abort()
-    selectedJob.value = null
-    jobExtras.clearDetail()
-  }
+  if (!selectedJob.value) return
+  jobStreamController?.abort()
+  selectedJob.value = null
+  jobExtras.clearDetail()
+  jobTranscript.value = ''
+  jobOutput.value = ''
+  jobError.value = ''
 }
 
 async function startStoryService(requirement: Requirement): Promise<void> {
@@ -2017,14 +1991,14 @@ function formatWorkspaceTime(value?: string): string {
       </div>
       <div class="heading-actions">
         <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
-        <el-button :loading="store.loading" @click="store.refresh()">刷新</el-button>
+        <el-button :loading="store.loading" @click="refreshSnapshot(true)">刷新</el-button>
       </div>
     </div>
 
     <div v-if="store.error" class="notice notice-warning" role="status">
       <span class="notice-symbol">!</span>
       <div><strong>数据暂不可用</strong><p>{{ store.error }}</p></div>
-      <el-button text @click="store.refresh()">重试</el-button>
+      <el-button text @click="refreshSnapshot(true)">重试</el-button>
     </div>
 
     <template v-if="page === 'inbox'">
@@ -2183,10 +2157,10 @@ function formatWorkspaceTime(value?: string): string {
       </div>
       <div class="split-layout">
         <section class="surface split-list">
-          <div class="section-heading"><div><h2>CodeBuddy 实例</h2><p>以工作区为根：工作区 → 第一个项目 → Story 实例；服务与执行轮次分开管理</p></div><span class="count-pill">{{ jobs.length }}</span></div>
+          <div class="section-heading"><div><h2>CodeBuddy 实例</h2><p>主会话进入 Story 总览；定时 Job 子任务进入执行详情</p></div><span class="count-pill">{{ jobs.length }}</span></div>
           <div class="instance-filter">
-            <el-select v-model="jobStateFilter" size="small" aria-label="筛选实例状态">
-              <el-option label="全部实例" value="all" />
+            <el-select v-model="jobStateFilter" size="small" aria-label="筛选子任务状态">
+              <el-option label="全部子任务" value="all" />
               <el-option label="进行中" value="active" />
               <el-option label="已结束" value="done" />
               <el-option label="异常" value="failed" />
@@ -2211,11 +2185,34 @@ function formatWorkspaceTime(value?: string): string {
                   :workspace-path="requirement.workspacePath"
                   :service="storyServices[requirement.storyId]"
                   :job-count="jobsByStory(requirement.storyId).length"
-                  :active="selectedStoryId === requirement.storyId"
+                  :active="isMainSessionSelected(requirement.storyId)"
+                  :contains-active="hasSelectedJob(requirement.storyId)"
                   :error="serviceErrorOf(requirement.storyId)"
                   @focus="focusStory(requirement.storyId)"
                 />
-                <button v-for="job in jobsByStory(requirement.storyId)" :key="job.id" class="simple-list-row instance-job-row" :class="{ 'is-selected': selectedJob?.id === job.id }" type="button" @click="openJob(job)"><span class="status-dot" :class="job.status === 'busy' ? 'is-active' : ''" /><span><strong>{{ job.name }}</strong><small>{{ job.id }}</small></span><code>{{ job.state }}</code></button>
+                <div
+                  v-if="jobsByStory(requirement.storyId).length"
+                  class="instance-job-list"
+                  :aria-label="`${requirement.title} 的定时 Job 子任务`"
+                >
+                  <button
+                    v-for="job in jobsByStory(requirement.storyId)"
+                    :key="`${job.storyId}:${job.id}`"
+                    class="simple-list-row instance-job-row"
+                    :class="{ 'is-selected': isJobSelected(job) }"
+                    type="button"
+                    :aria-pressed="isJobSelected(job)"
+                    :aria-label="`打开定时 Job 子任务：${job.name}`"
+                    @click="openJob(job)"
+                  >
+                    <span class="status-dot" :class="jobDotClass(job)" />
+                    <span class="instance-job-text">
+                      <strong>{{ job.name }}</strong>
+                      <small>定时 Job · {{ job.id }}</small>
+                    </span>
+                    <code class="instance-job-state">{{ jobStateLabel(job) }}</code>
+                  </button>
+                </div>
               </template>
             </article>
           </div>
@@ -2347,7 +2344,7 @@ function formatWorkspaceTime(value?: string): string {
     <template v-else-if="page === 'crons'">
       <section class="surface cron-surface">
         <div class="section-heading">
-          <div><h2>任务调度</h2><p>按工作区查看任务；归属设置按需展开，执行记录在卡片内查看。</p></div>
+          <div><h2>任务调度</h2><p>按工作区查看任务；实例自动绑定，执行记录在卡片内查看。</p></div>
           <el-button @click="openAuditTrail">操作审计</el-button>
         </div>
         <div class="cron-overview" aria-label="定时任务概览">
@@ -2383,12 +2380,10 @@ function formatWorkspaceTime(value?: string): string {
               v-for="cron in group.looseCrons"
               :key="`loose:${cron.id}`"
               :cron="cron"
-              :draft="cronMappingDrafts[cron.id]"
-              :busy="cronBusyTaskId === cron.id"
+                            :busy="cronBusyTaskId === cron.id"
               :expanded="expandedCronId === cron.id"
               :open-round="openDispatchOf(cron.id)"
-              @save="saveCronMapping"
-              @toggle="toggleCron(cron, $event)"
+                            @toggle="toggleCron(cron, $event)"
               @edit="openCronEditor(cron)"
               @executions="toggleCronExecutions(cron)"
               @renew="renewCron(cron)"
@@ -2424,12 +2419,10 @@ function formatWorkspaceTime(value?: string): string {
                 v-for="cron in story.crons"
                 :key="cron.id"
                 :cron="cron"
-                :draft="cronMappingDrafts[cron.id]"
-                :busy="cronBusyTaskId === cron.id"
+                                :busy="cronBusyTaskId === cron.id"
                 :expanded="expandedCronId === cron.id"
                 :open-round="openDispatchOf(cron.id)"
-                @save="saveCronMapping"
-                @toggle="toggleCron(cron, $event)"
+                                @toggle="toggleCron(cron, $event)"
                 @edit="openCronEditor(cron)"
                 @executions="toggleCronExecutions(cron)"
                 @renew="renewCron(cron)"
@@ -2460,12 +2453,10 @@ function formatWorkspaceTime(value?: string): string {
               v-for="cron in group.unassignedCrons"
               :key="cron.id"
               :cron="cron"
-              :draft="cronMappingDrafts[cron.id]"
-              :busy="cronBusyTaskId === cron.id"
+                            :busy="cronBusyTaskId === cron.id"
               :expanded="expandedCronId === cron.id"
               :open-round="openDispatchOf(cron.id)"
-              @save="saveCronMapping"
-              @toggle="toggleCron(cron, $event)"
+                            @toggle="toggleCron(cron, $event)"
               @edit="openCronEditor(cron)"
               @executions="toggleCronExecutions(cron)"
               @renew="renewCron(cron)"
@@ -2496,33 +2487,8 @@ function formatWorkspaceTime(value?: string): string {
     </template>
 
     <template v-else-if="page === 'releases'">
-      <div class="notice notice-danger"><span class="notice-symbol">!</span><div><strong>发布写操作暂不可用</strong><p>R16 部署数据口径和 R17 dev/test 关系尚待确认；自动化和手动写操作在确认前必须保持禁用。</p></div></div>
-      <div v-if="releaseFacts.length" class="service-event-bar" role="status">
-        <div v-for="fact in releaseFacts" :key="fact.statement" class="service-event is-warning">
-          <span class="status-dot" />
-          <span>{{ fact.statement }}</span>
-          <span class="tag tag-warning">{{ fact.fact === 'unknown' ? '无法确认' : '已观察到' }}</span>
-        </div>
-      </div>
-      <section class="surface"><div class="section-heading"><div><h2>构建与合并记录</h2><p>只读展示本人的 GitLab MR 与 DevOps 构建；分支为项目级事实</p></div></div>
-        <div v-for="mr in myMergeRequests" :key="`${mr.projectId}:${mr.id}`" class="release-row">
-          <span v-if="isMergeBlocked(mr)" class="tag tag-danger">未合并阻断</span>
-          <span class="tag">{{ mr.state }}</span>
-          <strong>{{ mr.title }}</strong>
-          <code>{{ mr.sourceBranch }} → {{ mr.targetBranch }}</code>
-          <span v-if="mr.mergeStatus">合并状态：{{ mr.mergeStatus }}</span>
-          <span v-if="mr.mergedAt">合并于 {{ new Date(mr.mergedAt).toLocaleString() }}</span>
-          <span v-if="mergeRequestSummary(mr)" class="muted">
-            {{ mergeRequestSummary(mr)?.filesChanged }} 个文件 · +{{ mergeRequestSummary(mr)?.additions ?? '?' }}
-            / -{{ mergeRequestSummary(mr)?.deletions ?? '?' }} 行
-          </span>
-          <a v-if="mr.webUrl" :href="mr.webUrl" target="_blank" rel="noreferrer">打开 MR</a>
-          <el-button size="small" :loading="mergeRequestLoading" @click="openMergeRequest(mr)">详情</el-button>
-        </div>
-        <p v-if="mergeRequestError" class="mapping-error" role="alert">{{ mergeRequestError }}</p>
-        <div v-for="branchRecord in branches" :key="`${branchRecord.group}:${branchRecord.app}:${branchRecord.name}`" class="release-row"><span class="tag">{{ branchRecord.group || '分支' }}</span><strong>{{ branchRecord.app }}</strong><code>{{ branchRecord.name }} · {{ branchRecord.commitId || 'commit 未知' }}</code><span>{{ branchRecord.lastCommitTime ? new Date(branchRecord.lastCommitTime).toLocaleString() : '最后提交时间未知' }}</span></div>
-        <div v-for="build in myBuilds" :key="build.id" class="release-row"><span class="tag" :class="build.succeed === false ? 'tag-danger' : 'tag-success'">{{ build.succeed === null ? '运行中' : build.succeed ? '成功' : '失败' }}</span><strong>{{ build.app }}<small v-if="build.group"> · {{ build.group }}</small></strong><code>{{ build.number ? `#${build.number} · ` : '' }}{{ build.branch || '分支未知' }} · {{ build.commitId || 'commit 未知' }}</code><span>{{ build.buildDate ? new Date(build.buildDate).toLocaleString() : '时间未知' }}</span><span v-if="build.durationTime !== undefined || build.operator">{{ build.durationTime !== undefined ? `${build.durationTime}s` : '' }}{{ build.durationTime !== undefined && build.operator ? ' · ' : '' }}{{ build.operator || '' }}</span><a v-if="build.fileUrl" :href="build.fileUrl" target="_blank" rel="noreferrer">制品</a></div>
-        <div v-if="!myMergeRequests.length && !branches.length && !myBuilds.length" class="empty-state"><strong>暂无本人发布记录</strong><p>GitLab 与 DevOps 连接后显示本人创建的 MR、本人触发的构建与项目分支。当前页面不会触发外部写操作。</p></div>
+      <section class="surface">
+        <div class="empty-state"><strong>发布功能敬请期待</strong></div>
       </section>
     </template>
 
@@ -2587,10 +2553,10 @@ function formatWorkspaceTime(value?: string): string {
       </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="page === 'tools'">
       <div class="tool-grid">
-        <section class="surface"><div class="section-heading"><div><h2>通道状态</h2><p>读取统一快照中的数据源健康状态</p></div><el-button :loading="snapshotLoading" @click="refreshSnapshot()">重新检测</el-button></div>
-          <div v-for="[name, channel] in channels" :key="name" class="channel-row"><span class="status-dot" :class="channel.ok ? 'is-active' : 'is-error'" /><strong>{{ name }}</strong><span>{{ channel.error ? channel.error : channel.ok ? '连接正常' : '不可用' }}</span><small>{{ channel.fetchedAt ? new Date(channel.fetchedAt).toLocaleString() : '尚未检测' }}</small></div>
+        <section class="surface"><div class="section-heading"><div><h2>通道状态</h2><p>读取统一快照中的数据源健康状态</p></div><el-button :loading="snapshotLoading" @click="refreshSnapshot(true)">重新检测</el-button></div>
+          <div v-for="[name, channel] in channels" :key="name" class="channel-row"><span class="status-dot" :class="channel.ok ? 'is-active' : 'is-error'" /><strong>{{ name }}</strong><span>{{ channel.error ? channel.error : channel.ok ? '连接正常' : '不可用' }}</span><small>{{ channel.fetchedAt ? new Date(channel.fetchedAt).toLocaleString() : '尚未检测' }}{{ channel.stale ? ' · 缓存' : '' }}</small></div>
           <div v-if="!channels.length" class="empty-compact">聚合器配置完成后显示各通道检测结果。</div>
         </section>
         <section class="surface"><p class="eyebrow">LOCAL SECURITY</p><h2>本机信任边界</h2><p class="muted">控制台 API 由本地访问令牌保护。CodeBuddy 服务使用 <code>--auth none</code> 时，本机其他进程仍可能访问其高权限 API；Loopback 和请求标记不构成上游认证。</p></section>

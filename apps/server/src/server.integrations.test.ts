@@ -44,6 +44,14 @@ describe('read-only integration API', () => {
         builds: [],
         mergeRequests: [],
       }),
+      // cron 路由只读本地事实，这里用同一份快照桩顶替真实工作区扫描
+      cronFactsProvider: async () => ({
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+        channel: { fetchedAt: '2026-01-01T00:00:00.000Z', ok: true, stale: false },
+        crons: [{ id: 'task-1', storyId: 'STORY-1', storyTitle: 'Requirement', cron: '7 * * * *' }],
+        requirements: [{ storyId: 'STORY-1', title: 'Requirement' }],
+        workspaces: [],
+      }),
     })
     server = app
 
