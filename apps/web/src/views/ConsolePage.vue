@@ -2173,14 +2173,19 @@ function formatWorkspaceTime(value?: string): string {
           </article>
         </div>
         <div v-else-if="board.loading" class="empty-compact">正在查询 TAPD 需求…</div>
-        <div v-else class="notice notice-warning" role="status">
+        <div v-else-if="board.error" class="notice notice-danger" role="alert">
           <span class="notice-symbol">!</span>
           <div>
-            <strong>{{ board.error ? 'TAPD 需求查询未完成' : '暂无需求数据' }}</strong>
-            <p v-if="board.error">{{ describeChannelError(board.error).reason }}；{{ describeChannelError(board.error).action }}。<br /><small class="board-error-detail">{{ board.error }}</small></p>
-            <p v-else>当前处理人「{{ board.owner }}」名下没有未发布需求。可检查姓名是否为 TAPD 中的写法，或用「手动添加」直接绑定需求链接。</p>
+            <strong>TAPD 需求查询失败</strong>
+            <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br /><small class="board-error-detail">{{ board.error }}</small></p>
           </div>
-          <el-button text @click="board.load()">重试</el-button>
+          <el-tooltip content="重新查询 TAPD；可能消耗查询配额" placement="left">
+            <span><el-button text @click="board.load()">重试</el-button></span>
+          </el-tooltip>
+        </div>
+        <div v-else class="empty-state">
+          <strong>当前处理人「{{ board.owner }}」名下没有未发布需求</strong>
+          <p>可检查姓名是否为 TAPD 中的写法，或用「手动添加」直接绑定需求链接。</p>
         </div>
       </section>
 
