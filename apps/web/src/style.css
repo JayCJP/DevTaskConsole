@@ -438,7 +438,7 @@
 .notice strong { color: var(--text); }
 .notice p { margin: 3px 0 0; color: var(--muted); }
 .error-text { margin: 0; color: var(--red); }
-.inline-search { max-width: 260px; }
+.board-owner-input { width: 150px; }
 .requirement-list { display: grid; }
 .requirement-row { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(160px, .7fr) auto; align-items: center; gap: 20px; padding: 13px 10px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
 .requirement-row:hover { background: var(--surface-hover); }
@@ -453,15 +453,44 @@
 .requirement-badges { display: flex; gap: 6px; }
 /* 看板：TAPD 需求 × 本地工作区绑定 */
 .board-controls { display: flex; align-items: center; gap: 8px; }
-.board-filter { width: 168px; }
-.board-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+/* 工具栏内的两个输入控件固定宽度，保证「刷新/手动添加」位置稳定 */
+.board-controls .el-select, .board-controls .board-filter { width: 132px; }
+/*
+ * 看板元信息行：说明性信息（拉取时间、已发布条数）用弱化色，
+ * 结果计数（N 个需求）加深一档承担读数角色，状态标签靠右。
+ * 间距：上方工具栏 16px、下方列表 12px，上下不成等分，读数更靠近它所描述的内容。
+ */
+.board-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin: 16px 0 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.board-meta > span { display: inline-flex; align-items: baseline; gap: 4px; }
+/* 结果计数：与说明文字拉开一档颜色，「3 个需求」先被读到 */
+.board-meta > span:not(.board-meta-status):not(.board-meta-hidden) { color: var(--text-muted); }
+.board-meta-status { margin-left: auto; align-self: center; }
+.board-meta-hidden { color: var(--text-faint); }
+.board-meta .el-button { height: auto; padding: 0; color: var(--brand); font-size: 11px; }
 .board-list { display: grid; }
-.board-row { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(220px, 1fr) auto; align-items: start; gap: 16px; padding: 13px 10px; border-top: 1px solid var(--line); }
-.board-main { display: grid; min-width: 0; gap: 6px; }
-.board-main a { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; text-decoration: none; white-space: nowrap; }
+.board-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(220px, 1fr) auto;
+  align-items: start;
+  gap: 8px 20px;
+  padding: 16px 10px;
+  border-top: 1px solid var(--line-subtle);
+}
+.board-row:first-child { border-top-color: var(--line); }
+.board-main { display: grid; min-width: 0; gap: 4px; }
+.board-main a { display: block; overflow: hidden; color: var(--text-strong); font-size: 15px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .board-main a:hover { color: var(--accent); text-decoration: underline; }
-.board-main small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: 11px; }
-.board-workspace { display: grid; min-width: 0; gap: 6px; }
+.board-main small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.board-workspace { display: grid; min-width: 0; gap: 8px; }
 .board-workspace code { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .board-actions { display: flex; align-items: center; gap: 6px; }
 .board-manual-form { display: grid; gap: 14px; }
@@ -614,6 +643,9 @@
 .el-drawer__body { color: var(--text); }
 
 @media (max-width: 900px) {
+  /* 看板：中等宽度下行动作列过窄，改为「标题整行 + 工作区/操作并排」 */
+  .board-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; }
+  .board-main { grid-column: 1 / -1; }
   .nav-rail { width: 66px; flex-basis: 66px; align-items: center; padding-inline: 8px; }
   .brand-lockup { padding-inline: 0; }
   .nav-link { width: 44px; justify-content: center; padding: 0; }
@@ -642,8 +674,12 @@
   .surface { padding: 15px; }
   .requirement-row { grid-template-columns: 1fr; gap: 9px; }
   .board-controls { flex-wrap: wrap; justify-content: flex-start; }
-  .board-row { grid-template-columns: 1fr; gap: 10px; }
+  .board-owner-input, .board-controls .el-select { width: 100%; flex: 1 1 140px; }
+  .board-row { grid-template-columns: 1fr; gap: 10px; padding: 14px 10px; }
+  .board-main a { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-overflow: clip; white-space: normal; }
   .board-actions { justify-content: flex-start; }
+  .board-meta { gap: 6px 12px; }
+  .board-meta-status { margin-left: 0; }
   .phase-track { max-width: 100%; }
   .pipeline-row { align-items: flex-start; flex-direction: column; gap: 10px; }
   .pipeline-steps { width: 100%; flex-wrap: wrap; justify-content: flex-start; }

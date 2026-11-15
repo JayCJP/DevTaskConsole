@@ -597,6 +597,17 @@ function describeChannelError(raw: string): { reason: string; action: string } {
  */
 const boardErrorHint = computed(() => describeChannelError(board.error ?? ''))
 
+/**
+ * 看板右上角的 TAPD 通道标签。
+ * 查询失败、已连接、不可用三种情况各自对应一个语气，模板里不再嵌套三元。
+ */
+const boardStatusTag = computed<{ tone: string; label: string }>(() => {
+  if (board.error) return { tone: 'tag-danger', label: 'TAPD 查询失败' }
+  return board.channelOk
+    ? { tone: 'tag-success', label: 'TAPD 已连接' }
+    : { tone: 'tag-warning', label: 'TAPD 不可用' }
+})
+
 const channelRows = computed(() => {
   const present = store.snapshot?.channels ?? {}
   const known = channelCatalog.map((entry) => ({
@@ -2113,7 +2124,7 @@ function formatWorkspaceTime(value?: string): string {
         <div class="section-heading">
           <div><h2>需求总览</h2><p>数据元以 TAPD 需求为准；每个需求可关联一个本地工作区</p></div>
           <div class="board-controls">
-            <el-input v-model="board.owner" class="inline-search" placeholder="TAPD 处理人" clearable @keyup.enter="board.load()" />
+            <el-input v-model="board.owner" class="board-owner-input" placeholder="TAPD 处理人" clearable @keyup.enter="board.load()" aria-label="按 TAPD 处理人筛选" />
             <el-select
               :model-value="board.includeReleased"
               class="board-filter"
@@ -2127,17 +2138,17 @@ function formatWorkspaceTime(value?: string): string {
             <el-button type="primary" @click="board.openManual()">手动添加</el-button>
           </div>
         </div>
-        <p class="board-meta">
-          <span>处理人 {{ board.owner }}</span>
+        <div class="board-meta">
           <span v-if="board.fetchedAt">TAPD 拉取于 {{ new Date(board.fetchedAt).toLocaleString() }}</span>
-          <span v-if="board.error" class="tag tag-danger">TAPD 查询失败</span>
-          <span v-else class="tag" :class="board.channelOk ? 'tag-success' : 'tag-warning'">{{ board.channelOk ? 'TAPD 已连接' : 'TAPD 不可用' }}</span>
           <span>{{ board.stories.length }} 个需求</span>
-          <span v-if="!board.includeReleased && board.hiddenReleased">
-            已隐藏 {{ board.hiddenReleased }} 条已发布需求，
+          <span v-if="!board.includeReleased && board.hiddenReleased" class="board-meta-hidden">
+            已隐藏 {{ board.hiddenReleased }} 条已发布
             <el-button link type="primary" size="small" @click="board.setIncludeReleased(true)">查看</el-button>
           </span>
-        </p>
+          <span class="board-meta-status">
+            <span class="tag" :class="boardStatusTag.tone">{{ boardStatusTag.label }}</span>
+          </span>
+        </div>
         <div v-if="board.error" class="notice notice-danger" role="alert">
           <span class="notice-symbol">!</span>
           <div>
