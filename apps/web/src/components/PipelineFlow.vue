@@ -218,14 +218,9 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
 }
 .flow-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-md); }
-.flow-card.is-active { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
-.flow-card.is-active::before {
-  position: absolute;
-  inset: 0 auto auto 0;
-  width: 3px;
-  height: 100%;
-  background: var(--amber);
-  content: '';
+.flow-card.is-active {
+  border-color: color-mix(in oklch, var(--warning) 45%, var(--line));
+  background: color-mix(in oklch, var(--warning-soft) 25%, var(--surface));
 }
 .flow-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .flow-card-title { display: grid; gap: 2px; min-width: 0; }
@@ -264,7 +259,7 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   border-radius: 50%;
   background: var(--surface);
   color: var(--faint);
-  font-size: 17px;
+  font-size: 15px;
   transition: box-shadow 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .flow-label { color: var(--faint); font-size: 10px; letter-spacing: 0.08em; }
@@ -272,8 +267,8 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   overflow: hidden;
   max-width: 100%;
   color: var(--text);
-  font-family: 'IBM Plex Mono', 'Cascadia Code', monospace;
-  font-size: 16px;
+  font-family: var(--font-mono);
+  font-size: 15px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -286,16 +281,16 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
 .tone-ready .flow-dot { border-color: color-mix(in srgb, var(--green) 55%, var(--line)); color: var(--green); }
 .tone-active .flow-dot { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 12%, transparent); }
 .tone-danger .flow-dot { border-color: var(--red); color: var(--red); }
-.flow-link { flex: 1 1 auto; min-width: 18px; height: 2px; margin-top: 20px; border-radius: 2px; background: var(--line); }
+.flow-link { flex: 1 1 auto; min-width: 18px; height: 2px; margin-top: 20px; border-radius: var(--radius-xs); background: var(--line); }
 .flow-link.tone-ready { background: linear-gradient(90deg, color-mix(in srgb, var(--green) 60%, var(--line)), var(--line)); }
 .flow-link.tone-active { background: linear-gradient(90deg, var(--amber), var(--line)); }
 .flow-link.tone-danger { background: linear-gradient(90deg, var(--red), var(--line)); }
 
 .flow-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px dashed var(--line); }
-.flow-story-title { overflow: hidden; max-width: 62%; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.flow-story-title { overflow: hidden; max-width: 62%; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .flow-story-id code { color: var(--faint); font-size: 10px; }
 .flow-phase { display: flex; gap: 4px; margin-left: auto; }
-.flow-tick { width: 18px; height: 4px; border-radius: 2px; background: var(--line); }
+.flow-tick { width: 18px; height: 4px; border-radius: var(--radius-xs); background: var(--line); }
 .flow-tick.is-passed { background: var(--green); }
 
 @media (max-width: 900px) {

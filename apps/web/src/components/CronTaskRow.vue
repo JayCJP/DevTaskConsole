@@ -244,7 +244,7 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
 .cron-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .cron-primary { display: grid; min-width: 0; flex: 1; gap: 6px; }
 .cron-title-line { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
-.cron-title-line > strong { overflow: hidden; max-width: min(100%, 520px); color: var(--text); font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.cron-title-line > strong { overflow: hidden; max-width: min(100%, 520px); color: var(--text); font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .cron-title-line .status-dot { flex: 0 0 7px; }
 .status-dot.is-paused { background: var(--amber); }
 .cron-mode { color: var(--muted); font-size: 11px; }
@@ -252,11 +252,11 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
 .cron-meta code { overflow-wrap: anywhere; color: var(--muted); }
 .cron-prompt-line { overflow: hidden; margin: 0; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .cron-history-button { flex: 0 0 auto; }
-.cron-facts { display: grid; grid-template-columns: minmax(160px, .85fr) minmax(210px, 1fr) minmax(180px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.cron-facts { display: grid; grid-template-columns: minmax(160px, .85fr) minmax(210px, 1fr) minmax(180px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
 .cron-fact { display: grid; min-width: 0; align-content: start; gap: 4px; padding: 12px 14px; }
 .cron-fact + .cron-fact { border-left: 1px solid var(--line); }
 .cron-fact > span { color: var(--faint); font-size: 10px; }
-.cron-fact > strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.cron-fact > strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .cron-fact > code, .cron-fact > small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .cron-warnings { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: -6px; color: var(--amber); font-size: 11px; }
 .cron-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

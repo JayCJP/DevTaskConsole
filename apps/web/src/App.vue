@@ -37,9 +37,24 @@ const commandItems = computed(() => {
   return navItems.filter((item) => !query || item.title.toLocaleLowerCase().includes(query) || item.path.includes(query))
 })
 const pageTitle = computed(() => String(route.meta.title ?? 'DevTask Console'))
-const connectionWarning = computed(() =>
-  Boolean(store.error) || Boolean(store.snapshot && Object.values(store.snapshot.channels).some((channel) => !channel.ok)),
-)
+/**
+ * 顶栏连接状态。
+ * 只有在「快照已加载」且「全部已知通道都 ok」时才显示正常；
+ * 快照未加载、全局错误、任一通道失败或缺失，都按需检查处理，
+ * 避免出现「看板报错、顶栏却写连接正常」的矛盾。
+ */
+const knownChannels = ['tapd', 'gitlab', 'devops', 'codebuddy', 'crons', 'localHarness'] as const
+const connectionWarning = computed(() => {
+  if (store.error || !store.snapshot) return true
+  const channels = store.snapshot.channels as Record<string, { ok: boolean } | undefined>
+  return knownChannels.some((key) => !channels[key] || !channels[key].ok)
+})
+/** 顶栏状态的说明文案，供 title 与无障碍标签使用 */
+const connectionLabel = computed(() => {
+  if (!store.snapshot) return '尚未加载快照'
+  if (store.error) return '快照加载失败'
+  return connectionWarning.value ? '需检查连接' : '连接正常'
+})
 const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 
 /**
@@ -214,7 +229,7 @@ onBeforeUnmount(() => {
             <el-icon><component :is="darkMode ? Sunny : Moon" /></el-icon>
           </button>
           <RouterLink to="/tools" class="connection-chip" :class="connectionWarning ? 'connection-warning' : 'connection-unknown'">
-            <span class="status-dot" :class="connectionWarning ? 'is-error' : ''" />{{ connectionWarning ? '需检查连接' : '连接正常' }}
+            <span class="status-dot" :class="connectionWarning ? 'is-error' : ''" />{{ connectionLabel }}
           </RouterLink>
         </div>
       </header>

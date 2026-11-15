@@ -547,7 +547,74 @@ const assignedCronIds = computed(() => new Set(workspacePipelines.value.flatMap(
 /** 未能归属到工作区项目的定时任务（例如工作区扫描失败时的兜底数据） */
 const unassignedCrons = computed<Cron[]>(() => crons.value.filter((cron) => !assignedCronIds.value.has(cron.id)))
 const activeWorkflows = computed(() => store.snapshot?.harnessActive ?? [])
-const channels = computed(() => Object.entries(store.snapshot?.channels ?? {}))
+/**
+ * 已知数据通道的展示顺序与中文名。
+ * 快照里完全没有该 key 时仍然要列出来并标注「未检测」，
+ * 否则用户看到的是一句兜底话，而不是「哪条通道没接」。
+ */
+const channelCatalog = [
+  { key: 'tapd', label: 'TAPD', purpose: '需求与缺陷' },
+  { key: 'gitlab', label: 'GitLab', purpose: '合并请求' },
+  { key: 'devops', label: 'DevOps', purpose: '构建与部署' },
+  { key: 'codebuddy', label: 'CodeBuddy', purpose: '实例与轮次' },
+  { key: 'crons', label: '定时任务', purpose: 'scheduled_tasks.json' },
+  { key: 'localHarness', label: '本地 Harness', purpose: 'e2e-state 与工作区' },
+] as const
+
+/**
+ * 把上游原始报错翻译成「谁出的问题 + 可能原因 + 该做什么」。
+ * 上游返回的英文原文不直接展示给用户，但会保留在 tooltip 中便于排查。
+ * @param raw 原始错误文本
+ * @returns 中文说明与恢复动作
+ */
+function describeChannelError(raw: string): { reason: string; action: string } {
+  const text = raw.toLowerCase()
+  if (/429|rate limit|quota|too many/.test(text)) {
+    return { reason: '上游限流或配额用尽', action: '等待几分钟后到「连接与配置」重新检测' }
+  }
+  if (/401|403|unauthori[sz]ed|expired|session/.test(text)) {
+    return { reason: '令牌或登录会话失效', action: '在「连接与配置」更新凭证后重新检测' }
+  }
+  if (/timeout|etimedout|timed out|econnrefused/.test(text)) {
+    return { reason: '网络超时或服务未启动', action: '确认本机网络与该服务可用后重试' }
+  }
+  if (/not configured|no config|missing|未配置/.test(text)) {
+    return { reason: '尚未配置该通道', action: '在「连接与配置」补齐后再检测' }
+  }
+  if (/request failed|failed to fetch|network error|\b5\d\d\b|internal server/.test(text)) {
+    return { reason: '上游服务返回了失败响应，可能是令牌过期、配额用尽或该服务暂时不可用', action: '先到「连接与配置」重新检测，确认是哪一条通道失败' }
+  }
+  return { reason: '上游返回了未识别的错误', action: '到「连接与配置」重新检测，并按下方原文排查' }
+}
+
+/**
+ * 工具页通道列表：快照里没有的已知通道补一条「未检测」，未知通道追加在末尾。
+ * @returns 按展示顺序排好的行数据
+ */
+/**
+ * 看板页的 TAPD 错误说明。
+ * 模板里需要同时在标题、说明与原文三处使用，提取为计算属性避免重复解析。
+ */
+const boardErrorHint = computed(() => describeChannelError(board.error ?? ''))
+
+const channelRows = computed(() => {
+  const present = store.snapshot?.channels ?? {}
+  const known = channelCatalog.map((entry) => ({
+    key: entry.key,
+    label: entry.label,
+    purpose: entry.purpose,
+    channel: (present as Record<string, { ok: boolean; error?: string; fetchedAt?: string; stale?: boolean } | undefined>)[entry.key],
+  }))
+  const extra = Object.entries(present)
+    .filter(([key]) => !channelCatalog.some((entry) => entry.key === key))
+    .map(([key, channel]) => ({ key, label: key, purpose: '', channel }))
+  return [...known, ...extra]
+})
+
+/** 任一已知通道不可用或尚未检测 */
+const channelUnavailable = computed(() =>
+  channelRows.value.some((row) => !row.channel || !row.channel.ok),
+)
 
 /**
  * 取某个 Story 关联的实例列表：快照聚合的实例与本地新拉的实例合并后按 storyId 过滤。
@@ -1990,7 +2057,9 @@ function formatWorkspaceTime(value?: string): string {
       </div>
       <div class="heading-actions">
         <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
-        <el-button :loading="store.loading" @click="refreshSnapshot(true)">刷新</el-button>
+        <el-tooltip :content="store.loading ? '正在刷新快照' : '刷新会重新聚合四个上游系统，可能消耗 TAPD 查询配额'" placement="bottom">
+          <span><el-button :loading="store.loading" @click="refreshSnapshot(true)">刷新</el-button></span>
+        </el-tooltip>
       </div>
     </div>
 
@@ -2002,10 +2071,9 @@ function formatWorkspaceTime(value?: string): string {
 
     <template v-if="page === 'inbox'">
       <div class="stat-grid">
-        <article class="stat-card"><span>待决策</span><strong>{{ inbox.length }}</strong><small>需要人工处理</small></article>
-        <article class="stat-card"><span>高优先级</span><strong>{{ inbox.filter((item) => item.priority === 'high').length }}</strong><small>先处理风险项</small></article>
+        <article class="stat-card"><span>待决策</span><strong>{{ inbox.length }}</strong><small>{{ inbox.length ? '需要人工处理' : '当前无待决策项' }}</small></article>
+        <article class="stat-card"><span>高优先级</span><strong>{{ inbox.filter((item) => item.priority === 'high').length }}</strong><small>{{ inbox.some((item) => item.priority === 'high') ? '先处理风险项' : '暂无风险项' }}</small></article>
         <article class="stat-card"><span>运行中实例</span><strong>{{ jobs.filter((job) => job.status === 'busy').length }}</strong><small>CodeBuddy jobs</small></article>
-        <article class="stat-card"><span>今日已处理</span><strong>—</strong><small>审计能力接入后统计</small></article>
       </div>
       <section class="surface">
         <div class="section-heading"><div><h2>待你处理</h2><p>只显示阻塞流程或需要判断的事项</p></div><span class="count-pill">{{ inbox.length }} 项</span></div>
@@ -2062,14 +2130,22 @@ function formatWorkspaceTime(value?: string): string {
         <p class="board-meta">
           <span>处理人 {{ board.owner }}</span>
           <span v-if="board.fetchedAt">TAPD 拉取于 {{ new Date(board.fetchedAt).toLocaleString() }}</span>
-          <span class="tag" :class="board.channelOk ? 'tag-success' : 'tag-warning'">{{ board.channelOk ? 'TAPD 已连接' : 'TAPD 不可用' }}</span>
+          <span v-if="board.error" class="tag tag-danger">TAPD 查询失败</span>
+          <span v-else class="tag" :class="board.channelOk ? 'tag-success' : 'tag-warning'">{{ board.channelOk ? 'TAPD 已连接' : 'TAPD 不可用' }}</span>
           <span>{{ board.stories.length }} 个需求</span>
           <span v-if="!board.includeReleased && board.hiddenReleased">
             已隐藏 {{ board.hiddenReleased }} 条已发布需求，
             <el-button link type="primary" size="small" @click="board.setIncludeReleased(true)">查看</el-button>
           </span>
         </p>
-        <p v-if="board.error" class="mapping-error" role="alert">{{ board.error }}</p>
+        <div v-if="board.error" class="notice notice-danger" role="alert">
+          <span class="notice-symbol">!</span>
+          <div>
+            <strong>TAPD 需求查询失败</strong>
+            <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br />下方仅显示本地已绑定、尚未同步到 TAPD 的需求。<br /><small class="board-error-detail">{{ board.error }}</small></p>
+          </div>
+          <el-button text @click="board.load()">重试</el-button>
+        </div>
         <div v-if="board.stories.length" class="board-list">
           <article v-for="story in board.stories" :key="story.storyId" class="board-row">
             <div class="board-main">
@@ -2097,9 +2173,14 @@ function formatWorkspaceTime(value?: string): string {
           </article>
         </div>
         <div v-else-if="board.loading" class="empty-compact">正在查询 TAPD 需求…</div>
-        <div v-else class="empty-state">
-          <strong>暂无需求数据</strong>
-          <p>确认 TAPD 连接正常，并检查处理人是否为 TAPD 中的姓名；也可用「手动添加」直接绑定需求链接。</p>
+        <div v-else class="notice notice-warning" role="status">
+          <span class="notice-symbol">!</span>
+          <div>
+            <strong>{{ board.error ? 'TAPD 需求查询未完成' : '暂无需求数据' }}</strong>
+            <p v-if="board.error">{{ describeChannelError(board.error).reason }}；{{ describeChannelError(board.error).action }}。<br /><small class="board-error-detail">{{ board.error }}</small></p>
+            <p v-else>当前处理人「{{ board.owner }}」名下没有未发布需求。可检查姓名是否为 TAPD 中的写法，或用「手动添加」直接绑定需求链接。</p>
+          </div>
+          <el-button text @click="board.load()">重试</el-button>
         </div>
       </section>
 
@@ -2555,8 +2636,19 @@ function formatWorkspaceTime(value?: string): string {
     <template v-else-if="page === 'tools'">
       <div class="tool-grid">
         <section class="surface"><div class="section-heading"><div><h2>通道状态</h2><p>读取统一快照中的数据源健康状态</p></div><el-button :loading="snapshotLoading" @click="refreshSnapshot(true)">重新检测</el-button></div>
-          <div v-for="[name, channel] in channels" :key="name" class="channel-row"><span class="status-dot" :class="channel.ok ? 'is-active' : 'is-error'" /><strong>{{ name }}</strong><span>{{ channel.error ? channel.error : channel.ok ? '连接正常' : '不可用' }}</span><small>{{ channel.fetchedAt ? new Date(channel.fetchedAt).toLocaleString() : '尚未检测' }}{{ channel.stale ? ' · 缓存' : '' }}</small></div>
-          <div v-if="!channels.length" class="empty-compact">聚合器配置完成后显示各通道检测结果。</div>
+          <div v-for="row in channelRows" :key="row.key" class="channel-row" :title="row.channel?.error || ''">
+            <span class="status-dot" :class="!row.channel ? '' : row.channel.ok ? 'is-active' : 'is-error'" />
+            <strong>{{ row.label }}</strong>
+            <span>
+              <template v-if="!row.channel">未检测 · 快照中暂无该通道结果</template>
+              <template v-else-if="row.channel.ok">连接正常<small class="channel-purpose">{{ row.purpose }}</small></template>
+              <template v-else>
+                不可用 —— {{ describeChannelError(row.channel.error || '').reason }}。{{ describeChannelError(row.channel.error || '').action }}。
+              </template>
+            </span>
+            <small>{{ row.channel?.fetchedAt ? new Date(row.channel.fetchedAt).toLocaleString() : '尚未检测' }}{{ row.channel?.stale ? ' · 缓存' : '' }}</small>
+          </div>
+          <p v-if="channelUnavailable" class="mapping-footnote">以上任一通道不可用都会影响对应页面的数据；控制台不会用旧数据冒充新数据。</p>
         </section>
         <section class="surface"><p class="eyebrow">LOCAL SECURITY</p><h2>本机信任边界</h2><p class="muted">控制台 API 由本地访问令牌保护。CodeBuddy 服务使用 <code>--auth none</code> 时，本机其他进程仍可能访问其高权限 API；Loopback 和请求标记不构成上游认证。</p></section>
       </div>
