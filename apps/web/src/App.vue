@@ -97,10 +97,22 @@ function navigateTo(path: string): void {
   void router.push(path)
 }
 
+/**
+ * 把当前主题同时写入 data-theme 与 .dark 类。
+ * data-theme 驱动本项目的语义令牌，.dark 类驱动 Element Plus 内置的暗色变量，
+ * 两者同时存在才能保证弹窗、下拉等 EP 组件与页面主题一致。
+ * @param dark 是否为暗色主题
+ */
+function applyTheme(dark: boolean): void {
+  const root = document.documentElement
+  root.dataset.theme = dark ? 'dark' : 'light'
+  root.classList.toggle('dark', dark)
+}
+
 function toggleTheme(): void {
   darkMode.value = !darkMode.value
   localStorage.setItem('devtask-theme', darkMode.value ? 'dark' : 'light')
-  document.documentElement.dataset.theme = darkMode.value ? 'dark' : 'light'
+  applyTheme(darkMode.value)
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -143,7 +155,7 @@ function onKeydown(event: KeyboardEvent): void {
 // 数据只在登录、进入页面、手动点「刷新/重新检测/重试」以及写操作完成后更新。
 
 onMounted(() => {
-  document.documentElement.dataset.theme = darkMode.value ? 'dark' : 'light'
+  applyTheme(darkMode.value)
   window.addEventListener('keydown', onKeydown)
   void validateSession()
 })
@@ -159,7 +171,6 @@ onBeforeUnmount(() => {
     <form class="login-card" @submit.prevent="login">
       <div class="brand-mark">DT</div>
       <div>
-        <p class="eyebrow">LOCAL CONTROL PLANE</p>
         <h1>DevTask Console</h1>
         <p class="muted">输入本机控制台访问令牌以继续。</p>
       </div>

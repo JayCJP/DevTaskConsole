@@ -8,3 +8,4 @@ coverage/
 *.tsbuildinfo
 graphify-out
 .codebuddy/
+.git-msg.tmp

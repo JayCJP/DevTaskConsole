@@ -242,5 +242,5 @@ function submit(): void {
 .cron-mode-field { display: grid; gap: 8px; color: var(--muted); font-size: 11px; }
 .cron-mode-field small { line-height: 1.6; }
 .cron-mode-warning { color: var(--amber); }
-.cron-template-source { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--muted); font-size: 11px; line-height: 1.6; }
+.cron-template-source { padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-sm); background: var(--bg-inset); color: var(--muted); font-size: 11px; line-height: 1.6; }
 </style>

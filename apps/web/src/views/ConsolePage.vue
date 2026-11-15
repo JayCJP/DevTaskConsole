@@ -1985,7 +1985,6 @@ function formatWorkspaceTime(value?: string): string {
   <section class="page-content">
     <div class="page-heading-row">
       <div>
-        <p class="eyebrow">DEV TASK CONSOLE</p>
         <h1>{{ pageHeading }}</h1>
         <p class="page-subtitle">{{ page === 'inbox' ? '先处理真正需要你决策的事项。' : '状态来自各自系统；控制台只聚合展示与提供安全入口。' }}</p>
       </div>

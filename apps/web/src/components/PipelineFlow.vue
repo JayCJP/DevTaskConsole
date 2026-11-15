@@ -211,12 +211,13 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   position: relative;
   overflow: hidden;
   padding: 18px 20px 14px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: linear-gradient(160deg, var(--surface-raised) 0%, var(--surface) 62%);
-  transition: border-color 0.25s ease, transform 0.25s ease;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
 }
-.flow-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); transform: translateY(-2px); }
+.flow-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-md); }
 .flow-card.is-active { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
 .flow-card.is-active::before {
   position: absolute;
@@ -278,7 +279,9 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   white-space: nowrap;
 }
 .flow-hint { overflow: hidden; max-width: 100%; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.flow-node.is-clickable:hover .flow-dot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.flow-node.is-clickable:hover .flow-dot { border-color: var(--brand); color: var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+.flow-node.is-clickable:focus-visible { outline: none; }
+.flow-node.is-clickable:focus-visible .flow-dot { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 .tone-ready .flow-dot { border-color: color-mix(in srgb, var(--green) 55%, var(--line)); color: var(--green); }
 .tone-active .flow-dot { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 12%, transparent); }

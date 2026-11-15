@@ -1,0 +1,356 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-15T14:57:48.934Z",
+  "title": "Design System: DevTask Console",
+  "extensions": {
+    "colorMeta": {
+      "instrument-blue": {
+        "role": "primary",
+        "displayName": "Instrument Blue · 仪器蓝",
+        "canonical": "oklch(72% 0.14 255)",
+        "tonalRamp": [
+          "oklch(18% 0.05 255)",
+          "oklch(28% 0.08 255)",
+          "oklch(40% 0.11 255)",
+          "oklch(52% 0.13 255)",
+          "oklch(64% 0.14 255)",
+          "oklch(72% 0.14 255)",
+          "oklch(84% 0.07 255)",
+          "oklch(94% 0.03 255)"
+        ]
+      },
+      "signal-success": {
+        "role": "tertiary",
+        "displayName": "Signal Success",
+        "canonical": "oklch(76% 0.13 160)",
+        "tonalRamp": [
+          "oklch(18% 0.05 160)",
+          "oklch(28% 0.07 160)",
+          "oklch(40% 0.10 160)",
+          "oklch(52% 0.12 160)",
+          "oklch(64% 0.13 160)",
+          "oklch(76% 0.13 160)",
+          "oklch(86% 0.07 160)",
+          "oklch(95% 0.03 160)"
+        ]
+      },
+      "signal-warning": {
+        "role": "tertiary",
+        "displayName": "Signal Warning",
+        "canonical": "oklch(80% 0.13 82)",
+        "tonalRamp": [
+          "oklch(18% 0.05 82)",
+          "oklch(29% 0.07 82)",
+          "oklch(40% 0.10 82)",
+          "oklch(52% 0.12 82)",
+          "oklch(66% 0.13 82)",
+          "oklch(80% 0.13 82)",
+          "oklch(88% 0.07 82)",
+          "oklch(96% 0.03 82)"
+        ]
+      },
+      "signal-danger": {
+        "role": "tertiary",
+        "displayName": "Signal Danger",
+        "canonical": "oklch(70% 0.16 22)",
+        "tonalRamp": [
+          "oklch(18% 0.06 22)",
+          "oklch(28% 0.09 22)",
+          "oklch(40% 0.12 22)",
+          "oklch(53% 0.15 22)",
+          "oklch(62% 0.16 22)",
+          "oklch(70% 0.16 22)",
+          "oklch(82% 0.08 22)",
+          "oklch(94% 0.03 22)"
+        ]
+      },
+      "signal-info": {
+        "role": "tertiary",
+        "displayName": "Signal Info",
+        "canonical": "oklch(74% 0.08 235)",
+        "tonalRamp": [
+          "oklch(18% 0.03 235)",
+          "oklch(28% 0.04 235)",
+          "oklch(40% 0.06 235)",
+          "oklch(52% 0.07 235)",
+          "oklch(63% 0.08 235)",
+          "oklch(74% 0.08 235)",
+          "oklch(85% 0.04 235)",
+          "oklch(95% 0.02 235)"
+        ]
+      },
+      "ghost-slate-deck": {
+        "role": "neutral",
+        "displayName": "Ghost Slate · 页面底",
+        "canonical": "oklch(18.5% 0.012 252)",
+        "tonalRamp": [
+          "oklch(16% 0.012 252)",
+          "oklch(18.5% 0.012 252)",
+          "oklch(22.5% 0.014 252)",
+          "oklch(26% 0.016 252)",
+          "oklch(30% 0.018 252)",
+          "oklch(42% 0.02 252)",
+          "oklch(70% 0.018 252)",
+          "oklch(96% 0.008 250)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline · 发丝线",
+        "canonical": "oklch(32% 0.016 252)",
+        "tonalRamp": [
+          "oklch(16% 0.012 252)",
+          "oklch(22.5% 0.014 252)",
+          "oklch(27% 0.014 252)",
+          "oklch(32% 0.016 252)",
+          "oklch(42% 0.02 252)",
+          "oklch(56% 0.018 252)",
+          "oklch(70% 0.018 252)",
+          "oklch(90% 0.012 250)"
+        ]
+      },
+      "text-body": {
+        "role": "neutral",
+        "displayName": "Ink · 正文",
+        "canonical": "oklch(90% 0.012 250)",
+        "tonalRamp": [
+          "oklch(24% 0.02 255)",
+          "oklch(33% 0.018 255)",
+          "oklch(50% 0.018 255)",
+          "oklch(56% 0.018 252)",
+          "oklch(70% 0.018 252)",
+          "oklch(90% 0.012 250)",
+          "oklch(96% 0.008 250)",
+          "oklch(99% 0.005 255)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline · 页面主标题",
+        "purpose": "每页唯一的 h1，22px/640。"
+      },
+      "title": {
+        "displayName": "Title · 分区标题",
+        "purpose": "面板标题，15px/620，左侧 3px 仪器蓝短竖线。"
+      },
+      "body": {
+        "displayName": "Body · 正文与列表行",
+        "purpose": "全部可读内容，13px/1.55。"
+      },
+      "label": {
+        "displayName": "Label · 元信息",
+        "purpose": "时间戳、字段名、次级说明，11px。"
+      },
+      "metric": {
+        "displayName": "Metric · 读数",
+        "purpose": "统计卡数字，24px/650，等宽数字。"
+      },
+      "data": {
+        "displayName": "Data · 机器数据",
+        "purpose": "ID、分支、路径、cron 表达式，等宽 10.5px。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "contact",
+        "value": "0 1px 2px oklch(0% 0 0 / 30%)",
+        "purpose": "卡片与统计卡静止态，把卡片按在页面上。"
+      },
+      {
+        "name": "float",
+        "value": "0 10px 30px oklch(0% 0 0 / 35%)",
+        "purpose": "抽屉、弹窗、消息框。"
+      },
+      {
+        "name": "overlay",
+        "value": "0 24px 80px oklch(0% 0 0 / 45%)",
+        "purpose": "命令面板、登录卡、撤销提示。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-transition",
+        "value": "background-color .15s ease, box-shadow .15s ease",
+        "purpose": "所有交互态的唯一过渡；不做位移与缩放。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "md",
+        "value": "900px",
+        "purpose": "导航收为 66px 图标栏；面板内多列改单列。"
+      },
+      {
+        "name": "sm",
+        "value": "640px",
+        "purpose": "导航变为底部浮动条；统计条两列；行式列表纵向堆叠；表格明确横向滚动。"
+      }
+    ],
+    "surfaces": [
+      {
+        "name": "page",
+        "token": "--bg-page",
+        "value": "oklch(18.5% 0.012 252)"
+      },
+      {
+        "name": "panel",
+        "token": "--bg-surface",
+        "value": "oklch(22.5% 0.014 252)"
+      },
+      {
+        "name": "raised",
+        "token": "--bg-raised",
+        "value": "oklch(26% 0.016 252)"
+      },
+      {
+        "name": "hover",
+        "token": "--bg-hover",
+        "value": "oklch(30% 0.018 252)"
+      },
+      {
+        "name": "inset",
+        "token": "--bg-inset",
+        "value": "oklch(16% 0.012 252)"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "主操作：启动实例、创建 MR、保存绑定。",
+      "html": "<button class=\"ds-btn-primary\">新建工作区</button>",
+      "css": ".ds-btn-primary { height: 32px; padding: 8px 15px; border: 1px solid var(--brand); border-radius: var(--radius-sm); background: var(--brand); color: var(--brand-contrast); font: 500 13px/1.4 var(--font-sans); cursor: pointer; transition: background-color .15s ease, border-color .15s ease; } .ds-btn-primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); } .ds-btn-primary:active { background: var(--brand-strong); border-color: var(--brand-strong); } .ds-btn-primary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; } .ds-btn-primary:disabled { background: var(--bg-raised); border-color: var(--line-subtle); color: var(--text-faint); cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "次要与取消类操作。",
+      "html": "<button class=\"ds-btn-secondary\">刷新</button>",
+      "css": ".ds-btn-secondary { height: 32px; padding: 8px 15px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text); font: 500 13px/1.4 var(--font-sans); cursor: pointer; transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .ds-btn-secondary:hover { background: var(--bg-hover); border-color: var(--line-strong); color: var(--text-strong); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "删除与不可逆操作。",
+      "html": "<button class=\"ds-btn-danger\">删除</button>",
+      "css": ".ds-btn-danger { height: 32px; padding: 8px 15px; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--danger); color: var(--brand-contrast); font: 500 13px/1.4 var(--font-sans); cursor: pointer; transition: background-color .15s ease; } .ds-btn-danger:hover { background: color-mix(in oklch, var(--danger) 75%, var(--bg-surface)); border-color: color-mix(in oklch, var(--danger) 75%, var(--bg-surface)); } .ds-btn-danger:focus-visible { outline: 2px solid var(--danger); outline-offset: 2px; }"
+    },
+    {
+      "name": "Status Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "状态标签：圆点 + 文字，颜色只作辅助。",
+      "html": "<span class=\"ds-tag-row\"><span class=\"ds-tag\">已通过</span><span class=\"ds-tag ds-tag-success\">成功</span><span class=\"ds-tag ds-tag-warning\">待确认</span><span class=\"ds-tag ds-tag-danger\">失败</span></span>",
+      "css": ".ds-tag-row { display: inline-flex; gap: 6px; align-items: center; font: 13px/1.5 var(--font-sans); } .ds-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-surface); color: var(--text-muted); font-size: 10px; font-weight: 550; line-height: 16px; } .ds-tag::before { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .75; content: ''; } .ds-tag-success { border-color: color-mix(in oklch, var(--success) 35%, var(--line)); background: color-mix(in oklch, var(--success-soft) 55%, transparent); color: var(--success); } .ds-tag-warning { border-color: color-mix(in oklch, var(--warning) 35%, var(--line)); background: color-mix(in oklch, var(--warning-soft) 55%, transparent); color: var(--warning); } .ds-tag-danger { border-color: color-mix(in oklch, var(--danger) 35%, var(--line)); background: color-mix(in oklch, var(--danger-soft) 55%, transparent); color: var(--danger); }"
+    },
+    {
+      "name": "Panel Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "内容面板：1px 发丝线 + 接触阴影，内边距 20px。",
+      "html": "<section class=\"ds-card\"><h2 class=\"ds-card-title\">工作区列表</h2><p class=\"ds-card-sub\">工作区来自工作区根目录；可查看每个工作区包含的项目。</p><div class=\"ds-card-body\">3 个工作区 · 8 个项目</div></section>",
+      "css": ".ds-card { padding: 20px; border: 1px solid var(--line-subtle); border-radius: var(--radius-lg); background: var(--bg-surface); box-shadow: var(--shadow-sm); font: 13px/1.55 var(--font-sans); } .ds-card-title { position: relative; margin: 0 0 3px; padding-left: 11px; color: var(--text-strong); font-size: 15px; font-weight: 620; letter-spacing: -.01em; } .ds-card-title::before { position: absolute; top: 4px; left: 0; width: 3px; height: 12px; border-radius: 2px; background: var(--brand); content: ''; } .ds-card-sub { margin: 0 0 16px; color: var(--text-muted); font-size: 11px; } .ds-card-body { padding: 14px 2px 0; border-top: 1px solid var(--line); color: var(--text); }"
+    },
+    {
+      "name": "Stat Card",
+      "kind": "card",
+      "refersTo": "stat-card",
+      "description": "仪表台读数格：状态点 + 24px 等宽数字。",
+      "html": "<div class=\"ds-stat\"><span class=\"ds-stat-label\">待决策</span><strong class=\"ds-stat-value\">7</strong><small class=\"ds-stat-hint\">其中 2 项高优先级</small></div>",
+      "css": ".ds-stat { position: relative; display: grid; gap: 7px; width: 190px; min-height: 104px; padding: 16px 18px; border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--bg-surface); box-shadow: var(--shadow-sm); font-family: var(--font-sans); } .ds-stat::before { position: absolute; top: 16px; right: 18px; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); content: ''; } .ds-stat:hover { border-color: var(--line); } .ds-stat-label { color: var(--text-muted); font-size: 11px; } .ds-stat-value { color: var(--text-strong); font-size: 24px; font-weight: 650; line-height: 1; letter-spacing: -.03em; font-variant-numeric: tabular-nums; } .ds-stat-hint { color: var(--text-faint); font-size: 10px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "表单输入：内嵌底 + 1px 描边，聚焦时仪器蓝外环。",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">目标分支</span><input class=\"ds-input\" value=\"dev\" /></label>",
+      "css": ".ds-field { display: grid; gap: 6px; font-family: var(--font-sans); } .ds-field-label { color: var(--text-muted); font-size: 11px; } .ds-input { height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-raised); color: var(--text); font: 400 13px var(--font-sans); } .ds-input:hover { border-color: var(--line-strong); } .ds-input:focus-visible { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand) 22%, transparent); }"
+    },
+    {
+      "name": "Nav Rail Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "左侧导航项，当前项用软化底 + 仪器蓝文字。",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><path d=\"M3 6h18M3 12h18M3 18h12\"/></svg><span>收件箱</span></a><a class=\"ds-nav-link ds-nav-link-active\" href=\"#\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><rect x=\"3\" y=\"3\" width=\"7\" height=\"7\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\"/></svg><span>看板</span><i class=\"ds-nav-mark\"></i></a></nav>",
+      "css": ".ds-nav { display: grid; gap: 4px; width: 200px; font-family: var(--font-sans); } .ds-nav-link { position: relative; display: flex; align-items: center; gap: 12px; min-height: 38px; padding: 0 11px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); font-size: 13px; text-decoration: none; transition: background-color .15s ease, color .15s ease; } .ds-nav-link:hover { background: var(--bg-hover); color: var(--text-strong); } .ds-nav-link:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; } .ds-nav-link-active { background: var(--brand-soft); color: var(--brand); font-weight: 600; } .ds-nav-mark { position: absolute; left: -12px; width: 2px; height: 18px; border-radius: 0 2px 2px 0; background: var(--brand); }"
+    },
+    {
+      "name": "Data Inset",
+      "kind": "custom",
+      "description": "机器输出区：凹陷底色 + 等宽字体，与内容卡片明确区分。",
+      "html": "<pre class=\"ds-inset\">[22:19:59] snapshot refreshed\n[22:20:04] cron dispatched → round-3</pre>",
+      "css": ".ds-inset { max-height: 160px; overflow: auto; margin: 0; padding: 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--bg-inset); color: var(--text); font: 11px/1.6 var(--font-mono); white-space: pre-wrap; } .ds-inset::selection { background: color-mix(in oklch, var(--brand) 35%, transparent); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Deck · 仪表台",
+    "overview": "DevTask Console 长得像一块校准好的仪表台，而不是一个产品页面。每个读数都标着来源和时刻，每个开关按下去就执行。界面上没有装饰性的解说：一屏之内，你既能看清当前状态，也能立刻动手。精密度来自一致：同一套刻度、同一套语义色、同一处圆角；重复使用不会让人疲劳，反而让眼睛不必每次都重新学习。配色走冷调：仪器蓝承担主操作与当前选中，幽灵石板灰铺出页面、面板与内嵌区的层次，四种状态色只在它们真正表达状态时出现。手感克制：按钮与输入框只有颜色与 1px 描边的变化，没有位移、没有缩放、没有玻璃模糊。",
+    "keyCharacteristics": [
+      "冷调仪器蓝 + 幽灵石墨板灰，四种状态色只用于状态",
+      "13px 正文、10–24px 的紧凑字号刻度；数字一律等宽（tabular-nums）",
+      "一层面板承载内容，内嵌区（代码、输出、日志）用更深的凹陷色区分",
+      "无位移动效；只有 150ms 的颜色与描边过渡",
+      "暗色默认，两种主题共用同一套亮度刻度"
+    ],
+    "rules": [
+      {
+        "name": "The One Voice Rule",
+        "body": "仪器蓝在任何一屏的面积占比不超过 10%：它标主操作与当前位置，不做装饰背景。需要强调时用字重或字号，不用颜色面积。",
+        "section": "colors"
+      },
+      {
+        "name": "The Source Rule",
+        "body": "任何状态都必须能追溯到来源与快照时刻。信息不全时显示「未知」，不用灰色占位假装正常。",
+        "section": "colors"
+      },
+      {
+        "name": "The Semantic Parity Rule",
+        "body": "同一状态在暗色与亮色下共用同一亮度刻度，不为某一主题单独调深或调浅。",
+        "section": "colors"
+      },
+      {
+        "name": "The Two-Step Rule",
+        "body": "字号刻度只走 10 / 11 / 12.5 / 13 / 15 / 22 / 24 七级（--text-2xs … --text-xl）；任何新文本必须落到其中一级。",
+        "section": "typography"
+      },
+      {
+        "name": "The Numbers Stand Still Rule",
+        "body": "所有会变化的数字使用 tabular-nums；变动的数字不允许引起布局位移。",
+        "section": "typography"
+      },
+      {
+        "name": "The Hairline Rule",
+        "body": "卡片边界永远用 1px --line-subtle 描边表达；禁止用 2px 以上的彩色左边框标记告警或选中。",
+        "section": "elevation"
+      },
+      {
+        "name": "The No-Glass Rule",
+        "body": "不使用 backdrop-filter 模糊做装饰。吸顶顶栏用实色面板底，滚动时文字保持清晰。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 让仪器蓝只出现在主操作、当前选中、可点链接与焦点环上，单屏面积 ≤ 10%。",
+      "Do 给每个状态同时配颜色与文字/图标线索。",
+      "Do 用 --bg-inset 区分机器输出与内容；用 --bg-raised 区分卡片内次级块。",
+      "Do 让所有变化的数字使用 tabular-nums。",
+      "Do 在加载时用与内容同构的静态占位（浅色条或空块），不用扫光动画、不用整屏转圈。",
+      "Do 把告警与安全边界的信息写成「原因 + 恢复方式」的具体句子。"
+    ],
+    "donts": [
+      "Don't 在标题上方叠加 kicker / eyebrow 文本。",
+      "Don't 用 border-left 3px 以上的彩色粗条标记告警、选中或分类。",
+      "Don't 用 backdrop-filter 模糊（毛玻璃）作为装饰。",
+      "Don't 给按钮加位移、缩放或投影动画。",
+      "Don't 在界面里使用渐变文字、渐变按钮或发光效果。",
+      "Don't 把等宽字体当作「技术感」装饰用于普通标签、按钮或正文。",
+      "Don't 用灰色代替状态色表达状态，也不要只靠颜色表达状态。"
+    ]
+  }
+}

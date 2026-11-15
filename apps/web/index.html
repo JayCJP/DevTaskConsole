@@ -3,8 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#101216" />
+    <meta name="theme-color" content="#191c22" />
     <title>DevTask Console</title>
+    <script>
+      /*
+       * 在首帧绘制前确定主题，避免先渲染暗色再跳到亮色造成闪烁。
+       * 主题选择只来自 localStorage（App.vue 中的主题开关负责写入）。
+       */
+      try {
+        var dark = localStorage.getItem('devtask-theme') !== 'light'
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        document.documentElement.classList.toggle('dark', dark)
+      } catch {
+        document.documentElement.dataset.theme = 'dark'
+        document.documentElement.classList.add('dark')
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>
