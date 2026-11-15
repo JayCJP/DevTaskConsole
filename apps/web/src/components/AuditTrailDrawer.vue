@@ -37,6 +37,7 @@ function actionLabel(action: AuditEntry['action']): string {
     'cron.renew': '续期定时任务',
     'cron.owner': '保存 owner 映射',
     'cron.dispatch': '派发轮次',
+    'cron.dispatch.archive': '归档派发轮次',
     'cron.executions.delete': '删除执行记录',
     'service.stop': '停止服务',
     'service.remove': '删除服务映射',

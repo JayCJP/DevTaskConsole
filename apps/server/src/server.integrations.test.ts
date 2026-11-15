@@ -258,6 +258,7 @@ describe('read-only integration API', () => {
       storyId: 'STORY-1',
       // 端口由服务注册表分配，前端需要它展示「端口就绪」状态
       port: response.json().port,
+      cwd: 'C:\\workspaces\\work-one\\repo-a',
       status: 'running',
       updatedAt: '2026-01-01T00:00:00.000Z',
     })

@@ -1,10 +1,10 @@
-import type { Bug, Requirement, TapdStory } from '@devtask/shared'
+import { defaultTapdWorkspaceId, type Bug, type Requirement, type TapdStory } from '@devtask/shared'
 import { mcpClientRegistry, type McpClientRegistry } from './mcp-client.js'
 
 const requiredReadTools = ['get_stories_or_tasks', 'get_related_bugs', 'get_bug', 'get_iterations']
 type ToolListing = Awaited<ReturnType<McpClientRegistry['listTools']>>
 type ToolResult = Awaited<ReturnType<McpClientRegistry['callTool']>>
-const tapdWorkspaceId = 38260062
+const tapdWorkspaceId = defaultTapdWorkspaceId
 const storyFields = 'id,name,status,priority_label,owner,iteration_id,iteration_name'
 /** 按处理人列需求时额外需要的创建时间字段 */
 const ownedStoryFields = `${storyFields},created`
@@ -132,7 +132,9 @@ export class TapdAdapter {
       const tapdStoryId = requirement.tapdStoryId
       const story = tapdStoryId ? storyById.get(tapdStoryId) : undefined
       const bugIdsForStory = tapdStoryId ? relatedByStory.get(tapdStoryId) : undefined
-      if (!story && !bugIdsForStory) return requirement
+      if (!story && !bugIdsForStory) {
+        return tapdStoryId ? { ...requirement, tapdWorkspaceId } : requirement
+      }
       const matchingBugs = bugs.filter((bug) =>
         bugIdsForStory?.has(bug.id) === true
         && hasOwnerMatch(bug.currentOwner, story?.owner),
@@ -152,6 +154,7 @@ export class TapdAdapter {
       }
       return {
         ...requirement,
+        ...(tapdStoryId ? { tapdWorkspaceId } : {}),
         ...(story?.title ? { title: story.title } : {}),
         ...(story?.status ? { status: story.status } : {}),
         ...(story?.priority ? { priority: story.priority } : {}),

@@ -58,8 +58,9 @@ export class ServiceMonitor {
     if (!this.stopped) return
     this.stopped = false
     this.timer = setInterval(() => {
-      void this.tick().catch(() => {
-        // 巡检异常不能中断后续巡检；具体错误已通过事件暴露
+      void this.tick().catch((error: unknown) => {
+        // 巡检整体异常（例如注册表读取失败）同样要让用户看到，不能静默吞掉
+        this.push('system', 'error', 'failed', `服务巡检失败：${messageOf(error)}`)
       })
     }, this.intervalMs)
     this.timer.unref?.()
@@ -88,7 +89,8 @@ export class ServiceMonitor {
 
   /**
    * 执行一次巡检。
-   * 对每个非 stopped 服务做健康检查；不健康则按退避序列尝试重启。
+   * 各服务并行检查：单个服务的重启退避（5/15/30 秒）只占用它自己的等待时间，
+   * 不会让其它 Story 在本轮巡检里排队。
    * @returns Promise<void>
    */
   async tick(): Promise<void> {
@@ -96,19 +98,19 @@ export class ServiceMonitor {
     this.ticking = true
     try {
       const services = await this.supervisor.list()
-      for (const service of services) {
-        if (service.status === 'stopped') continue
+      await Promise.all(services.map(async (service) => {
+        if (service.status === 'stopped') return
         const inspected = await this.supervisor.inspect(service.storyId)
-        if (!inspected) continue
+        if (!inspected) return
         if (inspected.status === 'running') {
           if ((this.failures.get(service.storyId) ?? 0) > 0) {
             this.failures.delete(service.storyId)
             this.push(service.storyId, 'info', 'recovered', '服务已恢复健康。')
           }
-          continue
+          return
         }
         await this.restart(service.storyId, service.cwd, service.pid)
-      }
+      }))
     } finally {
       this.ticking = false
     }

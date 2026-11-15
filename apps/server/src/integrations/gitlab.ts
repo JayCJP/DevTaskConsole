@@ -34,6 +34,18 @@ export interface GitLabCurrentUser {
   name: string
 }
 
+/** 创建合并请求的入参 */
+export interface GitLabMergeRequestCreateInput {
+  /** 源分支（项目当前发布分支） */
+  sourceBranch: string
+  /** 目标分支（基线分支） */
+  targetBranch: string
+  /** MR 标题 */
+  title: string
+  /** MR 描述 */
+  description?: string
+}
+
 export class GitLabAdapter {
   /** 当前令牌对应用户缓存；仅在成功识别后写入，失败不缓存以便下次重试 */
   private currentUserCache: GitLabCurrentUser | undefined
@@ -94,38 +106,34 @@ export class GitLabAdapter {
     })
     const result = await this.request(credentials, `/projects/${projectId}/merge_requests?${query}`)
     if (!Array.isArray(result)) throw new Error('GitLab returned an invalid merge request response.')
-    return result.map((mergeRequest) => {
-      if (
-        !isRecord(mergeRequest)
-        || !Number.isInteger(mergeRequest.id)
-        || typeof mergeRequest.title !== 'string'
-        || typeof mergeRequest.source_branch !== 'string'
-        || typeof mergeRequest.target_branch !== 'string'
-        || typeof mergeRequest.state !== 'string'
-      ) {
-        throw new Error('GitLab returned a merge request with an invalid shape.')
-      }
-      // 作者用户名用于前端“只显示本人的发布内容”，字段缺失时不影响其它字段
-      const authorUsername = isRecord(mergeRequest.author) && typeof mergeRequest.author.username === 'string'
-        ? mergeRequest.author.username
-        : undefined
-      return {
-        projectId,
-        id: String(mergeRequest.iid ?? mergeRequest.id),
-        title: mergeRequest.title,
-        sourceBranch: mergeRequest.source_branch,
-        targetBranch: mergeRequest.target_branch,
-        state: mergeRequest.state,
-        ...(authorUsername ? { authorUsername } : {}),
-        ...(typeof mergeRequest.detailed_merge_status === 'string'
-          ? { mergeStatus: mergeRequest.detailed_merge_status }
-          : typeof mergeRequest.merge_status === 'string'
-            ? { mergeStatus: mergeRequest.merge_status }
-            : {}),
-        ...(toIsoDate(mergeRequest.merged_at) ? { mergedAt: toIsoDate(mergeRequest.merged_at) } : {}),
-        ...(typeof mergeRequest.web_url === 'string' ? { webUrl: mergeRequest.web_url } : {}),
-      }
+    return result.map((mergeRequest) => toMergeRequest(projectId, mergeRequest))
+  }
+
+  /**
+   * 创建一个合并请求：把项目的源分支合并到指定目标分支。
+   * 只创建 MR，不改动本地仓库、不推送代码，也不设置自动合并。
+   * @param projectId GitLab 项目 ID
+   * @param input 源分支、目标分支、标题与描述
+   * @returns 新建的合并请求
+   * @throws Error GitLab 拒绝创建（如源分支不存在、MR 已存在）时抛出带状态码的错误
+   */
+  async createMergeRequest(
+    projectId: number,
+    input: GitLabMergeRequestCreateInput,
+  ): Promise<GitLabMergeRequest> {
+    const credentials = await this.requireCredentials()
+    const result = await this.request(credentials, `/projects/${projectId}/merge_requests`, {
+      method: 'POST',
+      body: {
+        source_branch: input.sourceBranch,
+        target_branch: input.targetBranch,
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        // 保留源分支，工作区后续仍以该分支作为开发分支
+        remove_source_branch: false,
+      },
     })
+    return toMergeRequest(projectId, result)
   }
 
   async getMergeRequestDetails(projectId: number, iid: string): Promise<Pick<
@@ -256,24 +264,98 @@ export class GitLabAdapter {
     return credentials
   }
 
-  private async request(credentials: GitLabCredentials, path: string): Promise<unknown> {
+  /**
+   * 调用 GitLab REST API。
+   * @param credentials 当前 GitLab 凭据
+   * @param path 相对 API 根目录的路径（如 `/projects/1/merge_requests`）
+   * @param init 可选方法与 JSON 请求体；缺省为 GET
+   * @returns 解析后的应答 JSON
+   * @throws Error 网络失败、非 2xx 应答或应答不是合法 JSON
+   */
+  private async request(
+    credentials: GitLabCredentials,
+    path: string,
+    init?: { method?: 'GET' | 'POST'; body?: unknown },
+  ): Promise<unknown> {
     const baseUrl = `${credentials.apiUrl.replace(/\/+$/, '')}/`
     const response = await fetch(new URL(path.replace(/^\/+/, ''), baseUrl), {
+      method: init?.method ?? 'GET',
       headers: {
         accept: 'application/json',
         'private-token': credentials.personalAccessToken,
+        ...(init?.body === undefined ? {} : { 'content-type': 'application/json' }),
       },
+      ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       redirect: 'error',
       signal: AbortSignal.timeout(10_000),
     })
     if (!response.ok) {
-      throw new Error(`GitLab request failed with HTTP ${response.status}.`)
+      throw new Error(`GitLab request failed with HTTP ${response.status}.${await errorDetailOf(response)}`)
     }
     try {
       return await response.json() as unknown
     } catch {
       throw new Error('GitLab returned invalid JSON.')
     }
+  }
+}
+
+/**
+ * 把 GitLab 返回的单条 MR 转成内部结构，并校验必要字段。
+ * @param projectId GitLab 项目 ID
+ * @param value GitLab 返回的 MR 对象
+ * @returns 内部 MR 结构
+ * @throws Error 字段缺失或类型非法
+ */
+function toMergeRequest(projectId: number, value: unknown): GitLabMergeRequest {
+  if (
+    !isRecord(value)
+    || !Number.isInteger(value.id)
+    || typeof value.title !== 'string'
+    || typeof value.source_branch !== 'string'
+    || typeof value.target_branch !== 'string'
+    || typeof value.state !== 'string'
+  ) {
+    throw new Error('GitLab returned a merge request with an invalid shape.')
+  }
+  // 作者用户名用于前端“只显示本人的发布内容”，字段缺失时不影响其它字段
+  const authorUsername = isRecord(value.author) && typeof value.author.username === 'string'
+    ? value.author.username
+    : undefined
+  const mergedAt = toIsoDate(value.merged_at)
+  return {
+    projectId,
+    id: String(value.iid ?? value.id),
+    title: value.title,
+    sourceBranch: value.source_branch,
+    targetBranch: value.target_branch,
+    state: value.state,
+    ...(authorUsername ? { authorUsername } : {}),
+    ...(typeof value.detailed_merge_status === 'string'
+      ? { mergeStatus: value.detailed_merge_status }
+      : typeof value.merge_status === 'string'
+        ? { mergeStatus: value.merge_status }
+        : {}),
+    ...(mergedAt ? { mergedAt } : {}),
+    ...(typeof value.web_url === 'string' ? { webUrl: value.web_url } : {}),
+  }
+}
+
+/**
+ * 读取 GitLab 错误响应中的可展示说明（如「源分支不存在」）。
+ * 只解析结构化的 `message` 字段，且原样回传响应体会把凭据等内容带进错误消息，因此不做兜底透传。
+ * @param response 非 2xx 的 GitLab 应答
+ * @returns 以空格开头的说明文本；无法解析时为空字符串
+ */
+async function errorDetailOf(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as unknown
+    if (!isRecord(payload) || typeof payload.message !== 'string') return ''
+    const message = payload.message.trim().slice(0, 300)
+    return message ? ` ${message}` : ''
+  } catch {
+    // 非 JSON 应答（如网关错误页）不解析，避免透传不可控内容
+    return ''
   }
 }
 

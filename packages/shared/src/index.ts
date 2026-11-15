@@ -128,6 +128,59 @@ export const workspaceDeleteResultSchema = z.object({
 })
 
 /**
+ * 工作区创建合并请求时可选的基线目标分支。
+ * 顺序即前端下拉的展示顺序，第一个 `test` 为默认值。
+ */
+export const mergeRequestTargetBranches = ['test', 'pre', 'pre-txnj', 'master', 'prod-txnj'] as const
+
+/** 目标分支的默认值（前端下拉默认选中） */
+export const defaultMergeRequestTargetBranch = 'test'
+
+/** 合并请求目标分支校验：只允许约定的基线分支，避免误合并到临时分支 */
+export const mergeRequestTargetBranchSchema = z.enum(mergeRequestTargetBranches)
+
+/**
+ * 工作区批量创建合并请求的请求体。
+ * 源分支固定取项目 worktree 当前检出的分支，不在这里传，避免与本地实际状态不一致。
+ */
+export const workspaceMergeRequestCreateRequestSchema = z.object({
+  /** 合并目标分支 */
+  targetBranch: mergeRequestTargetBranchSchema,
+  /** 只对指定项目创建；缺省表示工作区内的全部项目 */
+  projects: z.array(z.string().trim().min(1).max(200)).min(1).max(200).optional(),
+})
+
+/** 单个项目的合并请求创建结果 */
+export const workspaceMergeRequestCreateItemSchema = z.object({
+  /** 工作区内的项目名（仓库目录名） */
+  project: z.string(),
+  /** 源分支：项目 worktree 当前检出的分支 */
+  sourceBranch: z.string().optional(),
+  /** 目标分支 */
+  targetBranch: z.string(),
+  /** 处理结果：created 已创建 / exists 已存在未重复创建 / failed 失败 */
+  status: z.enum(['created', 'exists', 'failed']),
+  /** 匹配到的 GitLab 项目 ID */
+  gitlabProjectId: z.number().int().positive().optional(),
+  /** 合并请求 iid */
+  mergeRequestIid: z.string().optional(),
+  /** 合并请求页面链接 */
+  webUrl: z.string().optional(),
+  /** 失败或跳过原因 */
+  message: z.string().optional(),
+})
+
+/** 工作区批量创建合并请求的结果：逐项目返回，单个失败不影响其它项目 */
+export const workspaceMergeRequestCreateResultSchema = z.object({
+  /** 工作区名 */
+  workspace: z.string(),
+  /** 本次使用的目标分支 */
+  targetBranch: z.string(),
+  /** 逐项目结果，顺序与请求中的项目顺序一致 */
+  items: z.array(workspaceMergeRequestCreateItemSchema),
+})
+
+/**
  * TAPD 需求（数据元）：按处理人从 TAPD 查询得到的只读快照。
  * storyId 为 TAPD 需求 ID，tapdUrl 为可直接打开的详情链接。
  */
@@ -170,9 +223,14 @@ export const workspaceBindingRequestSchema = z.object({
   tapdUrl: z.string().trim().url().optional(),
 })
 
+/** 当前控制台使用的默认 TAPD 项目；与看板及 TAPD 聚合器保持一致 */
+export const defaultTapdWorkspaceId = 38260062
+
 export const requirementSchema = z.object({
   storyId: z.string(),
   tapdStoryId: z.string().optional(),
+  /** TAPD 项目 workspace_id，用于生成缺陷巡检任务模板 */
+  tapdWorkspaceId: z.number().int().positive().optional(),
   title: z.string(),
   status: z.string().optional(),
   priority: z.string().optional(),
@@ -236,7 +294,12 @@ export const inboxItemSchema = z.object({
   title: z.string(),
   reason: z.string(),
   requirementId: z.string().optional(),
-  /** 事项所属工作区（相对工作区根目录的路径），收件箱按「工作区 → Story」分组时使用 */
+  /**
+   * 事项所属工作区名（`*.code-workspace` 文件名）。
+   * 只有被工作区流水线认领的 Story 才有值，口径与看板/流水线完全一致。
+   */
+  workspaceName: z.string().optional(),
+  /** 事项所属 Story 所在项目目录（相对工作区根目录的路径），用于展示更具体的仓位置 */
   workspacePath: z.string().optional(),
   priority: z.enum(['high', 'normal']),
   updatedAt: z.string().datetime().optional(),
@@ -248,9 +311,46 @@ export const jobSchema = z.object({
   name: z.string(),
   cwd: z.string(),
   state: z.string(),
-  status: z.string(),
+  /** busy/idle/waiting/stopped；上游可能不输出，服务端会按 state 补齐 */
+  status: z.string().optional(),
   storyId: z.string().optional(),
   sessionId: z.string().optional(),
+})
+
+/**
+ * 实例详情：在列表字段之外补充「当前在做什么、是否在等输入、建议怎么回」。
+ * 字段与 CodeBuddy 的 AgentJob 对齐，全部可选以兼容旧版本实例。
+ */
+export const jobDetailSchema = jobSchema.extend({
+  /** 当前活动描述或结果摘要 */
+  detail: z.string().optional(),
+  /** 等待用户输入时的说明 */
+  needs: z.string().optional(),
+  /** 等待对象（例如 confirmation） */
+  waitingFor: z.string().optional(),
+  /** 上游给出的建议回复文案 */
+  suggestedReply: z.string().optional(),
+  /** 开始时间（Unix 毫秒） */
+  startedAt: z.number().optional(),
+  /** 最近更新时间（Unix 毫秒） */
+  updatedAt: z.number().optional(),
+  /** 进程是否存活 */
+  alive: z.boolean().optional(),
+  /** 是否已进入终结态 */
+  settled: z.boolean().optional(),
+  /** 经安全过滤的本机 worker Web UI 入口 */
+  webUrl: z.string().nullable().optional(),
+})
+
+/** 智能体列表偏好：置顶 ID 与项目分组 */
+export const jobPrefsSchema = z.object({
+  pinned: z.array(z.string()).default([]),
+  groups: z.record(z.string(), z.string()).default({}),
+})
+
+/** 置顶/取消置顶请求体 */
+export const jobPinRequestSchema = z.object({
+  pinned: z.boolean(),
 })
 
 export const jobCreateRequestSchema = z.object({
@@ -331,6 +431,8 @@ export const cronSchema = z.object({
   cron: z.string(),
   nextRun: z.string().datetime().optional(),
   ownerSessionId: z.string().optional(),
+  /** CodeBuddy 任务原生绑定的 session；与本地人工 owner 映射分开保存 */
+  sessionId: z.string().optional(),
   promptFirstLine: z.string().optional(),
   expiresAt: z.string().datetime().optional(),
   /** owner session 最近一次校验通过的时间；缺省表示尚未校验 */
@@ -431,6 +533,7 @@ export const auditActionSchema = z.enum([
   'cron.renew',
   'cron.owner',
   'cron.dispatch',
+  'cron.dispatch.archive',
   'cron.executions.delete',
   'service.stop',
   'service.remove',
@@ -694,6 +797,10 @@ export type WorkspacePreview = z.infer<typeof workspacePreviewSchema>
 export type WorkspaceProject = z.infer<typeof workspaceProjectSchema>
 export type WorkspaceSummary = z.infer<typeof workspaceSummarySchema>
 export type WorkspaceDeleteResult = z.infer<typeof workspaceDeleteResultSchema>
+export type MergeRequestTargetBranch = z.infer<typeof mergeRequestTargetBranchSchema>
+export type WorkspaceMergeRequestCreateRequest = z.infer<typeof workspaceMergeRequestCreateRequestSchema>
+export type WorkspaceMergeRequestCreateItem = z.infer<typeof workspaceMergeRequestCreateItemSchema>
+export type WorkspaceMergeRequestCreateResult = z.infer<typeof workspaceMergeRequestCreateResultSchema>
 export type Requirement = z.infer<typeof requirementSchema>
 export type Bug = z.infer<typeof bugSchema>
 export type HarnessBug = z.infer<typeof harnessBugSchema>
@@ -701,6 +808,8 @@ export type OpenQuestion = z.infer<typeof openQuestionSchema>
 export type HarnessActive = z.infer<typeof harnessActiveSchema>
 export type InboxItem = z.infer<typeof inboxItemSchema>
 export type Job = z.infer<typeof jobSchema>
+export type JobDetail = z.infer<typeof jobDetailSchema>
+export type JobPrefs = z.infer<typeof jobPrefsSchema>
 export type Cron = z.infer<typeof cronSchema>
 export type CronMode = z.infer<typeof cronModeSchema>
 export type CronExecution = z.infer<typeof cronExecutionSchema>

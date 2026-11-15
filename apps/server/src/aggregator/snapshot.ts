@@ -5,10 +5,13 @@ import { isAbsolute, join, resolve } from 'node:path'
 import {
   jobSchema,
   type ChannelState,
+  type InboxItem,
   type Job,
+  type OpenQuestion,
   type Requirement,
   type Snapshot,
   type ViewerIdentity,
+  type WorkspacePipeline,
   type WorkspaceSummary,
 } from '@devtask/shared'
 import {
@@ -28,8 +31,10 @@ import {
   type ReleaseProjectTarget,
 } from './release-data.js'
 import { CodeBuddyApi } from '../services/codebuddy-api.js'
+import { ScheduledTaskClient } from '../services/scheduled-tasks.js'
 import { StoryServiceSupervisor } from '../services/story-service-supervisor.js'
 import { CronMappingStore, readLocalCrons } from './cron-data.js'
+import { mergeCronFacts, type CronRealtimeSource } from './cron-merge.js'
 import { buildWorkspacePipelines } from './workspace-pipelines.js'
 
 const tapd = new TapdAdapter()
@@ -94,38 +99,19 @@ export async function buildSnapshot(workspacesRoot = getWorkspacesRoot()): Promi
     crons: cronResult.channel,
   }
 
-  // Story → 工作区相对路径：收件箱的每类事项都要带上工作区，前端才能按「工作区 → Story」分组
-  const workspaceByStory = new Map(
-    localResult.requirements.map((requirement) => [requirement.storyId, requirement.workspacePath]),
-  )
-  const inbox: Snapshot['inbox'] = [
-    ...localResult.requirements
-      .filter((requirement) => requirement.status === 'blocked')
-      .map((requirement) => ({
-        id: `blocked:${requirement.storyId}`,
-        kind: 'blocked_job' as const,
-        title: requirement.title,
-        reason: `Harness Story ${requirement.storyId} is marked blocked.`,
-        requirementId: requirement.storyId,
-        ...(requirement.workspacePath ? { workspacePath: requirement.workspacePath } : {}),
-        priority: 'high' as const,
-      })),
-    ...localResult.openQuestions
-      .filter((question) => question.state === 'pending_confirmation' || question.state === 'no_proposal')
-      .map((question) => {
-        const workspacePath = workspaceByStory.get(question.storyId)
-        return {
-          id: `question:${question.storyId}:${question.id}`,
-          kind: 'open_question' as const,
-          title: question.question,
-          reason: question.state === 'pending_confirmation' ? '待用户确认。' : '缺少建议稿，需要先补充分析。',
-          requirementId: question.storyId,
-          ...(workspacePath ? { workspacePath } : {}),
-          priority: 'high' as const,
-          target: `/board?storyId=${encodeURIComponent(question.storyId)}`,
-        }
-      }),
-  ]
+  // 流水线先算出来：收件箱与看板/流水线必须共用同一份 Story 识别结果，不能各算一套
+  const pipelines = buildWorkspacePipelines({
+    workspacesRoot,
+    workspaces: workspaceScan.workspaces,
+    requirements: tapdResult.requirements,
+    harnessActive: localResult.harnessActive,
+    mergeRequests: gitlabResult.mergeRequests,
+    builds: devopsResult.builds,
+    branches: devopsResult.branches,
+    crons: cronResult.crons,
+    jobs: codeBuddyResult.jobs,
+  })
+  const inbox = buildInbox(pipelines.workspacePipelines, localResult)
 
   return {
     snapshotAt,
@@ -142,21 +128,87 @@ export async function buildSnapshot(workspacesRoot = getWorkspacesRoot()): Promi
     builds: devopsResult.builds,
     branches: devopsResult.branches,
     mergeRequests: gitlabResult.mergeRequests,
-    // 流水线以工作区为根：工作区 → 项目 → Story，前端不需要再自行拼装层级
-    ...buildWorkspacePipelines({
-      workspacesRoot,
-      workspaces: workspaceScan.workspaces,
-      requirements: tapdResult.requirements,
-      harnessActive: localResult.harnessActive,
-      mergeRequests: gitlabResult.mergeRequests,
-      builds: devopsResult.builds,
-      branches: devopsResult.branches,
-      crons: cronResult.crons,
-      jobs: codeBuddyResult.jobs,
-    }),
+    ...pipelines,
   }
 }
 
+/**
+ * 由工作区流水线派生收件箱事项。
+ *
+ * 提取顺序照搬工作区视图：先按工作区列表走，每个工作区只认一个 Story
+ * （`folders[0]` 项目的 `.codebuddy/plans`），再看这个 Story 有没有待决策事项。
+ * 没有被任何工作区认领的 Story 不进收件箱——它在工作区视图里也不存在，
+ * 收进来只会造成「收了却在别处看不到」的错位。
+ *
+ * 注意：`blocked` 只来自本地 `e2e-state.json`，不能读流水线里被 TAPD 覆盖过的 `status`。
+ *
+ * @param pipelines 工作区流水线（已按文件夹声明顺序选好每个工作区的唯一 Story）
+ * @param facts 本地 Harness 只读事实（需求状态与待确认项）
+ * @returns 收件箱事项，每条都带上所属工作区
+ */
+function buildInbox(
+  pipelines: WorkspacePipeline[],
+  facts: { requirements: Requirement[]; openQuestions: OpenQuestion[] },
+): Snapshot['inbox'] {
+  /** Story → 本地运行期需求（status 未被 TAPD 覆盖，blocked 只认这里） */
+  const localByStory = new Map(facts.requirements.map((requirement) => [requirement.storyId, requirement]))
+  /** Story → 待人工确认的 open question */
+  const questionsByStory = new Map<string, OpenQuestion[]>()
+  for (const question of facts.openQuestions) {
+    if (question.state !== 'pending_confirmation' && question.state !== 'no_proposal') continue
+    const bucket = questionsByStory.get(question.storyId)
+    if (bucket) bucket.push(question)
+    else questionsByStory.set(question.storyId, [question])
+  }
+
+  const inbox: Snapshot['inbox'] = []
+  for (const pipeline of pipelines) {
+    const requirement = pipeline.story?.requirement
+    if (!requirement) continue
+    const local = localByStory.get(requirement.storyId)
+    const workspacePath = requirement.workspacePath ?? local?.workspacePath
+    const ownership: Pick<InboxItem, 'workspaceName' | 'workspacePath'> = {
+      workspaceName: pipeline.name,
+      ...(workspacePath ? { workspacePath } : {}),
+    }
+
+    if (local?.status === 'blocked') {
+      inbox.push({
+        id: `blocked:${requirement.storyId}`,
+        kind: 'blocked_job',
+        title: local.title || requirement.title,
+        reason: `Harness Story ${requirement.storyId} is marked blocked.`,
+        requirementId: requirement.storyId,
+        ...ownership,
+        priority: 'high',
+      })
+    }
+
+    for (const question of questionsByStory.get(requirement.storyId) ?? []) {
+      inbox.push({
+        id: `question:${requirement.storyId}:${question.id}`,
+        kind: 'open_question',
+        title: question.question,
+        reason: question.state === 'pending_confirmation' ? '待用户确认。' : '缺少建议稿，需要先补充分析。',
+        requirementId: requirement.storyId,
+        ...ownership,
+        priority: 'high',
+        target: `/board?storyId=${encodeURIComponent(requirement.storyId)}`,
+      })
+    }
+  }
+  return inbox
+}
+
+/**
+ * 读取定时任务快照：本地文件提供归属与工作区定位，运行中实例提供实时运行期事实。
+ * 两边都拿不到时回退本地结果，并在通道状态里如实标注错误。
+ * @param fetchedAt 快照时间
+ * @param workspacesRoot 工作区根目录
+ * @param requirements 本地 Harness 需求
+ * @param workspaces 工作区摘要
+ * @returns 通道状态与合并后的任务列表
+ */
 async function loadCronSnapshot(
   fetchedAt: string,
   workspacesRoot: string,
@@ -167,14 +219,17 @@ async function loadCronSnapshot(
     const mappings = await new CronMappingStore().list()
     // 定时任务以工作区为根：先扫工作区项目目录，再补上 Story 目录，避免数据源与页面结构不一致
     const result = await readLocalCrons(workspacesRoot, requirements, mappings, workspaces)
+    // 本地文件可能落后于实例（例如刚创建/刚启停），用实时数据覆盖运行期字段
+    const realtime = await loadRealtimeCrons(requirements, workspacesRoot, result.crons)
+    const errors = [...result.errors, ...realtime.errors]
     return {
       channel: {
         fetchedAt,
-        ok: result.errors.length === 0,
+        ok: errors.length === 0,
         stale: false,
-        ...(result.errors.length ? { error: result.errors.join(' ') } : {}),
+        ...(errors.length ? { error: errors.join(' ') } : {}),
       },
-      crons: result.crons,
+      crons: mergeCronFacts(result.crons, realtime.sources, mappings),
     }
   } catch (error) {
     return {
@@ -187,6 +242,79 @@ async function loadCronSnapshot(
       crons: [],
     }
   }
+}
+
+/**
+ * 从运行中的 Story 服务读取实时定时任务。
+ * 单个 Story 失败只记录原因并跳过，不影响其它 Story 的数据。
+ * @param requirements 本地 Harness 需求
+ * @param workspacesRoot 工作区根目录，用于核对服务 cwd 与 Story 归属是否仍然一致
+ * @param localCrons 本地任务事实，提供已保存的 session 绑定
+ * @returns 实时来源列表与错误信息
+ */
+async function loadRealtimeCrons(
+  requirements: Snapshot['requirements'],
+  workspacesRoot: string,
+  localCrons: Snapshot['crons'],
+): Promise<{ sources: CronRealtimeSource[]; errors: string[] }> {
+  const sources: CronRealtimeSource[] = []
+  const errors: string[] = []
+  let services
+  try {
+    services = await storyServiceSupervisor.list()
+  } catch (error) {
+    return {
+      sources,
+      errors: [error instanceof Error ? error.message : 'Story service registry could not be read.'],
+    }
+  }
+  const client = new ScheduledTaskClient(codeBuddyApi)
+  await Promise.all(services.map(async (service) => {
+    if (service.status !== 'running') return
+    const inspected = await storyServiceSupervisor.inspect(service.storyId)
+    if (!inspected || inspected.status !== 'running') {
+      errors.push(inspected?.error ?? `Story service ${service.storyId} is unavailable.`)
+      return
+    }
+    const workspacePath = requirements.find((item) => item.storyId === service.storyId)?.workspacePath
+    if (workspacePath && !sameWorkspace(inspected.cwd, resolve(workspacesRoot, workspacePath))) {
+      errors.push(`Story service ${service.storyId} workspace mapping no longer matches the snapshot.`)
+      return
+    }
+    try {
+      const bound = localCrons.find((cron) => (
+        cron.storyId === service.storyId && (cron.ownerSessionId || cron.sessionId)
+      ))
+      const sessionId = await client.resolveSessionId(
+        inspected.port,
+        inspected.cwd,
+        bound?.ownerSessionId ?? bound?.sessionId,
+      )
+      const tasks = await client.list(inspected.port, { sessionId })
+      sources.push({
+        storyId: service.storyId,
+        ...(workspacePath ? { workspacePath } : {}),
+        tasks,
+      })
+    } catch (error) {
+      errors.push(error instanceof Error ? `${service.storyId}: ${error.message}` : `${service.storyId}: task listing failed.`)
+    }
+  }))
+  return { sources, errors }
+}
+
+/**
+ * 比较两个目录是否指向同一工作区；Windows 下大小写不敏感。
+ * @param left 实际目录
+ * @param right 期望目录
+ * @returns 相同返回 true
+ */
+function sameWorkspace(left: string, right: string): boolean {
+  const normalize = (path: string): string => {
+    const resolved = resolve(path)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(left) === normalize(right)
 }
 
 async function loadCodeBuddySnapshot(

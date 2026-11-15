@@ -146,6 +146,71 @@ describe('GitLab read adapter', () => {
     await expect(new GitLabAdapter().checkConnection()).rejects.not.toThrow('test-token')
   })
 
+  it('creates a merge request with the given source and target branch', async () => {
+    let requestPath = ''
+    let requestMethod = ''
+    let requestBody = ''
+    server = createServer((request, response) => {
+      requestPath = request.url ?? ''
+      requestMethod = request.method ?? ''
+      request.on('data', (chunk: Buffer) => {
+        requestBody += chunk.toString('utf8')
+      })
+      request.on('end', () => {
+        response.writeHead(201, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({
+          id: 501,
+          iid: 3,
+          title: 'repo-a feat/feature-x → test',
+          source_branch: 'feat/feature-x',
+          target_branch: 'test',
+          state: 'opened',
+          web_url: 'https://gitlab.example/group/repo-a/-/merge_requests/3',
+        }))
+      })
+    })
+    await listen(server)
+    await configureServer(server)
+
+    const mergeRequest = await new GitLabAdapter().createMergeRequest(12, {
+      sourceBranch: 'feat/feature-x',
+      targetBranch: 'test',
+      title: 'repo-a feat/feature-x → test',
+    })
+
+    expect(requestMethod).toBe('POST')
+    expect(requestPath).toBe('/api/v4/projects/12/merge_requests')
+    expect(JSON.parse(requestBody)).toEqual({
+      source_branch: 'feat/feature-x',
+      target_branch: 'test',
+      title: 'repo-a feat/feature-x → test',
+      remove_source_branch: false,
+    })
+    expect(mergeRequest).toMatchObject({
+      projectId: 12,
+      id: '3',
+      sourceBranch: 'feat/feature-x',
+      targetBranch: 'test',
+      state: 'opened',
+      webUrl: 'https://gitlab.example/group/repo-a/-/merge_requests/3',
+    })
+  })
+
+  it('surfaces the GitLab error message when a merge request cannot be created', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(409, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ message: 'Another open merge request already exists for this source branch' }))
+    })
+    await listen(server)
+    await configureServer(server)
+
+    await expect(new GitLabAdapter().createMergeRequest(12, {
+      sourceBranch: 'feat/feature-x',
+      targetBranch: 'test',
+      title: 'duplicate',
+    })).rejects.toThrow('already exists')
+  })
+
   it('loads merge request approvals and changed-file metadata', async () => {
     const requestPaths: string[] = []
     server = createServer((request, response) => {

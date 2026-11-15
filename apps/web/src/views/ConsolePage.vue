@@ -3,12 +3,17 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   applicationMappingSchema,
   defaultDevOpsGroup,
+  defaultMergeRequestTargetBranch,
+  defaultTapdWorkspaceId,
+  jobSchema,
   mergeRequestDiffSummarySchema,
   mergeRequestSchema,
+  mergeRequestTargetBranches,
   repositoryCandidateSchema,
   resumableSessionSchema,
   workspaceDeleteResultSchema,
   workspaceInitializationJobSchema,
+  workspaceMergeRequestCreateResultSchema,
   workspacePreviewSchema,
   workspaceSummarySchema,
   type Requirement,
@@ -20,9 +25,12 @@ import {
   type Job,
   type MergeRequest,
   type MergeRequestDiffSummary,
+  type MergeRequestTargetBranch,
   type RepositoryCandidate,
   type WorkspaceDeleteResult,
   type WorkspaceInitializationJob,
+  type WorkspaceMergeRequestCreateItem,
+  type WorkspaceMergeRequestCreateResult,
   type WorkspacePipeline,
   type WorkspacePreview,
   type WorkspaceSummary,
@@ -36,10 +44,14 @@ import CronExecutionList from '../components/CronExecutionList.vue'
 import CronTaskRow from '../components/CronTaskRow.vue'
 import PipelineFlow from '../components/PipelineFlow.vue'
 import InstanceStoryCard from '../components/InstanceStoryCard.vue'
+import JobDetailPanel from '../components/JobDetailPanel.vue'
 import { useAuditTrail } from '../composables/useAuditTrail'
 import { useBoardStories } from '../composables/useBoardStories'
 import { useCronActions } from '../composables/useCronActions'
+import { useCronDispatches, type DispatchOutcome } from '../composables/useCronDispatches'
 import { useCronExecutions } from '../composables/useCronExecutions'
+import { useActionToasts } from '../composables/useActionToasts'
+import { useJobExtras } from '../composables/useJobExtras'
 import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
 import { useConsoleStore } from '../stores/console'
 import { buildMappingRows } from '../utils/application-mapping'
@@ -171,6 +183,35 @@ const deleteConfirmText = ref('')
 const deleting = ref(false)
 const deleteError = ref('')
 const deleteResult = ref<WorkspaceDeleteResult | null>(null)
+/** 工作区创建 MR 使用的目标分支，默认 test */
+const mrTargetBranch = ref<MergeRequestTargetBranch>(defaultMergeRequestTargetBranch)
+/** 正在创建 MR 的项目名，用于逐个按钮的 loading 态 */
+const mrCreatingProjects = ref<string[]>([])
+/** 一键创建（工作区全部项目）是否进行中 */
+const mrBatchRunning = ref(false)
+/** 最近一次创建 MR 的逐项目结果 */
+const workspaceMergeRequestResult = ref<WorkspaceMergeRequestCreateResult | null>(null)
+/** 创建 MR 的错误提示（整批请求失败或存在失败项目） */
+const workspaceMergeRequestError = ref('')
+/** 有任一创建任务在跑时禁用所有创建入口，避免重复提交 */
+const mrBusy = computed(() => mrBatchRunning.value || mrCreatingProjects.value.length > 0)
+/**
+ * 取创建结果状态对应的展示文案。
+ * @param status 单项目的创建结果状态
+ * @returns 中文状态文案
+ */
+function mergeRequestStatusLabel(status: WorkspaceMergeRequestCreateItem['status']): string {
+  return { created: '已创建', exists: '已存在', failed: '失败' }[status]
+}
+
+/**
+ * 取创建结果状态对应的标签样式类。
+ * @param status 单项目的创建结果状态
+ * @returns 标签样式类名
+ */
+function mergeRequestStatusClass(status: WorkspaceMergeRequestCreateItem['status']): string {
+  return { created: 'tag-success', exists: 'tag-warning', failed: 'tag-danger' }[status]
+}
 
 /**
  * 详情抽屉的 v-model 双向绑定。
@@ -213,6 +254,26 @@ const hasServiceFailure = lifecycle.hasServiceFailure
 const dismissServiceEvent = lifecycle.dismissEvent
 /** 读取某个 Story 最近的服务操作失败原因 */
 const serviceErrorOf = lifecycle.errorOf
+/** 实例写操作的结果提示（成功/失败） */
+const actionToasts = useActionToasts()
+/** 提示列表（模板顶层绑定） */
+const actionToastItems = actionToasts.toasts
+/** 关闭一条操作提示 */
+const dismissActionToast = actionToasts.dismiss
+/** 实例详情与列表偏好（置顶/分组） */
+const jobExtras = useJobExtras()
+/** 当前实例详情 */
+const jobDetail = jobExtras.detail
+/** 详情加载中 */
+const jobDetailLoading = jobExtras.detailLoading
+/** 详情读取失败原因 */
+const jobDetailError = jobExtras.detailError
+/** 置顶写操作进行中 */
+const jobPinSaving = jobExtras.pinSaving
+/** 偏好读取失败原因 */
+const jobPrefsError = jobExtras.prefsError
+/** 实例状态筛选 */
+const jobStateFilter = ref<'all' | 'active' | 'done' | 'failed'>('all')
 const storyJobs = ref<Job[]>([])
 const selectedJob = ref<Job | null>(null)
 const selectedStoryId = ref('')
@@ -243,9 +304,15 @@ const cronError = ref('')
 const cronQuery = ref('')
 /** 定时任务状态筛选 */
 const cronStatusFilter = ref<'all' | 'enabled' | 'paused' | 'attention'>('all')
+/** 派发轮次：用于展示未归档轮次并提供归档入口 */
+const cronDispatches = useCronDispatches(async () => { await store.refresh() })
 /** 定时任务写操作：乐观更新、失败回滚与撤销提示 */
 const cronActions = useCronActions({
-  onRefresh: () => store.refresh(),
+  // 写操作会改变任务与轮次状态，两者都要刷新
+  onRefresh: async () => {
+    await store.refresh()
+    await cronDispatches.refresh()
+  },
   onError: (message: string) => { cronError.value = message },
 })
 /** 行内执行记录 */
@@ -351,6 +418,8 @@ const releaseFacts = ref<DeployFact[]>([])
 /** MR diff 摘要，按 `projectId:iid` 缓存 */
 const mergeRequestSummaries = ref<Record<string, MergeRequestDiffSummary>>({})
 let jobStreamController: AbortController | undefined
+/** 实例页列表轮询定时器 */
+let jobsPollTimer: ReturnType<typeof setInterval> | undefined
 let workspacePollTimer: ReturnType<typeof setTimeout> | undefined
 const page = computed(() => String(route.meta.page ?? 'inbox'))
 const requirements = computed(() => {
@@ -374,87 +443,100 @@ interface InboxStoryGroup {
 /** 收件箱中同一工作区的待决策事项：工作区 → Story → 事项 */
 interface InboxWorkspaceGroup {
   key: string
-  /** 工作区名（工作区目录名） */
+  /** 工作区名（`*.code-workspace` 文件名），与看板/流水线同一口径 */
   name: string
-  /** 工作区下的仓库 worktree 路径，仅当比工作区名更具体时展示 */
+  /** Story 所在项目目录，仅当比工作区名更具体时展示 */
   pathHint: string
+  /** 该组是否被工作区流水线认领；false 表示 Story 没进任何工作区，属于未同步数据 */
+  synced: boolean
   itemCount: number
   highCount: number
   stories: InboxStoryGroup[]
 }
 
-/** 无法归属到任何工作区的事项统一落到这个兜底分组 */
-const unassignedWorkspaceName = '未关联工作区'
-
-/**
- * 取工作区分组键：从工作区相对路径中取出第一段目录名。
- * 后端上报的路径既可能是 `feature-x`，也可能是 `feature-x\repo-a`（Windows 分隔符），
- * 所以统一换成 `/` 再切分；路径为空时返回兜底名称，保证事项不会丢。
- * @param workspacePath 相对工作区根目录的路径，可能为空
- * @returns 工作区分组键
- */
-function workspaceKeyOf(workspacePath: string | undefined): string {
-  const normalized = (workspacePath ?? '').replaceAll('\\', '/').replace(/^\/+/, '')
-  const [head] = normalized.split('/')
-  return head || unassignedWorkspaceName
-}
+/** 未被工作区流水线认领的事项统一落到这个兜底分组 */
+const unsyncedWorkspaceName = '未同步到工作区'
 
 /**
  * 收件箱分组：工作区 → Story → 待决策事项。
- * 排序规则：普通工作区按名称升序、兜底分组置底；组内 Story 按高优先级数量降序，
- * 让「最该先处理」的 Story 排在工作区最前面。
+ *
+ * 骨架是**工作区列表**（`workspacePipelines`），顺序沿用工作区扫描结果：
+ * 一个工作区最多一个 Story（`*.code-workspace` 的 `folders[0]` + 该项目的 `.codebuddy/plans`），
+ * Story 下面才是它的 open question / blocked 事项。没有事项的工作区不出现。
+ * 快照来自旧后端或出现未认领事项时，尾部追加「未同步到工作区」兜底分组，避免数据凭空消失。
+ *
  * @returns 分组后的收件箱数据，直接供模板渲染
  */
 const inboxGroups = computed<InboxWorkspaceGroup[]>(() => {
   const titles = new Map((store.snapshot?.requirements ?? []).map((requirement) => [requirement.storyId, requirement.title]))
-  const workspaces = new Map<string, InboxWorkspaceGroup>()
-  const stories = new Map<string, InboxStoryGroup>()
+  const itemsByStory = new Map<string, InboxItem[]>()
+  const unattachedItems: InboxItem[] = []
 
   for (const item of inbox.value) {
-    const key = workspaceKeyOf(item.workspacePath)
-    let workspace = workspaces.get(key)
-    if (!workspace) {
-      workspace = { key, name: key, pathHint: '', itemCount: 0, highCount: 0, stories: [] }
-      workspaces.set(key, workspace)
+    const storyId = item.requirementId
+    if (!storyId) {
+      unattachedItems.push(item)
+      continue
     }
-    // 同一工作区可能跨多个仓库 worktree，只保留第一条更具体的路径作为提示
-    if (!workspace.pathHint && item.workspacePath && item.workspacePath !== key) {
-      workspace.pathHint = item.workspacePath
-    }
-
-    const storyKey = `${key}:${item.requirementId ?? ''}`
-    let story = stories.get(storyKey)
-    if (!story) {
-      const storyId = item.requirementId ?? ''
-      story = {
-        key: storyKey,
-        storyId: storyId || '未归属 Story',
-        title: titles.get(storyId) ?? (storyId || '未归属 Story'),
-        items: [],
-        highCount: 0,
-      }
-      stories.set(storyKey, story)
-      workspace.stories.push(story)
-    }
-
-    story.items.push(item)
-    workspace.itemCount += 1
-    if (item.priority === 'high') {
-      story.highCount += 1
-      workspace.highCount += 1
-    }
+    const bucket = itemsByStory.get(storyId)
+    if (bucket) bucket.push(item)
+    else itemsByStory.set(storyId, [item])
   }
 
-  const groups = [...workspaces.values()]
-  for (const group of groups) {
-    group.stories.sort((left, right) => right.highCount - left.highCount || left.title.localeCompare(right.title, 'zh-Hans-CN'))
-  }
-  return groups.sort((left, right) => {
-    const leftUnassigned = left.name === unassignedWorkspaceName
-    const rightUnassigned = right.name === unassignedWorkspaceName
-    if (leftUnassigned !== rightUnassigned) return leftUnassigned ? 1 : -1
-    return left.name.localeCompare(right.name, 'zh-Hans-CN')
+  /**
+   * 把一批事项打包成一个 Story 分组。
+   * @param key 分组键
+   * @param storyId Story 标识
+   * @param items 该 Story 的事项
+   * @returns Story 分组
+   */
+  const toStoryGroup = (key: string, storyId: string, items: InboxItem[]): InboxStoryGroup => ({
+    key,
+    storyId: storyId || '未归属 Story',
+    title: titles.get(storyId) ?? (storyId || '未归属 Story'),
+    items,
+    highCount: items.filter((item) => item.priority === 'high').length,
   })
+
+  const groups: InboxWorkspaceGroup[] = []
+  for (const pipeline of workspacePipelines.value) {
+    const requirement = pipeline.story?.requirement
+    if (!requirement) continue
+    const items = itemsByStory.get(requirement.storyId)
+    if (!items?.length) continue
+    itemsByStory.delete(requirement.storyId)
+    const story = toStoryGroup(`inbox:${pipeline.path}:${requirement.storyId}`, requirement.storyId, items)
+    groups.push({
+      key: `inbox:${pipeline.path}`,
+      name: pipeline.name,
+      pathHint: requirement.workspacePath && requirement.workspacePath !== pipeline.name ? requirement.workspacePath : '',
+      synced: true,
+      itemCount: items.length,
+      highCount: story.highCount,
+      stories: [story],
+    })
+  }
+
+  // 兜底：工作区列表里找不到归属的事项（旧快照 / Story 未被认领）单独成组，不静默丢弃
+  const leftovers = [...itemsByStory.values()].flat()
+  if (leftovers.length || unattachedItems.length) {
+    const stories = [...itemsByStory.entries()].map(([storyId, items]) =>
+      toStoryGroup(`unsynced:${storyId}`, storyId, items))
+    if (unattachedItems.length) {
+      stories.push(toStoryGroup('unsynced:no-story', '', unattachedItems))
+    }
+    const allItems = [...leftovers, ...unattachedItems]
+    groups.push({
+      key: 'inbox:unsynced',
+      name: unsyncedWorkspaceName,
+      pathHint: '',
+      synced: false,
+      itemCount: allItems.length,
+      highCount: allItems.filter((item) => item.priority === 'high').length,
+      stories,
+    })
+  }
+  return groups
 })
 /** 定时任务列表：快照事实 + 本地乐观覆盖（覆盖仅用于写操作期间的即时反馈） */
 const crons = computed<Cron[]>(() => (store.snapshot?.crons ?? []).map((cron) => {
@@ -497,7 +579,48 @@ const myBuilds = computed(() => filterOwnBuilds(builds.value, viewer.value))
  * @returns 该 Story 下的实例数组
  */
 function jobsByStory(storyId: string): Job[] {
-  return jobs.value.filter((job) => job.storyId === storyId)
+  const pinned = new Set(jobExtras.prefs.value.pinned)
+  return jobs.value
+    .filter((job) => job.storyId === storyId)
+    .filter((job) => jobMatchesFilter(job))
+    // 置顶的实例排在前面，多个实例时不用翻找正在关注的那个
+    .sort((left, right) => Number(pinned.has(right.id)) - Number(pinned.has(left.id)))
+}
+
+/**
+ * 实例是否命中当前状态筛选。
+ * @param job 实例
+ * @returns 命中返回 true
+ */
+function jobMatchesFilter(job: Job): boolean {
+  const filter = jobStateFilter.value
+  if (filter === 'all') return true
+  if (filter === 'active') return job.status === 'busy' || job.state === 'working'
+  if (filter === 'done') return job.state === 'done' || job.state === 'stopped'
+  return job.state === 'failed'
+}
+
+/** 当前选中实例是否已置顶 */
+const selectedJobPinned = computed(() => (
+  selectedJob.value ? jobExtras.prefs.value.pinned.includes(selectedJob.value.id) : false
+))
+
+/**
+ * 切换当前实例的置顶状态。
+ * @returns Promise<void>
+ */
+async function toggleSelectedJobPin(): Promise<void> {
+  const job = selectedJob.value
+  if (!job?.storyId) return
+  await jobExtras.togglePin(job.storyId, job.id, !selectedJobPinned.value)
+}
+
+/**
+ * 把上游给出的建议回复填入回复框。
+ * @param text 建议回复文案
+ */
+function useSuggestedReply(text: string): void {
+  if (text) jobReply.value = text
 }
 
 /** 实例页的「工作区 → 第一个项目 → Story」分组 */
@@ -566,7 +689,8 @@ const cronGroups = computed<CronGroup[]>(() => {
           },
         }
       : {}),
-    stories: pipeline.story && pipeline.story.crons.length
+    // 没有任务的 Story 也保留，确保「新建任务」入口不会随空列表一起消失
+    stories: pipeline.story
       ? [{ requirement: pipeline.story.requirement, crons: pipeline.story.crons }]
       : [],
     // pipeline.crons 已含该 Story 的任务，这里只留下未关联 Story 的部分
@@ -639,6 +763,17 @@ const currentPortLabel = computed(() => (
   currentService.value?.port ? `端口 ${currentService.value.port}` : '端口未分配'
 ))
 
+/**
+ * 当前 Story 对应的 CodeBuddy 实例 Web 入口。
+ * 只有服务正在运行且已分配端口时才提供跳转，避免打开一个打不开的地址。
+ * @returns 实例首页 URL；不可用时返回空字符串
+ */
+const currentServiceUrl = computed(() => {
+  const service = currentService.value
+  if (!service?.port || service.status !== 'running') return ''
+  return `http://127.0.0.1:${service.port}/`
+})
+
 /** 当前 Story 的服务是否在运行；未运行时禁止创建实例/恢复会话 */
 const currentServiceRunning = computed(() => currentService.value?.status === 'running')
 
@@ -668,7 +803,9 @@ const pausedCronCount = computed(() => crons.value.filter((cron) => cron.enabled
  * @returns 需要处理时返回 true
  */
 function cronNeedsAttention(cron: Cron): boolean {
-  return !cron.storyId || !cron.ownerSessionId || !cron.ownerVerifiedAt || !cron.mode
+  const boundSessionId = cron.ownerSessionId ?? cron.sessionId
+  const ownerUnverified = Boolean(cron.ownerSessionId) && !cron.ownerVerifiedAt
+  return !cron.storyId || !boundSessionId || ownerUnverified
 }
 
 /** 待完善配置的任务数量 */
@@ -697,12 +834,13 @@ function matchesCronFilters(cron: Cron, query: string): boolean {
 /** 应用搜索与状态筛选后的定时任务分组 */
 const visibleCronGroups = computed<CronGroup[]>(() => {
   const query = cronQuery.value.trim().toLocaleLowerCase()
+  const hasFilters = Boolean(query) || cronStatusFilter.value !== 'all'
   return cronGroups.value.map((group) => ({
     ...group,
     stories: group.stories.map((story) => ({
       ...story,
       crons: story.crons.filter((cron) => matchesCronFilters(cron, query)),
-    })).filter((story) => story.crons.length > 0),
+    })).filter((story) => story.crons.length > 0 || !hasFilters),
     looseCrons: group.looseCrons.filter((cron) => matchesCronFilters(cron, query)),
     unassignedCrons: group.unassignedCrons.filter((cron) => matchesCronFilters(cron, query)),
   })).filter((group) => group.stories.length > 0 || group.looseCrons.length > 0 || group.unassignedCrons.length > 0)
@@ -740,8 +878,15 @@ watch([page, () => store.snapshot?.requirements.length], ([value]) => {
 // 刷新页面或直接进入深链接时，确保快照至少拉取一次，避免首屏空数据
 onMounted(() => {
   void store.ensureLoaded()
+  // 派发轮次决定能否再次派发，进入页面就要拿到
+  void cronDispatches.refresh()
   // 运行期监督事件由后端巡检产生，页面按固定间隔拉取
   lifecycle.startEventPolling()
+  // 多个实例并行时状态会变化，实例页按 20 秒轮询刷新；后台标签页不发起请求
+  jobsPollTimer = setInterval(() => {
+    if (page.value !== 'instances' || document.visibilityState !== 'visible') return
+    void refreshStoryServices()
+  }, 20_000)
 })
 
 watch(crons, (rows) => {
@@ -749,7 +894,7 @@ watch(crons, (rows) => {
     if (cronMappingDrafts.value[cron.id]) continue
     cronMappingDrafts.value[cron.id] = {
       storyId: cron.storyId ?? '',
-      ownerSessionId: cron.ownerSessionId ?? '',
+      ownerSessionId: cron.ownerSessionId ?? cron.sessionId ?? '',
       mode: cron.mode ?? '',
       saving: false,
       error: '',
@@ -771,7 +916,9 @@ watch(
 
 onUnmounted(() => {
   if (workspacePollTimer) clearTimeout(workspacePollTimer)
+  if (jobsPollTimer) clearInterval(jobsPollTimer)
   jobStreamController?.abort()
+  jobExtras.clearDetail()
 })
 
 function openRequirement(requirement: Requirement): void {
@@ -922,6 +1069,24 @@ function openCronCreator(storyId: string): void {
   cronEditorOpen.value = true
 }
 
+/** 新建弹层对应的 Story 与 TAPD 上下文；缺失处理人时使用看板当前处理人 */
+const editorRequirement = computed(() => {
+  const requirement = store.snapshot?.requirements.find((item) => item.storyId === editorStoryId.value)
+  if (!requirement) return null
+  const boardStory = board.stories.find((story) => story.storyId === requirement.tapdStoryId)
+  return {
+    ...requirement,
+    owner: requirement.owner || boardStory?.owner || board.owner,
+    tapdWorkspaceId: requirement.tapdWorkspaceId ?? defaultTapdWorkspaceId,
+  }
+})
+
+/** 当前 Story 工作区中的 plans 绝对路径，供自动修复模板读取 harness 状态 */
+const editorPlansDir = computed(() => {
+  const cwd = storyServices.value[editorStoryId.value]?.cwd
+  return cwd ? `${cwd.replaceAll('\\', '/').replace(/\/$/, '')}/.codebuddy/plans` : ''
+})
+
 /** 编辑弹层对应的 Story 是否有可用服务端口 */
 const editorServiceReady = computed(() => storyServices.value[editorStoryId.value]?.status === 'running')
 
@@ -930,7 +1095,7 @@ const editorServiceReady = computed(() => storyServices.value[editorStoryId.valu
  * @param payload 表达式与可选提示词
  * @returns Promise<void>
  */
-async function submitCronEditor(payload: { cron: string; prompt?: string }): Promise<void> {
+async function submitCronEditor(payload: { cron: string; prompt?: string; mode?: CronMode }): Promise<void> {
   cronSaving.value = true
   cronEditorError.value = ''
   try {
@@ -939,12 +1104,22 @@ async function submitCronEditor(payload: { cron: string; prompt?: string }): Pro
       if (ok) cronEditorOpen.value = false
       return
     }
-    await apiRequest('/api/v1/crons', {
+    const created = await apiRequest<{ taskId: string | null; warnings?: string[] }>('/api/v1/crons', {
       method: 'POST',
-      body: JSON.stringify({ storyId: editorStoryId.value, cron: payload.cron, prompt: payload.prompt }),
+      body: JSON.stringify({
+        storyId: editorStoryId.value,
+        cron: payload.cron,
+        prompt: payload.prompt,
+        mode: payload.mode ?? 'query_only',
+        durable: true,
+        expiryDays: 30,
+      }),
     })
     await store.refresh()
+    await cronDispatches.refresh()
     cronEditorOpen.value = false
+    // 上游创建成功但缺少归属配置时必须告知用户，否则任务会静默地没有 owner
+    if (created?.warnings?.length) cronError.value = created.warnings.join('；')
   } catch (cause) {
     cronEditorError.value = cause instanceof Error ? cause.message : '保存定时任务失败。'
   } finally {
@@ -986,6 +1161,34 @@ async function dispatchCron(cron: Cron): Promise<void> {
     `将任务「${cron.id}」派发为一个独立的 StoryRound Job（提示词 \`/start fixbugs ${cron.storyId}\`）？`,
   )
   if (confirmed) await cronActions.dispatch(cron)
+}
+
+/**
+ * 读取任务当前未归档的派发轮次。
+ * @param taskId 任务 ID
+ * @returns 未归档轮次；没有时返回 undefined
+ */
+function openDispatchOf(taskId: string): { roundId: string; createdAt: string; label?: string } | undefined {
+  const round = cronDispatches.openRoundOf(taskId)
+  if (!round) return undefined
+  return {
+    roundId: round.roundId,
+    createdAt: round.createdAt,
+    ...(round.label ? { label: round.label } : {}),
+  }
+}
+
+/**
+ * 归档派发轮次；归档成功后该任务才能再次派发。
+ * @param cron 任务
+ * @param outcome 归档终态
+ * @returns Promise<void>
+ */
+async function archiveCronRound(cron: Cron, outcome: DispatchOutcome): Promise<void> {
+  const round = cronDispatches.openRoundOf(cron.id)
+  if (!round) return
+  const ok = await cronDispatches.archive(cron.id, round.roundId, outcome)
+  cronError.value = ok ? '' : cronDispatches.error.value
 }
 
 /**
@@ -1036,6 +1239,7 @@ function focusStory(storyId: string): void {
   if (selectedJob.value && selectedJob.value.storyId !== storyId) {
     jobStreamController?.abort()
     selectedJob.value = null
+    jobExtras.clearDetail()
   }
 }
 
@@ -1094,12 +1298,18 @@ async function loadStoryJobs(): Promise<void> {
   storyJobs.value = jobLists.flat()
 }
 
+/** Bug 修复轮次的补充口径：限定处理人与缺陷状态，并要求按查询+修复流程执行 */
+const bugFixPromptSuffix = '处理人蔡杰鹏，缺陷状态待解决和重新打开，根据结果使用查询+修复按流程修复bug'
+
 function prepareJob(requirement: Requirement, mode: 'run' | 'fixbugs'): void {
   selectedStoryId.value = requirement.storyId
   resumableSessions.value = []
   selectedResumableSession.value = ''
   jobName.value = `${requirement.title} · ${mode === 'run' ? '需求开发' : 'Bug 修复'}`
-  jobPrompt.value = mode === 'run' ? `/start ${requirement.storyId}` : `/start fixbugs ${requirement.storyId}`
+  // 修复模式在 harness 入口之后追加本次缺陷口径，避免把无关缺陷纳入本轮
+  jobPrompt.value = mode === 'run'
+    ? `/start ${requirement.storyId}`
+    : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix}`
   jobError.value = ''
 }
 
@@ -1136,16 +1346,34 @@ async function resumeSession(): Promise<void> {
   }
 }
 
+/**
+ * 从创建轮次的响应里解析出刚创建的实例。
+ * CodeBuddy `POST /api/v1/jobs` 返回 `{ data: AgentJob }`，这里解包并补上 Story 归属。
+ * @param payload 创建接口原始响应
+ * @returns 可用于直接展示的实例；无法识别时返回 null
+ */
+function createdJobOf(payload: unknown): Job | null {
+  const wrapped = payload && typeof payload === 'object' && 'data' in payload
+    ? (payload as { data: unknown }).data
+    : payload
+  const candidate = typeof wrapped === 'object' && wrapped !== null ? wrapped : {}
+  const parsed = jobSchema.safeParse({ ...candidate, storyId: selectedStoryId.value })
+  return parsed.success ? parsed.data : null
+}
+
 async function createJob(): Promise<void> {
   if (!selectedStoryId.value || !jobName.value.trim() || !jobPrompt.value.trim()) return
   jobActionLoading.value = true
   jobError.value = ''
   try {
-    await apiRequest<unknown>(`/api/v1/stories/${encodeURIComponent(selectedStoryId.value)}/jobs`, {
+    const created = await apiRequest<unknown>(`/api/v1/stories/${encodeURIComponent(selectedStoryId.value)}/jobs`, {
       method: 'POST',
       body: JSON.stringify({ name: jobName.value.trim(), prompt: jobPrompt.value.trim() }),
     })
-    selectedJob.value = null
+    await refreshStoryServices()
+    // 创建成功后直接打开该轮次，用户能立刻看到它在跑，而不是「按钮闪一下就没下文」
+    const job = createdJobOf(created)
+    if (job) await openJob(job)
     await refreshStoryServices()
   } catch (cause) {
     jobError.value = cause instanceof Error ? cause.message : 'Unable to create the CodeBuddy job.'
@@ -1159,6 +1387,11 @@ async function openJob(job: Job): Promise<void> {
   selectedJob.value = job
   // 同步记录实例所属 Story：右侧上下文与左侧高亮都依赖它，否则多服务并存时看不出在看哪个
   if (job.storyId) selectedStoryId.value = job.storyId
+  // 详情与偏好都属于该 Story 的服务，随选中实例一起加载
+  if (job.storyId) {
+    void jobExtras.loadDetail(job.storyId, job.id)
+    void jobExtras.loadPrefs(job.storyId)
+  }
   renameDraft.value = job.name
   jobTranscript.value = ''
   jobOutput.value = ''
@@ -1246,6 +1479,24 @@ function waitForStreamRetry(milliseconds: number, signal: AbortSignal): Promise<
   })
 }
 
+/**
+ * 从回复接口响应中取出用户可见的投递结果。
+ * CodeBuddy 返回 `{ data: { delivered, saved, notice } }`：
+ * delivered 表示活会话已立即收到，saved 表示已存为待消费回复（实例重启后继续）。
+ * @param payload 原始响应
+ * @returns 提示文案；无法识别时返回 undefined
+ */
+function replyNoticeOf(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined
+  const data = (payload as Record<string, unknown>).data
+  if (typeof data !== 'object' || data === null) return undefined
+  const record = data as Record<string, unknown>
+  if (typeof record.notice === 'string' && record.notice) return record.notice
+  if (record.delivered === true) return '已发送到实例。'
+  if (record.saved === true) return '实例已退出，回复已保存；点「重启」后会继续处理。'
+  return undefined
+}
+
 async function replyToJob(): Promise<void> {
   if (!selectedJob.value?.storyId || !jobReply.value.trim()) return
   const job = selectedJob.value
@@ -1254,14 +1505,17 @@ async function replyToJob(): Promise<void> {
   jobActionLoading.value = true
   jobError.value = ''
   try {
-    await apiRequest(`/api/v1/stories/${encodeURIComponent(storyId)}/jobs/${encodeURIComponent(job.id)}/reply`, {
+    const result = await apiRequest<unknown>(`/api/v1/stories/${encodeURIComponent(storyId)}/jobs/${encodeURIComponent(job.id)}/reply`, {
       method: 'POST',
       body: JSON.stringify({ text: jobReply.value.trim(), bash: false }),
     })
     jobTranscript.value += `\n\nYou: ${jobReply.value.trim()}`
     jobReply.value = ''
+    actionToasts.notify(replyNoticeOf(result) ?? '回复已提交。', 'success')
   } catch (cause) {
-    jobError.value = cause instanceof Error ? cause.message : 'Unable to send a reply.'
+    const message = cause instanceof Error ? cause.message : '发送回复失败。'
+    jobError.value = message
+    actionToasts.notify(`回复失败：${message}`, 'error')
   } finally {
     jobActionLoading.value = false
   }
@@ -1287,9 +1541,13 @@ async function renameJob(): Promise<void> {
   }
 }
 
+/** 实例写操作的中文动作名，用于结果提示 */
+const jobActionLabels = { stop: '暂停', respawn: '重启', delete: '删除' } as const
+
 async function controlJob(action: 'stop' | 'respawn' | 'delete'): Promise<void> {
   const job = selectedJob.value
   if (!job?.storyId) return
+  const label = jobActionLabels[action]
   if (action === 'delete' && !window.confirm(`删除实例「${job.name}」？此操作不能撤销。`)) return
   jobActionLoading.value = true
   jobError.value = ''
@@ -1308,15 +1566,28 @@ async function controlJob(action: 'stop' | 'respawn' | 'delete'): Promise<void> 
           : 'CodeBuddy did not delete the instance.'
         throw new Error(reason)
       }
-      jobStreamController?.abort()
       selectedJob.value = null
-    } else {
-      jobStreamController?.abort()
+      jobExtras.clearDetail()
     }
+    jobStreamController?.abort()
+    // 操作完成后同时刷新左侧列表与右侧详情，状态不停留在旧值
     await refreshStoryServices()
-    if (action === 'respawn' && selectedJob.value?.id === job.id) void openJob(job)
+    if (action !== 'delete') {
+      const refreshed = storyJobs.value.find((item) => item.id === job.id && item.storyId === job.storyId)
+      if (refreshed) {
+        selectedJob.value = refreshed
+        await jobExtras.loadDetail(job.storyId, job.id)
+      } else if (action === 'respawn') {
+        // 重启可能生成新的实例 ID，旧实例不在列表时退出详情回到列表
+        selectedJob.value = null
+        jobExtras.clearDetail()
+      }
+    }
+    actionToasts.notify(`已${label}实例「${job.name}」`, 'success')
   } catch (cause) {
-    jobError.value = cause instanceof Error ? cause.message : `Unable to ${action} the Job.`
+    const message = cause instanceof Error ? cause.message : `${label}实例失败。`
+    jobError.value = message
+    actionToasts.notify(`${label}实例失败：${message}`, 'error')
   } finally {
     jobActionLoading.value = false
   }
@@ -1596,6 +1867,61 @@ async function refreshWorkspaces(): Promise<void> {
  */
 function openWorkspaceDetail(workspace: WorkspaceSummary): void {
   selectedWorkspace.value = workspace
+  // 切换工作区后上一次的创建结果不再适用，避免误读其它工作区的 MR 链接
+  workspaceMergeRequestResult.value = null
+  workspaceMergeRequestError.value = ''
+  mrTargetBranch.value = defaultMergeRequestTargetBranch
+}
+
+/**
+ * 为工作区内的项目创建合并请求（源分支 = 项目当前检出分支）。
+ * 不传项目名表示一键创建：对工作区内全部项目同时发起。
+ * @param projects 指定项目名清单；缺省表示全部项目
+ * @returns Promise<void>
+ */
+async function createWorkspaceMergeRequest(projects?: string[]): Promise<void> {
+  const workspace = selectedWorkspace.value
+  if (!workspace || mrBusy.value) return
+  const names = projects ?? workspace.projects.map((project) => project.name)
+  if (!names.length) return
+
+  workspaceMergeRequestError.value = ''
+  workspaceMergeRequestResult.value = null
+  mrCreatingProjects.value = names
+  mrBatchRunning.value = projects === undefined
+  try {
+    const result: unknown = await apiRequest(
+      `/api/v1/workspaces/${encodeURIComponent(workspace.name)}/merge-requests`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          targetBranch: mrTargetBranch.value,
+          ...(projects ? { projects } : {}),
+        }),
+      },
+    )
+    const parsed = workspaceMergeRequestCreateResultSchema.parse(result)
+    workspaceMergeRequestResult.value = parsed
+
+    const created = parsed.items.filter((item) => item.status === 'created').length
+    const exists = parsed.items.filter((item) => item.status === 'exists').length
+    const failedItems = parsed.items.filter((item) => item.status === 'failed')
+    if (failedItems.length) {
+      workspaceMergeRequestError.value = failedItems
+        .map((item) => `${item.project}：${item.message ?? '创建失败'}`)
+        .join('；')
+    }
+    actionToasts.notify(
+      `合并请求处理完成：新建 ${created} 个，已存在 ${exists} 个${failedItems.length ? `，失败 ${failedItems.length} 个` : ''}`,
+      failedItems.length ? 'error' : 'success',
+    )
+  } catch (cause) {
+    workspaceMergeRequestError.value = cause instanceof Error ? cause.message : '创建合并请求失败。'
+    actionToasts.notify(`创建合并请求失败：${workspaceMergeRequestError.value}`, 'error')
+  } finally {
+    mrCreatingProjects.value = []
+    mrBatchRunning.value = false
+  }
 }
 
 /** 重置新建表单并打开新建弹窗。 */
@@ -1716,6 +2042,7 @@ function formatWorkspaceTime(value?: string): string {
               <span class="inbox-workspace-name">
                 <strong>{{ group.name }}</strong>
                 <code v-if="group.pathHint">{{ group.pathHint }}</code>
+                <span v-if="!group.synced" class="tag tag-warning">未同步到工作区</span>
               </span>
               <span class="count-pill">{{ group.itemCount }} 项 · 高优先级 {{ group.highCount }}</span>
             </header>
@@ -1857,6 +2184,15 @@ function formatWorkspaceTime(value?: string): string {
       <div class="split-layout">
         <section class="surface split-list">
           <div class="section-heading"><div><h2>CodeBuddy 实例</h2><p>以工作区为根：工作区 → 第一个项目 → Story 实例；服务与执行轮次分开管理</p></div><span class="count-pill">{{ jobs.length }}</span></div>
+          <div class="instance-filter">
+            <el-select v-model="jobStateFilter" size="small" aria-label="筛选实例状态">
+              <el-option label="全部实例" value="all" />
+              <el-option label="进行中" value="active" />
+              <el-option label="已结束" value="done" />
+              <el-option label="异常" value="failed" />
+            </el-select>
+            <span class="muted">每 20 秒自动刷新</span>
+          </div>
           <div v-for="group in instanceGroups" :key="group.key" class="workspace-block">
             <div class="workspace-block-head">
               <div class="workspace-main"><strong>{{ group.name }}</strong><small><code>{{ group.path }}</code></small></div>
@@ -1898,6 +2234,16 @@ function formatWorkspaceTime(value?: string): string {
             </div>
             <span class="tag" :class="currentServiceClass">{{ currentServiceLabel }}</span>
             <code class="service-port">{{ currentPortLabel }}</code>
+            <a
+              v-if="currentServiceUrl"
+              class="instance-open"
+              :href="currentServiceUrl"
+              target="_blank"
+              rel="noreferrer"
+              title="在新窗口打开该 Story 的 CodeBuddy 实例页面"
+            >
+              打开服务页 ↗
+            </a>
           </div>
           <!-- 服务与实例操作统一放在右侧：左侧列表只负责「选中哪个 Story」，避免卡片被按钮挤满 -->
           <div v-if="currentStory" class="instance-toolbar">
@@ -1930,9 +2276,12 @@ function formatWorkspaceTime(value?: string): string {
             {{ serviceErrorOf(currentStory.storyId) }}
           </p>
           <template v-if="selectedStoryId && !selectedJob">
-            <p class="eyebrow">NEW STORY ROUND</p><h2>创建实例</h2>
+            <p class="eyebrow">NEW STORY ROUND</p><h2>新建执行轮次</h2>
+            <p class="muted">
+              服务已按 Story 复用，这里创建的是该服务内的一个执行轮次（独立 Job/session），不会再启动一台服务。
+            </p>
             <p v-if="!currentServiceRunning" class="muted">
-              该 Story 的服务尚未运行，请先点上方「启动 / 接管」，再创建实例。
+              该 Story 的服务尚未运行，请先点上方「启动 / 接管」，再创建轮次。
             </p>
             <div class="instance-form">
               <label class="instance-field">
@@ -1944,7 +2293,7 @@ function formatWorkspaceTime(value?: string): string {
                 <el-input v-model="jobPrompt" type="textarea" :rows="5" placeholder="发送给 CodeBuddy 的提示词" />
               </label>
               <div class="instance-form-actions">
-                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim() || !currentServiceRunning" @click="createJob">创建实例</el-button>
+                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim() || !currentServiceRunning" @click="createJob">创建轮次</el-button>
               </div>
             </div>
             <div class="instance-resume">
@@ -1968,6 +2317,16 @@ function formatWorkspaceTime(value?: string): string {
               <div class="job-actions"><el-button size="small" :loading="jobActionLoading" @click="controlJob('stop')">暂停</el-button><el-button size="small" :loading="jobActionLoading" @click="controlJob('respawn')">重启</el-button><el-button size="small" type="danger" :loading="jobActionLoading" @click="controlJob('delete')">删除</el-button></div>
             </div>
             <div class="job-rename"><el-input v-model="renameDraft" size="small" placeholder="实例名称" /><el-button size="small" :loading="jobActionLoading" @click="renameJob">重命名</el-button></div>
+            <JobDetailPanel
+              :detail="jobDetail"
+              :loading="jobDetailLoading"
+              :error="jobDetailError"
+              :pinned="selectedJobPinned"
+              :pin-saving="jobPinSaving"
+              @toggle-pin="toggleSelectedJobPin"
+              @use-suggestion="useSuggestedReply"
+            />
+            <p v-if="jobPrefsError" class="mapping-error" role="alert">{{ jobPrefsError }}</p>
             <pre class="job-transcript">{{ jobTranscript || '暂无历史对话' }}</pre>
             <pre class="job-output">{{ jobOutput || '等待实时输出…' }}</pre>
             <div class="instance-reply">
@@ -2017,7 +2376,7 @@ function formatWorkspaceTime(value?: string): string {
             <div class="project-head">
               <strong>{{ group.project?.name ?? '未声明项目' }}</strong>
               <code v-if="group.project?.branch">{{ group.project?.branch }}</code>
-              <small class="muted">{{ group.stories.length }} 个 Story 有任务 · {{ group.looseCrons.length }} 个未关联任务</small>
+              <small class="muted">{{ group.stories.length }} 个 Story · {{ group.looseCrons.length }} 个未关联任务</small>
             </div>
             <div v-if="!group.stories.length && !group.looseCrons.length" class="project-empty">第一个项目暂无定时任务。</div>
             <CronTaskRow
@@ -2027,12 +2386,14 @@ function formatWorkspaceTime(value?: string): string {
               :draft="cronMappingDrafts[cron.id]"
               :busy="cronBusyTaskId === cron.id"
               :expanded="expandedCronId === cron.id"
+              :open-round="openDispatchOf(cron.id)"
               @save="saveCronMapping"
               @toggle="toggleCron(cron, $event)"
               @edit="openCronEditor(cron)"
               @executions="toggleCronExecutions(cron)"
               @renew="renewCron(cron)"
               @dispatch="dispatchCron(cron)"
+              @archive="archiveCronRound(cron, $event)"
               @remove="removeCron(cron)"
             >
               <template #executions>
@@ -2058,6 +2419,7 @@ function formatWorkspaceTime(value?: string): string {
                   新建任务
                 </el-button>
               </div>
+              <p v-if="!story.crons.length" class="cron-story-empty">暂无定时任务，点击「新建任务」创建第一条调度。</p>
               <CronTaskRow
                 v-for="cron in story.crons"
                 :key="cron.id"
@@ -2065,12 +2427,14 @@ function formatWorkspaceTime(value?: string): string {
                 :draft="cronMappingDrafts[cron.id]"
                 :busy="cronBusyTaskId === cron.id"
                 :expanded="expandedCronId === cron.id"
+                :open-round="openDispatchOf(cron.id)"
                 @save="saveCronMapping"
                 @toggle="toggleCron(cron, $event)"
                 @edit="openCronEditor(cron)"
                 @executions="toggleCronExecutions(cron)"
                 @renew="renewCron(cron)"
                 @dispatch="dispatchCron(cron)"
+                @archive="archiveCronRound(cron, $event)"
                 @remove="removeCron(cron)"
               >
                 <template #executions>
@@ -2099,12 +2463,14 @@ function formatWorkspaceTime(value?: string): string {
               :draft="cronMappingDrafts[cron.id]"
               :busy="cronBusyTaskId === cron.id"
               :expanded="expandedCronId === cron.id"
+              :open-round="openDispatchOf(cron.id)"
               @save="saveCronMapping"
               @toggle="toggleCron(cron, $event)"
               @edit="openCronEditor(cron)"
               @executions="toggleCronExecutions(cron)"
               @renew="renewCron(cron)"
               @dispatch="dispatchCron(cron)"
+              @archive="archiveCronRound(cron, $event)"
               @remove="removeCron(cron)"
             >
               <template #executions>
@@ -2124,7 +2490,7 @@ function formatWorkspaceTime(value?: string): string {
             </CronTaskRow>
           </template>
         </div>
-        <div v-if="cronGroupsEmpty" class="empty-state"><strong>暂无定时任务</strong><p>检查需求工作区中的 .codebuddy/scheduled_tasks.json，或在 Story 行点击「新建任务」通过 API 创建。</p></div>
+        <div v-if="cronGroupsEmpty && !visibleCronGroups.length" class="empty-state"><strong>暂无定时任务</strong><p>检查需求工作区中的 .codebuddy/scheduled_tasks.json，或在 Story 行点击「新建任务」通过 API 创建。</p></div>
         <div v-else-if="!filteredCronCount" class="empty-state"><strong>没有符合条件的任务</strong><p>试试其他关键词或状态。</p><el-button size="small" @click="resetCronFilters">清除筛选</el-button></div>
       </section>
     </template>
@@ -2333,6 +2699,46 @@ function formatWorkspaceTime(value?: string): string {
         <span>更新时间</span><strong>{{ formatWorkspaceTime(selectedWorkspace.updatedAt) }}</strong>
         <span>项目数</span><strong>{{ selectedWorkspace.projects.length }}</strong>
       </div>
+      <!-- 合并请求：目标分支可选，支持单项目创建与一键批量创建 -->
+      <section class="workspace-mr">
+        <div class="workspace-mr-head">
+          <div>
+            <h3>创建合并请求</h3>
+            <p class="muted">源分支取项目当前检出的分支，只创建 MR，不推送代码、不删除分支。</p>
+          </div>
+          <div class="workspace-mr-controls">
+            <el-select v-model="mrTargetBranch" size="small" :disabled="mrBusy" aria-label="合并目标分支">
+              <el-option
+                v-for="branchName in mergeRequestTargetBranches"
+                :key="branchName"
+                :label="branchName"
+                :value="branchName"
+              />
+            </el-select>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="mrBatchRunning"
+              :disabled="!selectedWorkspace.projects.length || mrBusy"
+              @click="createWorkspaceMergeRequest()"
+            >
+              一键创建 {{ selectedWorkspace.projects.length }} 个项目
+            </el-button>
+          </div>
+        </div>
+        <p v-if="workspaceMergeRequestError" class="mapping-error" role="status">{{ workspaceMergeRequestError }}</p>
+        <ul v-if="workspaceMergeRequestResult" class="workspace-mr-result">
+          <li v-for="item in workspaceMergeRequestResult.items" :key="item.project">
+            <span class="tag" :class="mergeRequestStatusClass(item.status)">{{ mergeRequestStatusLabel(item.status) }}</span>
+            <strong>{{ item.project }}</strong>
+            <span class="muted">{{ item.sourceBranch || '未知分支' }} → {{ item.targetBranch }}</span>
+            <a v-if="item.webUrl" :href="item.webUrl" target="_blank" rel="noreferrer">
+              {{ item.mergeRequestIid ? `!${item.mergeRequestIid}` : '打开 MR' }}
+            </a>
+            <span v-else-if="item.message" class="muted">{{ item.message }}</span>
+          </li>
+        </ul>
+      </section>
       <section class="bug-detail-list">
         <h3>包含的项目</h3>
         <article v-for="project in selectedWorkspace.projects" :key="project.path" class="bug-detail">
@@ -2341,7 +2747,19 @@ function formatWorkspaceTime(value?: string): string {
             <span class="tag" :class="project.worktree ? 'tag-success' : 'tag-warning'">{{ project.worktree ? 'worktree' : '独立目录' }}</span>
           </div>
           <p><code>{{ project.path }}</code></p>
-          <p>当前分支：{{ project.branch || '未知' }}</p>
+          <div class="workspace-project-foot">
+            <span class="muted">当前分支：{{ project.branch || '未知' }}</span>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="mrCreatingProjects.includes(project.name)"
+              :disabled="mrBusy || !project.branch"
+              @click="createWorkspaceMergeRequest([project.name])"
+            >
+              创建 MR
+            </el-button>
+          </div>
         </article>
         <p v-if="!selectedWorkspace.projects.length" class="muted">该工作区目录下没有 git 项目。</p>
       </section>
@@ -2385,10 +2803,11 @@ function formatWorkspaceTime(value?: string): string {
           </el-option>
         </el-select>
       </label>
-      <label class="workspace-form-checks">
+      <!-- 跳步选项：el-checkbox 自身即 label，外层用 div 避免 label 嵌套 -->
+      <div class="workspace-form-checks">
         <el-checkbox v-model="skipInstall">跳过 npm install</el-checkbox>
         <el-checkbox v-model="skipGraphify">跳过 graphify</el-checkbox>
-      </label>
+      </div>
     </div>
     <div class="notice"><span class="notice-symbol">i</span><div><strong>只创建选中的项目</strong><p>正式创建会基于基线分支新建需求分支，把每个项目以 git worktree 检出到工作区目录，并写入 &lt;工作区名&gt;.code-workspace；不会 git pull、提交或删除远程分支。</p></div></div>
     <div v-if="workspaceError" class="notice notice-warning" role="status"><span class="notice-symbol">!</span><div><strong>工作区任务异常</strong><p>{{ workspaceError }}</p></div></div>
@@ -2499,6 +2918,8 @@ function formatWorkspaceTime(value?: string): string {
   <CronEditorDialog
     v-model="cronEditorOpen"
     :cron="editingCron"
+    :requirement="editorRequirement"
+    :plans-dir="editorPlansDir"
     :service-ready="editorServiceReady"
     :saving="cronSaving"
     :error="cronEditorError"
@@ -2517,7 +2938,17 @@ function formatWorkspaceTime(value?: string): string {
   />
 
   <!-- 撤销提示条：不打断流程，超时自动消失 -->
-  <div v-if="cronNotices.length" class="undo-toasts" role="status">
+  <div v-if="cronNotices.length || actionToastItems.length" class="undo-toasts" role="status">
+    <div
+      v-for="toast in actionToastItems"
+      :key="toast.id"
+      class="undo-toast"
+      :class="toast.kind === 'error' ? 'is-error' : 'is-success'"
+      :aria-label="toast.kind === 'error' ? '操作失败' : '操作成功'"
+    >
+      <span>{{ toast.message }}</span>
+      <el-button link size="small" @click="dismissActionToast(toast.id)">关闭</el-button>
+    </div>
     <div v-for="notice in cronNotices" :key="notice.id" class="undo-toast">
       <span>{{ notice.message }}</span>
       <el-button v-if="notice.auditId" link type="primary" size="small" @click="undoCronAction(notice.auditId)">

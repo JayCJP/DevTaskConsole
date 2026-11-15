@@ -7,7 +7,7 @@ import { buildServer } from './server.js'
 import { AuditLog } from './services/audit-log.js'
 import { CronDispatchStore } from './services/cron-dispatch.js'
 import { CronMappingStore } from './aggregator/cron-data.js'
-import { CodeBuddyApi } from './services/codebuddy-api.js'
+import { CodeBuddyApi, CodeBuddyApiError } from './services/codebuddy-api.js'
 import { StoryServiceRemoveError, StoryServiceSupervisor } from './services/story-service-supervisor.js'
 import type { CronExecutionReader } from './services/cron-executions.js'
 import type { ScheduledTaskClient } from './services/scheduled-tasks.js'
@@ -115,6 +115,7 @@ function stubClient(overrides: Partial<Record<string, unknown>> = {}): {
   renew: ReturnType<typeof vi.fn>
   listExecutions: ReturnType<typeof vi.fn>
   listSessionIds: ReturnType<typeof vi.fn>
+  resolveSessionId: ReturnType<typeof vi.fn>
   deleteExecutions: ReturnType<typeof vi.fn>
 } {
   const list = vi.fn().mockResolvedValue([{ id: 'task-1', cron: '5,25,45 * * * *', enabled: true }])
@@ -124,6 +125,7 @@ function stubClient(overrides: Partial<Record<string, unknown>> = {}): {
   const renew = vi.fn().mockResolvedValue({ id: 'task-1', expiresAt: '2026-02-01T00:00:00.000Z' })
   const listExecutions = vi.fn().mockResolvedValue({ executions: [], hasMore: false })
   const listSessionIds = vi.fn().mockResolvedValue(['session-a'])
+  const resolveSessionId = vi.fn(async (_port: number, _cwd: string, preferred?: string) => preferred ?? 'session-a')
   const deleteExecutions = vi.fn().mockResolvedValue({ deleted: ['exec-1'], missing: [] })
   const client = {
     list,
@@ -133,6 +135,7 @@ function stubClient(overrides: Partial<Record<string, unknown>> = {}): {
     renew,
     listExecutions,
     listSessionIds,
+    resolveSessionId,
     deleteExecutions,
   } as unknown as ScheduledTaskClient
   // 覆盖项直接写回同一对象，保证返回值里的方法引用与 app 实际调用的是同一个桩
@@ -148,6 +151,8 @@ function stubClient(overrides: Partial<Record<string, unknown>> = {}): {
       .listExecutions as ReturnType<typeof vi.fn>,
     listSessionIds: (client as unknown as Record<string, ReturnType<typeof vi.fn>>)
       .listSessionIds as ReturnType<typeof vi.fn>,
+    resolveSessionId: (client as unknown as Record<string, ReturnType<typeof vi.fn>>)
+      .resolveSessionId as ReturnType<typeof vi.fn>,
     deleteExecutions: (client as unknown as Record<string, ReturnType<typeof vi.fn>>)
       .deleteExecutions as ReturnType<typeof vi.fn>,
   }
@@ -163,6 +168,7 @@ async function buildApp(options: {
   client?: ReturnType<typeof stubClient>
   executions?: CronExecutionReader
   api?: CodeBuddyApi
+  snapshotProvider?: () => Promise<Snapshot>
 } = {}): Promise<{
   app: ReturnType<typeof buildServer>
   supervisor: ReturnType<typeof stubSupervisor>
@@ -178,7 +184,7 @@ async function buildApp(options: {
   const app = buildServer({
     token: accessToken,
     logger: false,
-    snapshotProvider: async () => snapshot(),
+    snapshotProvider: options.snapshotProvider ?? (async () => snapshot()),
     storyServiceSupervisor: supervisor.supervisor,
     scheduledTaskClient: client.client,
     cronMappingStore: mappings,
@@ -224,10 +230,41 @@ describe('cron control API', () => {
     })
     expect(response.statusCode).toBe(201)
     expect(response.json()).toMatchObject({ taskId: 'task-new' })
-    expect(client.listSessionIds).toHaveBeenCalledWith(servicePort, 'C:/workspaces/work-one/repo-a')
-    expect(client.create).toHaveBeenCalledWith(servicePort, expect.objectContaining({ cron: '15,45 * * * *' }))
+    expect(client.resolveSessionId).toHaveBeenCalledWith(servicePort, 'C:/workspaces/work-one/repo-a', 'session-a')
+    expect(client.create).toHaveBeenCalledWith(servicePort, expect.objectContaining({
+      cron: '15,45 * * * *',
+      ownerSessionId: 'session-a',
+    }))
     const entries = await audit.list()
     expect(entries[0]?.action).toBe('cron.create')
+  })
+
+  it('未绑定任务启用和编辑时自动绑定 Story 实例 session', async () => {
+    const unbound = snapshot()
+    delete unbound.crons[0]?.ownerSessionId
+    const { app, client } = await buildApp({ snapshotProvider: async () => unbound })
+
+    const enabled = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { enabled: true },
+    })
+    expect(enabled.statusCode).toBe(200)
+    expect(client.resolveSessionId).toHaveBeenCalledWith(servicePort, 'C:/workspaces/work-one/repo-a', undefined)
+    expect(client.update).toHaveBeenCalledWith(servicePort, 'task-1', { enabled: true, ownerSessionId: 'session-a' })
+
+    const edited = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { cron: '7 */4 * * *' },
+    })
+    expect(edited.statusCode).toBe(200)
+    expect(client.update).toHaveBeenLastCalledWith(servicePort, 'task-1', {
+      cron: '7 */4 * * *',
+      ownerSessionId: 'session-a',
+    })
   })
 
   it('Story 未登记服务时返回 409 且不调用上游', async () => {
@@ -269,7 +306,7 @@ describe('cron control API', () => {
       payload: { enabled: false },
     })
     expect(toggled.statusCode).toBe(200)
-    expect(client.update).toHaveBeenCalledWith(servicePort, 'task-1', { enabled: false })
+    expect(client.update).toHaveBeenCalledWith(servicePort, 'task-1', { enabled: false, ownerSessionId: 'session-a' })
 
     const [entry] = await audit.list()
     expect(entry?.action).toBe('cron.toggle')
@@ -281,7 +318,7 @@ describe('cron control API', () => {
       headers,
     })
     expect(undo.statusCode).toBe(200)
-    expect(client.update).toHaveBeenLastCalledWith(servicePort, 'task-1', { enabled: true })
+    expect(client.update).toHaveBeenLastCalledWith(servicePort, 'task-1', { enabled: true, ownerSessionId: 'session-a' })
 
     const again = await app.inject({
       method: 'POST',
@@ -387,7 +424,7 @@ describe('cron control API', () => {
     })
     expect(stopped.statusCode).toBe(200)
     expect(supervisor.stop).toHaveBeenCalledWith('STORY-1')
-    expect(client.update).toHaveBeenCalledWith(servicePort, 'task-1', { enabled: false })
+    expect(client.update).toHaveBeenCalledWith(servicePort, 'task-1', { enabled: false, ownerSessionId: 'session-a' })
     expect(stopped.json()).toMatchObject({ status: 'stopped', pausedTasks: ['task-1'] })
 
     const removing = await buildApp({
@@ -402,5 +439,173 @@ describe('cron control API', () => {
     })
     expect(rejected.statusCode).toBe(409)
     expect(rejected.json()).toMatchObject({ error: { code: 'STORY_SERVICE_REMOVE_FAILED' } })
+  })
+
+  it('归档轮次先校验归属：别的任务的 roundId 不会被误归档', async () => {
+    const request = vi.fn().mockResolvedValue({ id: 'job-1' })
+    const { app, audit } = await buildApp({ api: { request } as unknown as CodeBuddyApi })
+    const dispatched = await app.inject({
+      method: 'POST',
+      url: '/api/v1/crons/task-1/dispatch',
+      headers,
+      payload: {},
+    })
+    expect(dispatched.statusCode).toBe(201)
+    const roundId = dispatched.json<{ roundId: string }>().roundId
+
+    // 用错误的任务 ID 归档：必须 404，且轮次仍是 open（可以原样再次归档）
+    const wrongTask = await app.inject({
+      method: 'POST',
+      url: `/api/v1/crons/task-2/dispatches/${roundId}/archive`,
+      headers,
+      payload: { outcome: 'succeeded' },
+    })
+    expect(wrongTask.statusCode).toBe(404)
+    expect((await audit.list()).some((entry) => entry.action === 'cron.dispatch.archive')).toBe(false)
+
+    const archived = await app.inject({
+      method: 'POST',
+      url: `/api/v1/crons/task-1/dispatches/${roundId}/archive`,
+      headers,
+      payload: { outcome: 'succeeded' },
+    })
+    expect(archived.statusCode).toBe(200)
+    expect(archived.json()).toMatchObject({ roundId, state: 'archived', outcome: 'succeeded' })
+    const [entry] = await audit.list()
+    expect(entry?.action).toBe('cron.dispatch.archive')
+    expect(entry?.reversible).toBe(false)
+
+    const again = await app.inject({
+      method: 'POST',
+      url: `/api/v1/crons/task-1/dispatches/${roundId}/archive`,
+      headers,
+      payload: { outcome: 'failed' },
+    })
+    expect(again.statusCode).toBe(409)
+    expect(again.json()).toMatchObject({ error: { code: 'CRON_DISPATCH_ALREADY_ARCHIVED' } })
+  })
+
+  it('更新任务时若本地映射不存在则新建，缺一半配置时明确拒绝', async () => {
+    const { app, mappings } = await buildApp()
+    const incomplete = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { ownerSessionId: 'session-a' },
+    })
+    expect(incomplete.statusCode).toBe(409)
+    expect(incomplete.json()).toMatchObject({ error: { code: 'CRON_MAPPING_INCOMPLETE' } })
+    expect(await mappings.find('task-1')).toBeUndefined()
+
+    const saved = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { ownerSessionId: 'session-a', mode: 'query_only' },
+    })
+    expect(saved.statusCode).toBe(200)
+    expect(await mappings.find('task-1')).toMatchObject({
+      taskId: 'task-1',
+      storyId: 'STORY-1',
+      ownerSessionId: 'session-a',
+      mode: 'query_only',
+    })
+  })
+
+  it('已手动暂停的任务在停服时不会被标记为由停服暂停', async () => {
+    const { app, mappings } = await buildApp({
+      client: stubClient({ list: vi.fn().mockResolvedValue([{ id: 'task-1', cron: '5,25,45 * * * *', enabled: false }]) }),
+    })
+    await mappings.save({
+      taskId: 'task-1',
+      storyId: 'STORY-1',
+      ownerSessionId: 'session-a',
+      mode: 'query_only',
+    })
+    const stopped = await app.inject({
+      method: 'POST',
+      url: '/api/v1/stories/STORY-1/service/stop',
+      headers,
+    })
+    expect(stopped.statusCode).toBe(200)
+    expect(stopped.json()).toMatchObject({ pausedTasks: [] })
+    expect((await mappings.find('task-1'))?.pausedByServiceStop).toBeUndefined()
+  })
+
+  it('停服失败时把刚暂停的任务恢复回去', async () => {
+    const { app, client, mappings } = await buildApp({
+      supervisor: stubSupervisor({
+        stop: async () => { throw new Error('process tree still alive') },
+      }),
+    })
+    await mappings.save({
+      taskId: 'task-1',
+      storyId: 'STORY-1',
+      ownerSessionId: 'session-a',
+      mode: 'query_only',
+    })
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/stories/STORY-1/service/stop',
+      headers,
+    })
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toMatchObject({ error: { code: 'STORY_SERVICE_STOP_FAILED' } })
+    expect(client.update).toHaveBeenLastCalledWith(servicePort, 'task-1', { enabled: true, ownerSessionId: 'session-a' })
+    expect((await mappings.find('task-1'))?.pausedByServiceStop).toBe(false)
+  })
+
+  it('上游限流与鉴权失败给出可区分的错误码', async () => {
+    const rateLimited = await buildApp({
+      client: stubClient({ update: vi.fn().mockRejectedValue(new CodeBuddyApiError(429, 'Too many requests.')) }),
+    })
+    const throttled = await rateLimited.app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { enabled: false },
+    })
+    expect(throttled.statusCode).toBe(503)
+    expect(throttled.json()).toMatchObject({ error: { code: 'CODEBUDDY_RATE_LIMITED' } })
+
+    const unauthorized = await buildApp({
+      client: stubClient({ update: vi.fn().mockRejectedValue(new CodeBuddyApiError(401, 'Unauthorized.')) }),
+    })
+    const rejected = await unauthorized.app.inject({
+      method: 'PATCH',
+      url: '/api/v1/crons/task-1',
+      headers,
+      payload: { enabled: false },
+    })
+    expect(rejected.statusCode).toBe(502)
+    expect(rejected.json()).toMatchObject({ error: { code: 'CODEBUDDY_UNAUTHORIZED' } })
+  })
+
+  it('按 Story 查询任务时用实时字段覆盖，但保留归属信息', async () => {
+    const { app } = await buildApp({
+      client: stubClient({
+        list: vi.fn().mockResolvedValue([
+          { id: 'task-1', cron: '15 * * * *', enabled: false, nextRun: '2026-02-01T00:00:00.000Z' },
+          { id: 'task-new', cron: '7 */4 * * *', enabled: true, prompt: '检查缺陷\n第二行' },
+        ]),
+      }),
+    })
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/crons?storyId=STORY-1',
+      headers,
+    })
+    expect(response.statusCode).toBe(200)
+    const body = response.json<{ source: string; tasks: Array<Record<string, unknown>> }>()
+    expect(body.source).toBe('api')
+    const updated = body.tasks.find((task) => task.id === 'task-1')
+    expect(updated).toMatchObject({
+      storyId: 'STORY-1',
+      ownerSessionId: 'session-a',
+      cron: '15 * * * *',
+      enabled: false,
+    })
+    const created = body.tasks.find((task) => task.id === 'task-new')
+    expect(created).toMatchObject({ storyId: 'STORY-1', promptFirstLine: '检查缺陷' })
   })
 })

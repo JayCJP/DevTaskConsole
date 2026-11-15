@@ -7,6 +7,8 @@ export interface StoryServiceInfo {
   storyId: string
   /** 分配的端口；未分配时缺省 */
   port?: number
+  /** Story 实例工作目录；用于生成定时任务模板路径 */
+  cwd?: string
   status: string
   updatedAt: string
   error?: string

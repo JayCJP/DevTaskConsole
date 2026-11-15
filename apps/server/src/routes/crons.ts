@@ -11,6 +11,7 @@ import {
   type Cron,
   type Snapshot,
 } from '@devtask/shared'
+import { mergeCronFacts } from '../aggregator/cron-merge.js'
 import type { CronMappingStore } from '../aggregator/cron-data.js'
 import type { AuditLog } from '../services/audit-log.js'
 import type { CodeBuddyApi } from '../services/codebuddy-api.js'
@@ -167,8 +168,27 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
         }
       }
       try {
-        const tasks = await deps.client.list(service.port)
-        return { source: 'api', tasks }
+        const bound = localCrons.find((cron) => cron.ownerSessionId || cron.sessionId)
+        const sessionId = await deps.client.resolveSessionId(
+          service.port,
+          service.cwd,
+          bound?.ownerSessionId ?? bound?.sessionId,
+        )
+        const tasks = await deps.client.list(service.port, { sessionId })
+        // 实时数据只提供运行期事实，归属与模式仍以本地文件/映射为准，否则前端会丢归属
+        const workspacePath = snapshot.requirements.find((item) => item.storyId === query.data.storyId)?.workspacePath
+        const merged = mergeCronFacts(
+          localCrons,
+          [
+            {
+              storyId: query.data.storyId,
+              ...(workspacePath ? { workspacePath } : {}),
+              tasks,
+            },
+          ],
+          await deps.mappings.list(),
+        )
+        return { source: 'api', tasks: merged }
       } catch (error) {
         return {
           source: 'file',
@@ -190,17 +210,26 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
     }
     try {
       const service = await requireService(body.data.storyId)
-      if (body.data.ownerSessionId) await verifyOwner(service, body.data.ownerSessionId)
-      const result = await deps.client.create(service.port, body.data)
+      const ownerSessionId = await deps.client.resolveSessionId(
+        service.port,
+        service.cwd,
+        body.data.ownerSessionId,
+      )
+      const result = await deps.client.create(service.port, { ...body.data, ownerSessionId })
       const taskId = extractTaskId(result)
-      if (taskId && body.data.ownerSessionId && body.data.mode) {
+      const warnings: string[] = []
+      if (!taskId) {
+        warnings.push('上游未返回任务 ID，无法登记 owner 映射与后续派发轮次。')
+      } else if (body.data.mode) {
         await deps.mappings.save({
           taskId,
           storyId: body.data.storyId,
-          ownerSessionId: body.data.ownerSessionId,
+          ownerSessionId,
           mode: body.data.mode,
           ownerVerifiedAt: new Date().toISOString(),
         })
+      } else {
+        warnings.push('任务已绑定 Story 实例；任务模式尚未设置，不影响启用与调度编辑。')
       }
       await deps.audit.record({
         action: 'cron.create',
@@ -208,7 +237,7 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
         storyId: body.data.storyId,
         after: { cron: body.data.cron, mode: body.data.mode, durable: body.data.durable },
       })
-      return reply.code(201).send({ taskId: taskId ?? null, result })
+      return reply.code(201).send({ taskId: taskId ?? null, ownerSessionId, result, warnings })
     } catch (error) {
       return controlError(request, reply, error)
     }
@@ -228,15 +257,35 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const located = await locate(params.data.taskId)
       const storyId = requireStory(located)
       const service = await requireService(storyId)
-      if (body.data.ownerSessionId) await verifyOwner(service, body.data.ownerSessionId)
-      await deps.client.update(service.port, params.data.taskId, body.data)
+      const ownerSessionId = await deps.client.resolveSessionId(
+        service.port,
+        service.cwd,
+        body.data.ownerSessionId ?? located.cron.ownerSessionId ?? located.cron.sessionId,
+      )
+      await deps.client.update(service.port, params.data.taskId, { ...body.data, ownerSessionId })
       if (body.data.ownerSessionId || body.data.mode) {
+        // 映射不存在时必须新建：CronMappingStore.update 找不到记录会直接返回 undefined，
+        // 只调 update 会造成「接口成功但归属没保存」的静默失败。
         const current = await deps.mappings.find(params.data.taskId)
-        await deps.mappings.update(params.data.taskId, {
-          ...(body.data.ownerSessionId ? { ownerSessionId: body.data.ownerSessionId } : {}),
-          ...(body.data.mode ? { mode: body.data.mode } : {}),
-          ...(body.data.ownerSessionId ? { ownerVerifiedAt: new Date().toISOString() } : {}),
-          ...(current ? {} : { storyId }),
+        const nextOwnerSessionId = body.data.ownerSessionId ?? current?.ownerSessionId
+        const nextMode = body.data.mode ?? current?.mode
+        if (!nextOwnerSessionId || !nextMode) {
+          throw new RouteError(
+            409,
+            'CRON_MAPPING_INCOMPLETE',
+            '该任务还没有完整的 owner session 与任务模式，请在「归属设置」中一次性填写后保存。',
+          )
+        }
+        const verifiedAt = body.data.ownerSessionId
+          ? new Date().toISOString()
+          : current?.ownerVerifiedAt
+        await deps.mappings.save({
+          taskId: params.data.taskId,
+          storyId,
+          ownerSessionId: nextOwnerSessionId,
+          mode: nextMode,
+          ...(verifiedAt ? { ownerVerifiedAt: verifiedAt } : {}),
+          ...(current?.pausedByServiceStop ? { pausedByServiceStop: true } : {}),
         })
       }
       const onlyToggle = Object.keys(body.data).every((key) => key === 'enabled')
@@ -266,7 +315,12 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const located = await locate(params.data.taskId)
       const storyId = requireStory(located)
       const service = await requireService(storyId)
-      await deps.client.remove(service.port, params.data.taskId, located.cron.ownerSessionId)
+      const sessionId = await deps.client.resolveSessionId(
+        service.port,
+        service.cwd,
+        located.cron.ownerSessionId ?? located.cron.sessionId,
+      )
+      await deps.client.remove(service.port, params.data.taskId, sessionId)
       await deps.mappings.remove(params.data.taskId)
       await deps.dispatches.removeByTask(params.data.taskId)
       await deps.audit.record({
@@ -289,7 +343,12 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const located = await locate(params.data.taskId)
       const storyId = requireStory(located)
       const service = await requireService(storyId)
-      const result = await deps.client.renew(service.port, params.data.taskId, located.cron.ownerSessionId)
+      const sessionId = await deps.client.resolveSessionId(
+        service.port,
+        service.cwd,
+        located.cron.ownerSessionId ?? located.cron.sessionId,
+      )
+      const result = await deps.client.renew(service.port, params.data.taskId, sessionId)
       await deps.audit.record({
         action: 'cron.renew',
         target: params.data.taskId,
@@ -310,11 +369,18 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const located = await locate(params.data.taskId)
       const service = located.storyId ? await deps.supervisor.inspect(located.storyId) : undefined
       const port = service?.status === 'running' ? service.port : undefined
+      const sessionId = service?.status === 'running'
+        ? await deps.client.resolveSessionId(
+            service.port,
+            service.cwd,
+            query.data.sessionId ?? located.cron.ownerSessionId ?? located.cron.sessionId,
+          )
+        : undefined
       return await deps.executions.read({
         taskId: params.data.taskId,
         ...(port !== undefined ? { port } : {}),
         ...(located.directory ? { taskDirectory: located.directory } : {}),
-        query: query.data,
+        query: { ...query.data, ...(sessionId ? { sessionId } : {}) },
       })
     } catch (error) {
       return controlError(request, reply, error)
@@ -329,11 +395,16 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const located = await locate(params.data.taskId)
       const storyId = requireStory(located)
       const service = await requireService(storyId)
+      const sessionId = await deps.client.resolveSessionId(
+        service.port,
+        service.cwd,
+        body.data.sessionId ?? located.cron.ownerSessionId ?? located.cron.sessionId,
+      )
       const result = await deps.client.deleteExecutions(
         service.port,
         params.data.taskId,
         body.data.executionIds,
-        body.data.sessionId,
+        sessionId,
       )
       await deps.audit.record({
         action: 'cron.executions.delete',
@@ -384,13 +455,24 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
         prompt,
         name: `定时任务派发 · ${located.cron.storyTitle ?? storyId}`,
       })
-      const dispatch = await deps.dispatches.create({
-        taskId: params.data.taskId,
-        storyId,
-        ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
-        ...(job.id ? { jobId: job.id } : {}),
-        ...(body.data.label ? { label: body.data.label } : {}),
-      })
+      let dispatch
+      try {
+        dispatch = await deps.dispatches.create({
+          taskId: params.data.taskId,
+          storyId,
+          ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
+          ...(job.id ? { jobId: job.id } : {}),
+          ...(body.data.label ? { label: body.data.label } : {}),
+        })
+      } catch (error) {
+        // 上游 Job 已经创建成功，本地登记失败时不能当成普通错误：必须告诉用户 Job 可能已在跑
+        throw new RouteError(
+          502,
+          'CRON_DISPATCH_REGISTER_FAILED',
+          `上游已创建 Job${job.id ? ` ${job.id}` : ''}，但本地轮次登记失败：${messageOf(error)}。`
+          + '请先在 CodeBuddy 侧确认该 Job 状态，再决定是否重试派发。',
+        )
+      }
       await deps.audit.record({
         action: 'cron.dispatch',
         target: params.data.taskId,
@@ -409,10 +491,29 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
     const body = cronDispatchArchiveRequestSchema.safeParse(request.body)
     if (!params.success || !body.success) return invalidParameters(reply)
     try {
-      const archived = await deps.dispatches.archive(params.data.roundId, body.data.outcome)
-      if (!archived || archived.taskId !== params.data.taskId) {
+      // 先校验归属再落盘：archive() 一旦执行就写入文件，若先写后校验会把别的任务的轮次误归档
+      const dispatches = await deps.dispatches.list()
+      const target = dispatches.find((dispatch) => dispatch.roundId === params.data.roundId)
+      if (!target || target.taskId !== params.data.taskId) {
         throw new RouteError(404, 'CRON_DISPATCH_NOT_FOUND', '派发轮次不存在或不属于该任务。')
       }
+      if (target.state !== 'open') {
+        throw new RouteError(
+          409,
+          'CRON_DISPATCH_ALREADY_ARCHIVED',
+          `轮次 ${target.roundId} 已于 ${target.updatedAt} 归档，无需重复归档。`,
+        )
+      }
+      const archived = await deps.dispatches.archive(params.data.roundId, body.data.outcome)
+      if (!archived) throw new RouteError(404, 'CRON_DISPATCH_NOT_FOUND', '派发轮次不存在。')
+      await deps.audit.record({
+        action: 'cron.dispatch.archive',
+        target: params.data.taskId,
+        storyId: archived.storyId,
+        before: { roundId: archived.roundId, state: 'open' },
+        after: { outcome: archived.outcome },
+        reversible: false,
+      })
       return archived
     } catch (error) {
       return controlError(request, reply, error)
@@ -433,6 +534,7 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       if (shouldVerify) {
         const service = await requireService(body.data.storyId)
         await verifyOwner(service, body.data.ownerSessionId)
+        await deps.client.update(service.port, params.data.taskId, { ownerSessionId: body.data.ownerSessionId })
         verifiedAt = new Date().toISOString()
       }
       const previous = await deps.mappings.find(params.data.taskId)

@@ -4,7 +4,7 @@ import type { Snapshot } from '@devtask/shared'
 import type { CronMappingStore } from '../aggregator/cron-data.js'
 import { isReversibleAction, type AuditLog } from '../services/audit-log.js'
 import type { ScheduledTaskClient } from '../services/scheduled-tasks.js'
-import type { StoryServiceSupervisor } from '../services/story-service-supervisor.js'
+import type { StoryService, StoryServiceSupervisor } from '../services/story-service-supervisor.js'
 import { RouteError, controlError, invalidParameters } from './support.js'
 
 /** 审计路由依赖 */
@@ -61,7 +61,22 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
         if (!ownerSessionId || !mode) {
           throw new RouteError(409, 'AUDIT_UNDO_UNSUPPORTED', '该条 owner 变更缺少可回滚的原始值。')
         }
-        await deps.mappings.update(entry.target, { ownerSessionId, mode })
+        // 原 owner 可能已经被删除或不再属于该工作区：撤销前重新校验，避免把任务绑回失效会话
+        const context = await locateTarget(deps, entry.target)
+        const sessionIds = await deps.client.listSessionIds(context.service.port, context.service.cwd)
+        if (!sessionIds.includes(ownerSessionId)) {
+          throw new RouteError(
+            409,
+            'CRON_OWNER_INVALID',
+            `原 owner 会话 ${ownerSessionId} 已不属于该 Story 工作区，撤销会把任务绑定到失效会话；`
+            + '请在任务卡片的「归属设置」中重新选择 owner。',
+          )
+        }
+        await deps.client.update(context.service.port, entry.target, { ownerSessionId })
+        const updated = await deps.mappings.update(entry.target, { ownerSessionId, mode })
+        if (!updated) {
+          throw new RouteError(409, 'AUDIT_UNDO_UNSUPPORTED', '该任务的本地归属映射已被删除，无法撤销。')
+        }
         await deps.audit.markUndone(entry.id)
         return { undone: true, applied: { ownerSessionId, mode } }
       }
@@ -70,7 +85,12 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
       if (entry.action === 'cron.update') {
         const cron = typeof before.cron === 'string' ? before.cron : undefined
         if (!cron) throw new RouteError(409, 'AUDIT_UNDO_UNSUPPORTED', '该条更新缺少可回滚的原始 cron。')
-        await deps.client.update(context.port, entry.target, { cron })
+        const ownerSessionId = await deps.client.resolveSessionId(
+          context.service.port,
+          context.service.cwd,
+          context.ownerSessionId,
+        )
+        await deps.client.update(context.port, entry.target, { cron, ownerSessionId })
         await deps.audit.markUndone(entry.id)
         return { undone: true, applied: { cron } }
       }
@@ -78,7 +98,12 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
         if (typeof before.enabled !== 'boolean') {
           throw new RouteError(409, 'AUDIT_UNDO_UNSUPPORTED', '该条启停缺少可回滚的原始状态。')
         }
-        await deps.client.update(context.port, entry.target, { enabled: before.enabled })
+        const ownerSessionId = await deps.client.resolveSessionId(
+          context.service.port,
+          context.service.cwd,
+          context.ownerSessionId,
+        )
+        await deps.client.update(context.port, entry.target, { enabled: before.enabled, ownerSessionId })
         await deps.audit.markUndone(entry.id)
         return { undone: true, applied: { enabled: before.enabled } }
       }
@@ -93,9 +118,12 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
  * 把审计目标定位到可用的 CodeBuddy 端口。
  * @param deps 路由依赖
  * @param taskId 定时任务 ID
- * @returns 端口与 Story
+ * @returns 端口、Story 与运行中的服务登记
  */
-async function locateTarget(deps: AuditRouteDeps, taskId: string): Promise<{ port: number; storyId: string }> {
+async function locateTarget(
+  deps: AuditRouteDeps,
+  taskId: string,
+): Promise<{ port: number; storyId: string; service: StoryService; ownerSessionId?: string }> {
   const snapshot = await deps.snapshotProvider()
   const cron = snapshot.crons.find((item) => item.id === taskId)
   if (!cron?.storyId) {
@@ -105,5 +133,12 @@ async function locateTarget(deps: AuditRouteDeps, taskId: string): Promise<{ por
   if (!service || service.status !== 'running') {
     throw new RouteError(409, 'STORY_SERVICE_UNAVAILABLE', '该任务所属服务当前不可用，无法撤销。')
   }
-  return { port: service.port, storyId: cron.storyId }
+  return {
+    port: service.port,
+    storyId: cron.storyId,
+    service,
+    ...(cron.ownerSessionId ?? cron.sessionId
+      ? { ownerSessionId: cron.ownerSessionId ?? cron.sessionId }
+      : {}),
+  }
 }

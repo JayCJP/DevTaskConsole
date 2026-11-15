@@ -1,10 +1,18 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { snapshotSchema } from '@devtask/shared'
 import { buildSnapshot } from './snapshot.js'
 import { CronMappingStore } from './cron-data.js'
+
+// 必须在被测模块加载前隔离数据目录：
+// snapshot.ts 里的 StoryServiceSupervisor 是模块级单例，构造时就读取 DEVTASK_DATA_DIR，
+// 若在各用例里才设置环境变量，会误读开发机真实的服务登记（正在运行的实例会让 crons 通道报错）。
+vi.hoisted(() => {
+  const tempBase = process.env.TEMP ?? process.env.TMPDIR ?? '/tmp'
+  process.env.DEVTASK_DATA_DIR = `${tempBase}/devtask-snapshot-isolated-${process.pid}`
+})
 
 let workspacesRoot: string | undefined
 let dataDirectory: string | undefined
@@ -68,9 +76,12 @@ describe('snapshot channel status', () => {
   it('surfaces pending Harness questions without treating deprecated resolved flags as confirmation', async () => {
     workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-snapshot-inbox-'))
     process.env.DEVTASK_MCP_CONFIG = join(workspacesRoot, 'missing-mcp.json')
-    const storyDirectory = join(workspacesRoot, 'feature-x', '.codebuddy', 'plans', 'STORY-INBOX')
+    const workspace = join(workspacesRoot, 'feature-x')
+    const storyDirectory = join(workspace, '.codebuddy', 'plans', 'STORY-INBOX')
     const statePath = join(storyDirectory, 'e2e-state.json')
     await mkdir(dirname(statePath), { recursive: true })
+    // 收件箱以工作区列表为骨架：Story 必须先被工作区认领，才会被提取事项
+    await writeFile(join(workspace, 'feature-x.code-workspace'), JSON.stringify({ folders: [{ path: '.' }] }))
     await writeFile(statePath, JSON.stringify({
       storyId: 'STORY-INBOX',
       title: 'Inbox requirement',
@@ -90,7 +101,8 @@ describe('snapshot channel status', () => {
       kind: 'open_question',
       title: 'Needs an answer?',
       requirementId: 'STORY-INBOX',
-      // 收件箱按「工作区 → Story」分组依赖该字段，缺失会导致事项落进兜底分组
+      // 归属来自工作区流水线，不是从 plans 目录路径反推
+      workspaceName: 'feature-x',
       workspacePath: 'feature-x',
       priority: 'high',
     })])
@@ -98,6 +110,49 @@ describe('snapshot channel status', () => {
       'pending_confirmation',
       'confirmed',
     ])
+  })
+
+  it('derives inbox ownership from the workspace pipeline rules', async () => {
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-snapshot-inbox-sync-'))
+    process.env.DEVTASK_MCP_CONFIG = join(workspacesRoot, 'missing-mcp.json')
+    const workspace = join(workspacesRoot, 'feature-sync')
+    await mkdir(workspace, { recursive: true })
+    // folders[0] 是流水线锚点：只有它下面的 Story 会被工作区认领
+    await writeFile(join(workspace, 'feature-sync.code-workspace'), JSON.stringify({ folders: [{ path: 'repo-a' }] }))
+
+    const primaryDirectory = join(workspace, 'repo-a', '.codebuddy', 'plans', 'STORY-PRIMARY')
+    await mkdir(primaryDirectory, { recursive: true })
+    await writeFile(join(primaryDirectory, 'e2e-state.json'), JSON.stringify({
+      storyId: 'STORY-PRIMARY',
+      title: 'Primary requirement',
+      phase: 2,
+      status: 'blocked',
+    }))
+
+    const secondaryDirectory = join(workspace, 'repo-b', '.codebuddy', 'plans', 'STORY-SECONDARY')
+    await mkdir(secondaryDirectory, { recursive: true })
+    await writeFile(join(secondaryDirectory, 'e2e-state.json'), JSON.stringify({
+      storyId: 'STORY-SECONDARY',
+      title: 'Secondary requirement',
+      phase: 1,
+      status: 'running',
+    }))
+    await writeFile(join(secondaryDirectory, 'open-questions.json'), JSON.stringify({
+      questions: [{ id: 'Q-1', question: 'Secondary question?' }],
+    }))
+
+    const snapshot = await buildSnapshot(workspacesRoot)
+
+    expect(snapshot.workspacePipelines?.[0]?.story?.requirement.storyId).toBe('STORY-PRIMARY')
+    // 一个工作区只认 folders[0] 的 Story：repo-b 的 Story 不进入收件箱
+    expect(snapshot.inbox).toEqual([expect.objectContaining({
+      kind: 'blocked_job',
+      requirementId: 'STORY-PRIMARY',
+      workspaceName: 'feature-sync',
+      workspacePath: 'feature-sync/repo-a',
+    })])
+    // 待确认项本身仍被采集，只是没有工作区归属时不进收件箱
+    expect(snapshot.openQuestions.map((question) => question.storyId)).toEqual(['STORY-SECONDARY'])
   })
 
   it('joins local scheduled tasks with explicit owner and mode mappings', async () => {

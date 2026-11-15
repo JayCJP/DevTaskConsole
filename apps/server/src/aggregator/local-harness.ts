@@ -1,5 +1,5 @@
 import { access, readdir, readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { HarnessActive, HarnessBug, OpenQuestion, Requirement } from '@devtask/shared'
 
 interface LocalHarnessResult {
@@ -420,7 +420,8 @@ function resolveWorkflowRoot(root: string, workflowRoot: string | undefined): st
   if (!workflowRoot) return undefined
   const candidate = resolve(workflowRoot)
   const fromRoot = relative(resolve(root), candidate)
-  if (isAbsolute(fromRoot) || fromRoot.startsWith('..')) return undefined
+  // 只把真正的父目录（`..` 或 `..\\x`）判为越界；`..foo` 是合法子目录名
+  if (isAbsolute(fromRoot) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`)) return undefined
   return candidate
 }
 

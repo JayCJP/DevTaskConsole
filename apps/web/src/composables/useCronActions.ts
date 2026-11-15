@@ -1,5 +1,5 @@
-import { ref, type Ref } from 'vue'
-import type { Cron, CronMode } from '@devtask/shared'
+import { onUnmounted, ref, type Ref } from 'vue'
+import type { AuditAction, Cron, CronMode } from '@devtask/shared'
 import { apiRequest } from '../api/client'
 
 /** 撤销提示条 */
@@ -23,10 +23,23 @@ export interface CronActionsOptions {
 /** 撤销提示的存活时间（毫秒） */
 const noticeTimeoutMs = 8_000
 
+/** 单次写操作的描述 */
+interface CronActionConfig {
+  /** 失败时的兜底文案 */
+  errorMessage: string
+  /** 成功后的提示文案；缺省表示不提示 */
+  successMessage?: string
+  /** 对应的审计动作；提供时会尝试取回审计条目以便撤销 */
+  auditAction?: AuditAction
+  /** 乐观覆盖字段，失败时整体回滚 */
+  optimistic?: Partial<Cron>
+}
+
 /**
  * 定时任务写操作的统一入口。
  * 采用「乐观更新 + 失败回滚」：先本地覆盖展示值，请求成功后刷新快照，
  * 失败则撤销本地覆盖并回报错误。可撤销动作成功后给出撤销提示条。
+ * 所有写操作共用同一条执行路径，避免各动作各自实现一遍忙碌标记与错误处理。
  * @param options 刷新与错误回调
  * @returns 覆盖表、忙碌标记、提示条与动作方法
  */
@@ -38,6 +51,12 @@ export function useCronActions(options: CronActionsOptions) {
   /** 撤销提示列表 */
   const notices = ref<CronUndoNotice[]>([])
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  // 页面卸载后不再保留提示定时器，避免回调触达已销毁的组件状态
+  onUnmounted(() => {
+    for (const timer of timers.values()) clearTimeout(timer)
+    timers.clear()
+  })
 
   /**
    * 写入本地覆盖。
@@ -86,7 +105,7 @@ export function useCronActions(options: CronActionsOptions) {
    * @param action 预期动作
    * @returns 审计条目 ID；未找到时返回 undefined
    */
-  async function latestAuditId(target: string, action: string): Promise<string | undefined> {
+  async function latestAuditId(target: string, action: AuditAction): Promise<string | undefined> {
     try {
       const result = await apiRequest<{ entries: Array<{ id: string; action: string; target: string; undone: boolean }> }>(
         '/api/v1/audit?limit=10',
@@ -100,28 +119,30 @@ export function useCronActions(options: CronActionsOptions) {
   }
 
   /**
-   * 执行一次写操作并处理回滚。
+   * 执行一次写操作并统一处理忙碌标记、刷新、提示与回滚。
    * @param taskId 目标任务
-   * @param label 成功提示文案
    * @param operation 实际请求
-   * @param optimistic 乐观覆盖字段
+   * @param config 提示文案与乐观覆盖
+   * @returns 是否成功
    */
   async function run(
     taskId: string,
-    label: string,
     operation: () => Promise<void>,
-    optimistic?: Partial<Cron>,
+    config: CronActionConfig,
   ): Promise<boolean> {
     busyTaskId.value = taskId
-    if (optimistic) apply(taskId, optimistic)
+    if (config.optimistic) apply(taskId, config.optimistic)
     try {
       await operation()
       await options.onRefresh()
-      if (label) notify(label)
+      if (config.successMessage) {
+        const auditId = config.auditAction ? await latestAuditId(taskId, config.auditAction) : undefined
+        notify(config.successMessage, auditId)
+      }
       return true
     } catch (error) {
       revert(taskId)
-      options.onError(error instanceof Error ? error.message : '定时任务操作失败。')
+      options.onError(error instanceof Error ? error.message : config.errorMessage)
       return false
     } finally {
       busyTaskId.value = null
@@ -134,22 +155,21 @@ export function useCronActions(options: CronActionsOptions) {
    * @param enabled 目标状态
    */
   async function toggle(cron: Cron, enabled: boolean): Promise<void> {
-    busyTaskId.value = cron.id
-    apply(cron.id, { enabled })
-    try {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ enabled }),
-      })
-      await options.onRefresh()
-      const auditId = await latestAuditId(cron.id, 'cron.toggle')
-      notify(`已${enabled ? '启用' : '暂停'}任务 ${cron.id}`, auditId)
-    } catch (error) {
-      revert(cron.id)
-      options.onError(error instanceof Error ? error.message : '启停任务失败。')
-    } finally {
-      busyTaskId.value = null
-    }
+    await run(
+      cron.id,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ enabled }),
+        })
+      },
+      {
+        optimistic: { enabled },
+        successMessage: `已${enabled ? '启用' : '暂停'}任务 ${cron.id}`,
+        auditAction: 'cron.toggle',
+        errorMessage: '启停任务失败。',
+      },
+    )
   }
 
   /**
@@ -158,24 +178,21 @@ export function useCronActions(options: CronActionsOptions) {
    * @param input 新的表达式与提示词
    */
   async function update(cron: Cron, input: { cron: string; prompt?: string }): Promise<boolean> {
-    busyTaskId.value = cron.id
-    apply(cron.id, { cron: input.cron })
-    try {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify(input),
-      })
-      await options.onRefresh()
-      const auditId = await latestAuditId(cron.id, 'cron.update')
-      notify(`已更新任务 ${cron.id} 的调度规则`, auditId)
-      return true
-    } catch (error) {
-      revert(cron.id)
-      options.onError(error instanceof Error ? error.message : '更新调度规则失败。')
-      return false
-    } finally {
-      busyTaskId.value = null
-    }
+    return run(
+      cron.id,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(input),
+        })
+      },
+      {
+        optimistic: { cron: input.cron },
+        successMessage: `已更新任务 ${cron.id} 的调度规则`,
+        auditAction: 'cron.update',
+        errorMessage: '更新调度规则失败。',
+      },
+    )
   }
 
   /**
@@ -183,10 +200,16 @@ export function useCronActions(options: CronActionsOptions) {
    * @param cron 任务
    */
   async function remove(cron: Cron): Promise<void> {
-    const ok = await run(cron.id, '', async () => {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, { method: 'DELETE' })
-    })
-    if (ok) notify(`已删除任务 ${cron.id}（不可撤销）`)
+    await run(
+      cron.id,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}`, { method: 'DELETE' })
+      },
+      {
+        successMessage: `已删除任务 ${cron.id}（不可撤销）`,
+        errorMessage: '删除任务失败。',
+      },
+    )
   }
 
   /**
@@ -194,9 +217,13 @@ export function useCronActions(options: CronActionsOptions) {
    * @param cron 任务
    */
   async function renew(cron: Cron): Promise<void> {
-    await run(cron.id, `已续期任务 ${cron.id}`, async () => {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}/renew`, { method: 'POST' })
-    })
+    await run(
+      cron.id,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}/renew`, { method: 'POST' })
+      },
+      { successMessage: `已续期任务 ${cron.id}`, errorMessage: '续期任务失败。' },
+    )
   }
 
   /**
@@ -206,21 +233,16 @@ export function useCronActions(options: CronActionsOptions) {
    * @returns 是否派发成功
    */
   async function dispatch(cron: Cron, prompt?: string): Promise<boolean> {
-    busyTaskId.value = cron.id
-    try {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}/dispatch`, {
-        method: 'POST',
-        body: JSON.stringify(prompt ? { prompt } : {}),
-      })
-      await options.onRefresh()
-      notify(`已派发任务 ${cron.id} 到独立轮次`)
-      return true
-    } catch (error) {
-      options.onError(error instanceof Error ? error.message : '派发轮次失败。')
-      return false
-    } finally {
-      busyTaskId.value = null
-    }
+    return run(
+      cron.id,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(cron.id)}/dispatch`, {
+          method: 'POST',
+          body: JSON.stringify(prompt ? { prompt } : {}),
+        })
+      },
+      { successMessage: `已派发任务 ${cron.id} 到独立轮次`, errorMessage: '派发轮次失败。' },
+    )
   }
 
   /**
@@ -234,24 +256,20 @@ export function useCronActions(options: CronActionsOptions) {
     draft: { storyId: string; ownerSessionId: string; mode: CronMode | '' },
   ): Promise<boolean> {
     if (!draft.storyId || !draft.ownerSessionId.trim() || !draft.mode) return false
-    busyTaskId.value = taskId
-    try {
-      await apiRequest(`/api/v1/crons/${encodeURIComponent(taskId)}/mapping`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          storyId: draft.storyId,
-          ownerSessionId: draft.ownerSessionId.trim(),
-          mode: draft.mode,
-        }),
-      })
-      await options.onRefresh()
-      return true
-    } catch (error) {
-      options.onError(error instanceof Error ? error.message : '保存 owner 映射失败。')
-      return false
-    } finally {
-      busyTaskId.value = null
-    }
+    return run(
+      taskId,
+      async () => {
+        await apiRequest(`/api/v1/crons/${encodeURIComponent(taskId)}/mapping`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            storyId: draft.storyId,
+            ownerSessionId: draft.ownerSessionId.trim(),
+            mode: draft.mode,
+          }),
+        })
+      },
+      { errorMessage: '保存 owner 映射失败。' },
+    )
   }
 
   /**

@@ -86,6 +86,7 @@ describe('TAPD MCP connection', () => {
       {
         storyId: 'HARNESS-18',
         tapdStoryId: '18',
+        tapdWorkspaceId: 38260062,
         title: 'First story',
         status: 'open',
         priority: 'High',
@@ -97,6 +98,7 @@ describe('TAPD MCP connection', () => {
       {
         storyId: 'HARNESS-81',
         tapdStoryId: '81',
+        tapdWorkspaceId: 38260062,
         title: 'Second story',
         status: 'in_progress',
         priority: 'Middle',

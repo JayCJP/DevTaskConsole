@@ -329,10 +329,35 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .bug-detail { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
 .bug-detail p { margin: 7px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .workspace-form { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; margin: 20px 0; }
-.workspace-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+/* 只用直接子选择器，避免命中 el-checkbox 渲染出的 <label> 造成方框与文字断行 */
+.workspace-form > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .workspace-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0; }
-.workspace-form .workspace-form-wide { grid-column: 1 / -1; }
-.workspace-form .workspace-form-checks { display: flex; grid-column: 1 / -1; align-items: center; gap: 16px; }
+.workspace-form > .workspace-form-wide { grid-column: 1 / -1; }
+/* 跳步选项：与上方输入项用细分隔线分组，选项左对齐紧凑排列 */
+.workspace-form > .workspace-form-checks {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 32px;
+  min-height: 30px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.workspace-form-checks .el-checkbox { height: 24px; margin-right: 0; }
+.workspace-form-checks .el-checkbox__label { color: var(--muted); font-size: 12px; }
+/* 工作区详情：合并请求操作区（目标分支 + 一键创建 + 逐项目结果） */
+.workspace-mr { margin: 18px 0 6px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
+.workspace-mr-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 16px; }
+.workspace-mr-head h3 { margin: 0 0 4px; color: var(--text); font-size: 13px; }
+.workspace-mr-head .muted { margin: 0; font-size: 11px; line-height: 1.6; }
+.workspace-mr-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.workspace-mr-controls .el-select { width: 128px; }
+.workspace-mr-result { display: grid; margin: 12px 0 0; padding: 0; gap: 8px; list-style: none; }
+.workspace-mr-result li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.workspace-mr-result a { margin-left: auto; color: var(--accent); text-decoration: none; }
+.workspace-mr-result a:hover { text-decoration: underline; }
+.workspace-project-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .workspace-list { display: grid; }
 .workspace-row { display: flex; align-items: center; gap: 14px; padding: 13px 2px; border-top: 1px solid var(--line); }
 .workspace-main { display: grid; min-width: 0; flex: 1 1 220px; gap: 3px; }
@@ -455,6 +480,7 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .cron-workspace-block .project-head { padding: 8px 0 4px; }
 .cron-workspace-block .cron-story-head { margin-top: 18px; padding: 10px 12px; border-radius: 8px; background: var(--surface-raised); }
 .cron-story-head .el-button { margin-left: auto; }
+.cron-story-empty { margin: 0; padding: 14px 12px; border-bottom: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
 .cron-row.is-busy { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .cron-schedule { display: grid; gap: 2px; min-width: 130px; }
 .cron-schedule small, .cron-next small { color: var(--faint); font-size: 10px; }
@@ -566,3 +592,27 @@ code, kbd { font-family: "Cascadia Code", Consolas, monospace; }
 .job-rename .el-select { flex: 1; min-width: 0; }
 .job-rename .el-input { flex: 1; min-width: 0; }
 .instance-reply { display: grid; gap: 10px; margin-top: 14px; }
+
+/* ===== 实例筛选与详情面板 ===== */
+.instance-filter { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; }
+.instance-filter .el-select { width: 140px; }
+.instance-filter .muted { font-size: 11px; }
+.job-detail { display: grid; gap: 12px; margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); }
+.job-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.job-detail-head h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.job-detail-actions { display: flex; align-items: center; gap: 10px; }
+.job-detail-actions a { color: var(--accent); font-size: 12px; }
+.job-detail-block { display: grid; gap: 6px; }
+.job-detail-block > span { color: var(--faint); font-size: 11px; }
+.job-detail-block p { margin: 0; color: var(--text); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.job-detail-block.is-waiting p { color: var(--amber); }
+.job-detail-time { color: var(--faint); font-size: 11px; }
+
+/* 跳转到该 Story 的 CodeBuddy 实例 Web 页面 */
+.instance-open { color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.instance-open:hover { text-decoration: underline; }
+.instance-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+/* 实例写操作结果提示：成功/失败分色 */
+.undo-toast.is-success { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+.undo-toast.is-error { border-color: color-mix(in srgb, var(--red) 55%, var(--line)); }

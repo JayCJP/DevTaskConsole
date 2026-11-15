@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url'
 import {
   applicationMappingSchema,
   jobCreateRequestSchema,
+  jobDetailSchema,
+  jobPinRequestSchema,
+  jobPrefsSchema,
   jobRenameRequestSchema,
   jobReplyRequestSchema,
   jobSchema,
@@ -17,6 +20,7 @@ import {
   workspaceBindingRequestSchema,
   workspaceDeleteRequestSchema,
   workspaceInitializationResumeRequestSchema,
+  workspaceMergeRequestCreateRequestSchema,
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
@@ -43,6 +47,7 @@ import {
   WorkspaceInputError,
   WorkspaceJobNotFoundError,
 } from './workspaces/initializer.js'
+import { createWorkspaceMergeRequests } from './workspaces/merge-requests.js'
 import {
   normalizeTapdStoryId,
   WorkspaceBindingConflictError,
@@ -50,7 +55,7 @@ import {
   WorkspaceBindingStore,
 } from './workspaces/bindings.js'
 import { StoryServiceSupervisor, type StoryService } from './services/story-service-supervisor.js'
-import { CodeBuddyApi, CodeBuddyApiError } from './services/codebuddy-api.js'
+import { CodeBuddyApi, CodeBuddyApiError, extractJob, extractJobList, extractJobPrefs } from './services/codebuddy-api.js'
 import { ScheduledTaskClient } from './services/scheduled-tasks.js'
 import { CronExecutionReader } from './services/cron-executions.js'
 import { AuditLog } from './services/audit-log.js'
@@ -430,7 +435,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       }
       const query = new URLSearchParams({ all: '1', cwd: service.cwd })
       const result = await codeBuddyApi.request(service.port, `/api/v1/jobs?${query}`, 'GET')
-      const parsed = jobSchema.array().safeParse(result)
+      const list = extractJobList(result)
+      // 上游的 status 是可选字段：只在部分状态下输出。缺省时按 state 推导，
+      // 否则整批实例会被判为「响应非法」，页面看不到任何实例。
+      const normalized = (list ?? []).map((item) => {
+        if (typeof item !== 'object' || item === null || Array.isArray(item)) return item
+        const record = item as Record<string, unknown>
+        return { ...record, status: record.status ?? (record.state === 'working' ? 'busy' : 'idle') }
+      })
+      const parsed = jobSchema.array().safeParse(normalized)
       if (!parsed.success) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid jobs response.')
       return parsed.data.map((job) => ({ ...job, storyId: params.data.storyId }))
     } catch (error) {
@@ -449,6 +462,60 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         cwd: service.cwd,
       })
       return reply.code(201).send(result)
+    } catch (error) {
+      return codeBuddyError(request, reply, error)
+    }
+  })
+
+  // 实例详情：比列表多出当前活动、等待原因与建议回复，用于多实例并排管理时看清每一个在做什么
+  app.get('/api/v1/stories/:storyId/jobs/:jobId', async (request, reply) => {
+    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    try {
+      const service = await ensureStoryService(params.data.storyId)
+      const result = await codeBuddyApi.request(
+        service.port,
+        `/api/v1/jobs/${encodeURIComponent(params.data.jobId)}`,
+        'GET',
+      )
+      const job = extractJob(result)
+      const parsed = jobDetailSchema.safeParse({
+        ...job,
+        // 详情响应不带列表里的 status 字段，用 state 推导，保持与列表一致的 busy/idle 语义
+        status: job?.status ?? (job?.state === 'working' ? 'busy' : 'idle'),
+        storyId: params.data.storyId,
+      })
+      if (!parsed.success) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid job detail response.')
+      return parsed.data
+    } catch (error) {
+      return codeBuddyError(request, reply, error)
+    }
+  })
+
+  // 列表偏好（置顶/分组）由 CodeBuddy 自己持久化，本站不另存一份
+  app.get('/api/v1/stories/:storyId/jobs/prefs', async (request, reply) => {
+    const params = z.object({ storyId: storyIdSchema }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    try {
+      const service = await ensureStoryService(params.data.storyId)
+      const result = await codeBuddyApi.request(service.port, '/api/v1/jobs/prefs', 'GET')
+      const prefs = jobPrefsSchema.parse(extractJobPrefs(result))
+      return prefs
+    } catch (error) {
+      return codeBuddyError(request, reply, error)
+    }
+  })
+
+  app.put('/api/v1/stories/:storyId/jobs/prefs', async (request, reply) => {
+    const params = z.object({ storyId: storyIdSchema }).safeParse(request.params)
+    const body = z.object({ id: jobIdSchema, ...jobPinRequestSchema.shape }).safeParse(request.body)
+    if (!params.success || !body.success) return invalidParameters(reply)
+    try {
+      const service = await ensureStoryService(params.data.storyId)
+      const result = await codeBuddyApi.request(service.port, '/api/v1/jobs/prefs', 'PUT', [
+        { op: 'pin', id: body.data.id, pinned: body.data.pinned },
+      ])
+      return jobPrefsSchema.parse(extractJobPrefs(result))
     } catch (error) {
       return codeBuddyError(request, reply, error)
     }
@@ -696,6 +763,31 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     }
   })
 
+  // 工作区创建合并请求：源分支取各项目当前检出分支，目标分支限定为约定的基线分支；
+  // 不传 projects 时对工作区全部项目创建，传了则只处理指定项目（一键创建即不传）
+  app.post('/api/v1/workspaces/:name/merge-requests', async (request, reply) => {
+    const params = z.object({ name: z.string().min(1).max(200) }).safeParse(request.params)
+    const body = workspaceMergeRequestCreateRequestSchema.safeParse(request.body)
+    if (!params.success || !body.success) return invalidParameters(reply)
+    try {
+      return await createWorkspaceMergeRequests(workspacesRoot, params.data.name, body.data, {
+        gitlab: gitLab,
+        mappings: applicationMappings,
+      })
+    } catch (error) {
+      if (error instanceof WorkspaceNotFoundError) {
+        return reply.code(404).send({ error: { code: 'WORKSPACE_NOT_FOUND', message: error.message } })
+      }
+      request.log.error({ code: 'WORKSPACE_MERGE_REQUEST_FAILED' }, 'Unable to create workspace merge requests')
+      return reply.code(502).send({
+        error: {
+          code: 'WORKSPACE_MERGE_REQUEST_UNAVAILABLE',
+          message: error instanceof Error ? error.message : '创建工作区合并请求失败。',
+        },
+      })
+    }
+  })
+
   app.get('/api/v1/devops/groups', async (request, reply) => {
     return relayRead(request, reply, 'DevOps', () => devOps.getGroups())
   })
@@ -800,6 +892,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 function publicStoryService(service: StoryService): {
   storyId: string
   port: number
+  cwd: string
   status: StoryService['status']
   updatedAt: string
   error?: string
@@ -807,6 +900,7 @@ function publicStoryService(service: StoryService): {
   return {
     storyId: service.storyId,
     port: service.port,
+    cwd: service.cwd,
     status: service.status,
     updatedAt: service.updatedAt,
     ...(service.error ? { error: service.error } : {}),

@@ -48,7 +48,9 @@ interface FlowRow {
 const rows = computed<FlowRow[]>(() => props.pipelines.map((pipeline) => {
   const story = pipeline.story
   const requirement = story?.requirement
-  const mergeRequest = story?.mergeRequests[0] ?? pipeline.mergeRequests[0]
+  // MR 数量与可点击的 MR 必须来自同一来源，否则会出现「0 个 MR 却能点进去」的矛盾展示
+  const storyMergeRequests = story?.mergeRequests ?? pipeline.mergeRequests
+  const mergeRequest = storyMergeRequests[0]
   const build = pipeline.builds[0]
   const nextRun = pipeline.crons.find((cron) => cron.nextRun)?.nextRun
   const project = pipeline.primaryProject
@@ -71,9 +73,9 @@ const rows = computed<FlowRow[]>(() => props.pipelines.map((pipeline) => {
     {
       key: 'mr',
       label: '合并请求',
-      value: String(pipeline.mergeRequests.length),
+      value: String(storyMergeRequests.length),
       hint: mergeRequest ? mergeRequest.state : '暂无 MR',
-      tone: pipeline.mergeRequests.length ? 'ready' : 'empty',
+      tone: storyMergeRequests.length ? 'ready' : 'empty',
     },
     {
       key: 'build',

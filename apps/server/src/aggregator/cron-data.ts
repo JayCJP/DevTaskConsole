@@ -263,6 +263,7 @@ export async function readLocalCrons(
         ...(task.enabled !== undefined ? { enabled: task.enabled } : {}),
         ...(mapping?.mode ?? taskMode ? { mode: mapping?.mode ?? taskMode } : {}),
         ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
+        ...(task.sessionId ? { sessionId: task.sessionId } : {}),
         ...(mapping?.ownerVerifiedAt ? { ownerVerifiedAt: mapping.ownerVerifiedAt } : {}),
         ...(task.durable !== undefined ? { durable: task.durable } : {}),
         ...(task.recurring !== undefined ? { recurring: task.recurring } : {}),
@@ -280,6 +281,7 @@ interface ParsedTask {
   id: string
   cron: string
   prompt?: string
+  sessionId?: string
   enabled?: boolean
   mode?: string
   nextRun?: string
@@ -297,6 +299,7 @@ function parseTask(value: unknown): ParsedTask | undefined {
     || typeof value.cron !== 'string'
     || !value.cron.trim()
     || (value.prompt !== undefined && typeof value.prompt !== 'string')
+    || (value.sessionId !== undefined && typeof value.sessionId !== 'string')
     || (value.enabled !== undefined && typeof value.enabled !== 'boolean')
     || (value.mode !== undefined && typeof value.mode !== 'string')
   ) return undefined
@@ -309,6 +312,7 @@ function parseTask(value: unknown): ParsedTask | undefined {
     id: value.id,
     cron: value.cron,
     ...(typeof value.prompt === 'string' ? { prompt: value.prompt } : {}),
+    ...(typeof value.sessionId === 'string' && value.sessionId ? { sessionId: value.sessionId } : {}),
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
     ...(typeof value.mode === 'string' ? { mode: value.mode } : {}),
     ...(nextRun ? { nextRun } : {}),

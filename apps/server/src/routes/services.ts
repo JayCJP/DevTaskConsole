@@ -52,7 +52,18 @@ export function registerServiceRoutes(app: FastifyInstance, deps: ServiceRouteDe
         throw new RouteError(404, 'STORY_SERVICE_NOT_FOUND', 'No CodeBuddy service has been assigned to this Story.')
       }
       const pause = await pauseOwnedTasks(deps, params.data.storyId, service.port, service.status === 'running')
-      const stopped = await deps.supervisor.stop(params.data.storyId)
+      let stopped
+      try {
+        stopped = await deps.supervisor.stop(params.data.storyId)
+      } catch (error) {
+        // 停服失败时把刚暂停的任务恢复回去，避免出现「提示停止失败、任务却已被暂停」的错位状态
+        const restored = await resumePausedTasks(deps, service.port, pause.paused)
+        throw new RouteError(
+          409,
+          'STORY_SERVICE_STOP_FAILED',
+          `${messageOf(error)}（已尝试恢复 ${restored}/${pause.paused.length} 个被暂停的定时任务，请确认后再重试。）`,
+        )
+      }
       await deps.audit.record({
         action: 'service.stop',
         target: params.data.storyId,
@@ -128,26 +139,15 @@ async function pauseOwnedTasks(
 
   const paused: string[] = []
   const warnings: string[] = []
-  let tasks: Array<{ id: string; enabled?: boolean }> = []
-  try {
-    tasks = await deps.client.list(port)
-  } catch (error) {
-    return {
-      paused: [],
-      warnings: [`读取定时任务列表失败，未暂停任何任务：${messageOf(error)}`],
-    }
-  }
-
   for (const mapping of mappings) {
-    const task = tasks.find((item) => item.id === mapping.taskId)
-    if (!task) continue
-    if (task.enabled === false) {
-      // 已经是暂停状态，只补记「由停服暂停」来源，便于恢复时区分手动暂停
-      await deps.mappings.update(mapping.taskId, { pausedByServiceStop: true })
-      continue
-    }
     try {
-      await deps.client.update(port, mapping.taskId, { enabled: false })
+      const tasks = await deps.client.list(port, { sessionId: mapping.ownerSessionId })
+      const task = tasks.find((item) => item.id === mapping.taskId)
+      if (!task) continue
+      // 已经是暂停状态时不做任何标记：无法区分「用户手动暂停」与「上次停服暂停」，
+      // 一旦打标就会在服务恢复时把手动暂停的任务重新启用。
+      if (task.enabled === false) continue
+      await deps.client.update(port, mapping.taskId, { enabled: false, ownerSessionId: mapping.ownerSessionId })
       await deps.mappings.update(mapping.taskId, { pausedByServiceStop: true })
       paused.push(mapping.taskId)
     } catch (error) {
@@ -155,6 +155,34 @@ async function pauseOwnedTasks(
     }
   }
   return { paused, warnings }
+}
+
+/**
+ * 恢复本次停服流程中已暂停的任务（停服失败时用于补偿）。
+ * 单个任务恢复失败不影响其它任务，只计数返回，由调用方在错误文案中透出。
+ * @param deps 路由依赖
+ * @param port 服务端口
+ * @param taskIds 需要恢复的任务 ID
+ * @returns 成功恢复的任务数量
+ */
+async function resumePausedTasks(
+  deps: ServiceRouteDeps,
+  port: number,
+  taskIds: string[],
+): Promise<number> {
+  let restored = 0
+  for (const taskId of taskIds) {
+    try {
+      const mapping = await deps.mappings.find(taskId)
+      if (!mapping) continue
+      await deps.client.update(port, taskId, { enabled: true, ownerSessionId: mapping.ownerSessionId })
+      await deps.mappings.update(taskId, { pausedByServiceStop: false })
+      restored += 1
+    } catch {
+      // 补偿失败不覆盖原始错误，错误文案里会给出成功率供用户判断
+    }
+  }
+  return restored
 }
 
 function messageOf(error: unknown): string {

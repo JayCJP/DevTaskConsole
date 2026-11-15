@@ -21,6 +21,8 @@ const props = defineProps<{
   busy?: boolean
   /** 执行记录区是否已展开 */
   expanded?: boolean
+  /** 当前未归档的派发轮次；存在时只能归档后才能再次派发 */
+  openRound?: { roundId: string; createdAt: string; label?: string }
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +38,8 @@ const emit = defineEmits<{
   renew: []
   /** 派发到独立轮次 */
   dispatch: []
+  /** 归档当前未归档轮次 */
+  archive: [outcome: 'succeeded' | 'failed' | 'stopped']
   /** 删除任务 */
   remove: []
 }>()
@@ -74,14 +78,29 @@ const statusDotClass = computed(() => {
 /** 是否处于修复模式：需要在卡片内提示风险 */
 const isFixMode = computed(() => props.cron.mode === 'query_fix')
 
-/** 是否已校验 owner：未校验时提示需要重新保存映射 */
+/** 是否已校验人工 owner 映射：原生自动绑定不需要重复校验 */
 const ownerUnverified = computed(() => Boolean(props.cron.ownerSessionId) && !props.cron.ownerVerifiedAt)
 
-/** 是否需要用户补充或修正归属配置 */
-const mappingNeedsAttention = computed(() => !props.cron.storyId || !props.cron.ownerSessionId || ownerUnverified.value || !props.cron.mode)
+/** 当前可用于定时任务操作的 session，优先使用人工映射 */
+const boundSessionId = computed(() => props.cron.ownerSessionId ?? props.cron.sessionId ?? '')
+
+/** 执行归属的补充说明 */
+const bindingLabel = computed(() => {
+  const binding = props.cron.ownerSessionId ? '人工指定' : props.cron.sessionId ? '自动绑定实例' : '未绑定'
+  return `${binding} · ${props.cron.durable ? '持久化任务' : '临时任务'}`
+})
+
+/** 是否需要用户补充或修正归属配置；任务模式不阻碍启停和调度编辑 */
+const mappingNeedsAttention = computed(() => !props.cron.storyId || !boundSessionId.value || ownerUnverified.value)
+
+/** 是否由用户显式确认过启用状态（状态未知时不能假设为运行中） */
+const isEnabled = computed(() => props.cron.enabled === true)
+
+/** 启停按钮文案：状态未知时按钮应表达「启用」，与实际请求一致 */
+const toggleLabel = computed(() => (props.cron.enabled === true ? '暂停任务' : '启用任务'))
 
 /** 是否存在需要在任务摘要下方展示的风险提示 */
-const hasWarnings = computed(() => isFixMode.value || ownerUnverified.value)
+const hasWarnings = computed(() => isFixMode.value || ownerUnverified.value || Boolean(props.openRound))
 
 /** 归属设置按钮文案 */
 const mappingButtonLabel = computed(() => mappingOpen.value ? '收起设置' : '归属设置')
@@ -116,6 +135,9 @@ function toggleMapping(): void {
 function handleMoreCommand(command: string): void {
   if (command === 'renew') emit('renew')
   if (command === 'dispatch') emit('dispatch')
+  if (command === 'archive-succeeded') confirmArchive('succeeded')
+  if (command === 'archive-failed') confirmArchive('failed')
+  if (command === 'archive-stopped') confirmArchive('stopped')
   if (command === 'remove') confirmRemove()
 }
 
@@ -124,6 +146,19 @@ function handleMoreCommand(command: string): void {
  */
 function confirmRemove(): void {
   if (window.confirm(`删除定时任务「${props.cron.id}」？该操作不可撤销。`)) emit('remove')
+}
+
+/**
+ * 归档前二次确认：归档后该任务才能再次派发。
+ * @param outcome 归档终态
+ */
+function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
+  const round = props.openRound
+  if (!round) return
+  const label = outcome === 'succeeded' ? '成功' : outcome === 'failed' ? '失败' : '已停止'
+  if (window.confirm(`把轮次 ${round.roundId} 归档为「${label}」？归档后该任务才能再次派发。`)) {
+    emit('archive', outcome)
+  }
 }
 </script>
 
@@ -171,26 +206,30 @@ function confirmRemove(): void {
       </div>
       <div class="cron-fact cron-owner-fact">
         <span>执行归属</span>
-        <strong :title="props.cron.ownerSessionId || '未关联 owner'">{{ props.cron.ownerSessionId || '未关联 owner' }}</strong>
-        <small>{{ props.cron.durable ? '持久化任务' : '临时任务' }}</small>
+        <strong :title="boundSessionId || '未关联实例'">{{ boundSessionId || '未关联实例' }}</strong>
+        <small>{{ bindingLabel }}</small>
       </div>
     </div>
 
     <div v-if="hasWarnings" class="cron-warnings">
       <span v-if="isFixMode">修复模式可能修改代码或写回 TAPD。</span>
       <span v-if="ownerUnverified">owner 尚未通过归属校验，请重新保存映射。</span>
+      <span v-if="props.openRound">
+        轮次 {{ props.openRound.roundId }} 尚未归档，归档前无法再次派发。
+      </span>
     </div>
 
     <footer class="cron-footer">
       <div class="cron-actions">
         <el-button
           size="small"
-          :type="props.cron.enabled === false ? 'primary' : undefined"
-          :plain="props.cron.enabled === false"
+          :type="isEnabled ? undefined : 'primary'"
+          :plain="!isEnabled"
           :loading="props.busy"
-          @click="emit('toggle', !props.cron.enabled)"
+          :disabled="props.busy"
+          @click="emit('toggle', !isEnabled)"
         >
-          {{ props.cron.enabled === false ? '启用任务' : '暂停任务' }}
+          {{ toggleLabel }}
         </el-button>
         <el-button size="small" :disabled="props.busy" @click="emit('edit')">编辑调度</el-button>
         <el-button
@@ -210,7 +249,18 @@ function confirmRemove(): void {
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="renew" :disabled="!props.cron.durable">续期任务</el-dropdown-item>
-            <el-dropdown-item command="dispatch" :disabled="!props.cron.storyId">立即派发</el-dropdown-item>
+            <el-dropdown-item command="dispatch" :disabled="!props.cron.storyId || Boolean(props.openRound)">
+              {{ props.openRound ? '立即派发（需先归档）' : '立即派发' }}
+            </el-dropdown-item>
+            <el-dropdown-item v-if="props.openRound" command="archive-succeeded">
+              归档轮次（成功）
+            </el-dropdown-item>
+            <el-dropdown-item v-if="props.openRound" command="archive-failed">
+              归档轮次（失败）
+            </el-dropdown-item>
+            <el-dropdown-item v-if="props.openRound" command="archive-stopped">
+              归档轮次（已停止）
+            </el-dropdown-item>
             <el-dropdown-item command="remove" divided><span class="cron-danger-action">删除任务</span></el-dropdown-item>
           </el-dropdown-menu>
         </template>

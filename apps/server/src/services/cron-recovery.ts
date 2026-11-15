@@ -51,7 +51,10 @@ export async function restoreCronOwners(deps: CronRecoveryDeps): Promise<CronRec
         deps.log?.(`未恢复 ${mapping.taskId}：owner 会话已不属于该工作区，任务保持暂停。`)
         continue
       }
-      await deps.client.update(service.port, mapping.taskId, { enabled: true })
+      await deps.client.update(service.port, mapping.taskId, {
+        enabled: true,
+        ownerSessionId: mapping.ownerSessionId,
+      })
       await deps.mappings.update(mapping.taskId, {
         pausedByServiceStop: false,
         ownerVerifiedAt: new Date().toISOString(),

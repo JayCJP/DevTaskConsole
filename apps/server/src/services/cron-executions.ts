@@ -1,4 +1,4 @@
-import { readFile, realpath } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { CronExecution, CronExecutionPage } from '@devtask/shared'
 import { ScheduledTaskClient, type ExecutionQuery } from './scheduled-tasks.js'
@@ -19,7 +19,7 @@ export interface ExecutionReadOptions {
 const executionsFileName = 'scheduled_task_executions.json'
 /** 本地文件最多读取的记录条数，避免超大文件拖慢请求 */
 const maximumFileRecords = 200
-/** 本地文件行数上限保护：超过该大小直接拒绝解析 */
+/** 本地文件体积上限：先用 stat 判定，超过该大小直接拒绝解析，避免把超大文件读进内存 */
 const maximumFileBytes = 8 * 1024 * 1024
 
 /**
@@ -62,7 +62,11 @@ export class CronExecutionReader {
           source: 'api' as const,
         }
       } catch (error) {
-        const fallback = await this.readFromFile(options, limit)
+        // 上游游标对本地文件没有意义，回退时从第一页开始，避免把上游 cursor 当 offset 解析出错页
+        const fallback = await this.readFromFile(
+          { ...options, query: { ...options.query, cursor: undefined } },
+          limit,
+        )
         return {
           ...fallback,
           warning: `实例执行记录接口不可用，已回退本地文件：${messageOf(error)}`,
@@ -74,6 +78,8 @@ export class CronExecutionReader {
 
   /**
    * 从本地 scheduled_task_executions.json 读取执行记录。
+   * 本地数据用数字游标（偏移量）分页，与前端「加载更多」保持一致；
+   * 游标无法解析时退回第一页，不重复也不报错。
    * @param options 任务标识与过滤条件
    * @param limit 分页大小
    * @returns 归一后的分页结果；文件缺失时返回空列表
@@ -84,14 +90,21 @@ export class CronExecutionReader {
     const filePath = await this.resolveFile(options.taskDirectory)
     if (!filePath) return { ...empty, warning: '本地执行记录文件不存在。' }
 
+    // 先看体积再读文件：避免把超大文件整体读进内存后才放弃解析
+    try {
+      const stats = await stat(filePath)
+      if (stats.size > maximumFileBytes) {
+        return { ...empty, warning: '本地执行记录文件过大，已跳过解析。' }
+      }
+    } catch (error) {
+      return { ...empty, warning: `本地执行记录文件读取失败：${messageOf(error)}` }
+    }
+
     let contents: string
     try {
       contents = await readFile(filePath, 'utf8')
     } catch (error) {
       return { ...empty, warning: `本地执行记录文件读取失败：${messageOf(error)}` }
-    }
-    if (contents.length > maximumFileBytes) {
-      return { ...empty, warning: '本地执行记录文件过大，已跳过解析。' }
     }
 
     let parsed: unknown
@@ -105,10 +118,14 @@ export class CronExecutionReader {
     const filtered = records
       .filter((record) => matchesQuery(record, options.query))
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+    const offset = parseFileCursor(options.query.cursor)
+    const executions = filtered.slice(offset, offset + limit)
+    const hasMore = filtered.length > offset + limit
     return {
-      executions: filtered.slice(0, limit),
-      hasMore: filtered.length > limit,
+      executions,
+      hasMore,
       source: 'file',
+      ...(hasMore ? { nextCursor: String(offset + limit) } : {}),
     }
   }
 
@@ -239,6 +256,18 @@ function matchesQuery(record: CronExecution, query: ExecutionQuery): boolean {
 function clampLimit(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 20
   return Math.min(100, Math.max(1, Math.trunc(value)))
+}
+
+/**
+ * 解析本地文件分页游标（偏移量）。
+ * 只接受纯数字，其它格式（例如上游 opaque 游标）一律视为第一页。
+ * @param cursor 游标原文
+ * @returns 合法的偏移量
+ */
+function parseFileCursor(cursor: string | undefined): number {
+  if (!cursor || !/^\d+$/.test(cursor)) return 0
+  const offset = Number(cursor)
+  return Number.isSafeInteger(offset) && offset > 0 ? offset : 0
 }
 
 /**

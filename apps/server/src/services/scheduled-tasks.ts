@@ -32,6 +32,16 @@ export interface RemoteScheduledTask {
   expiryDays?: number | null
 }
 
+/** Story 实例中的会话摘要，用于自动选择定时任务 owner */
+export interface CodeBuddySession {
+  /** 会话 ID */
+  id: string
+  /** 最近更新时间（毫秒时间戳） */
+  updatedAt?: number
+  /** 创建时间（毫秒时间戳） */
+  createdAt?: number
+}
+
 /** 执行记录查询条件 */
 export interface ExecutionQuery {
   /** 按状态过滤 */
@@ -91,9 +101,10 @@ export class ScheduledTaskClient {
 
   /**
    * 列出定时任务。
+   * 单条任务形状异常时跳过该条而不是整列表失败：一条脏数据不应让页面上所有任务消失。
    * @param port CodeBuddy 实例端口
    * @param query 可选的 session 过滤条件
-   * @returns 归一后的任务数组；响应无法识别任务数组时抛 502
+   * @returns 归一后的任务数组；响应整体无法识别任务数组时抛 502
    */
   async list(port: number, query: { sessionId?: string } = {}): Promise<RemoteScheduledTask[]> {
     const search = new URLSearchParams()
@@ -102,7 +113,12 @@ export class ScheduledTaskClient {
     const payload = await this.api.request(port, path, 'GET')
     const tasks = extractArray(payload, ['tasks', 'scheduledTasks'])
     if (!tasks) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid scheduled task list.')
-    return tasks.map((task) => toRemoteTask(task))
+    const parsed: RemoteScheduledTask[] = []
+    for (const task of tasks) {
+      const normalized = toRemoteTask(task)
+      if (normalized) parsed.push(normalized)
+    }
+    return parsed
   }
 
   /**
@@ -214,20 +230,76 @@ export class ScheduledTaskClient {
   }
 
   /**
+   * 列出 Story 工作区中的会话及活跃时间。
+   * @param port CodeBuddy 实例端口
+   * @param cwd 该 Story 的工作目录
+   * @returns 会话摘要数组
+   */
+  async listSessions(port: number, cwd: string): Promise<CodeBuddySession[]> {
+    const search = new URLSearchParams({ cwd })
+    const payload = await this.api.request(port, `/api/v1/sessions?${search}`, 'GET')
+    const container = extractRecord(payload, 'data') ?? payload
+    const sessions = isRecord(container) ? container.sessions : undefined
+    if (!Array.isArray(sessions)) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid session list.')
+    return sessions.flatMap((session) => {
+      if (!isRecord(session) || typeof session.id !== 'string' || !session.id) return []
+      const updatedAt = timestampOf(session.updatedAt)
+      const createdAt = timestampOf(session.createdAt)
+      return [{
+        id: session.id,
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
+        ...(createdAt !== undefined ? { createdAt } : {}),
+      }]
+    })
+  }
+
+  /**
    * 列出实例上的会话，用于校验 owner session 是否属于该 Story 工作区。
    * @param port CodeBuddy 实例端口
    * @param cwd 该 Story 的工作目录
    * @returns 会话 ID 数组
    */
   async listSessionIds(port: number, cwd: string): Promise<string[]> {
-    const search = new URLSearchParams({ cwd })
-    const payload = await this.api.request(port, `/api/v1/sessions?${search}`, 'GET')
+    return (await this.listSessions(port, cwd)).map((session) => session.id)
+  }
+
+  /**
+   * 读取实例当前活会话。
+   * @param port CodeBuddy 实例端口
+   * @returns 当前活会话 ID；没有活会话时返回 undefined
+   */
+  async getLiveSessionId(port: number): Promise<string | undefined> {
+    const payload = await this.api.request(port, '/api/v1/sessions/live', 'GET')
     const container = extractRecord(payload, 'data') ?? payload
-    const sessions = isRecord(container) ? container.sessions : undefined
-    if (!Array.isArray(sessions)) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid session list.')
-    return sessions
-      .map((session) => (isRecord(session) && typeof session.id === 'string' ? session.id : undefined))
-      .filter((id): id is string => id !== undefined)
+    return isRecord(container) && typeof container.sessionId === 'string' && container.sessionId
+      ? container.sessionId
+      : undefined
+  }
+
+  /**
+   * 解析定时任务应绑定的 Story 会话。
+   * 优先级：仍有效的显式绑定 → 当前活会话 → 最近活跃会话。
+   * @param port CodeBuddy 实例端口
+   * @param cwd Story 工作目录
+   * @param preferredSessionId 已保存的人工或原生绑定
+   * @returns 可用于 scheduled-tasks API 的 sessionId
+   */
+  async resolveSessionId(port: number, cwd: string, preferredSessionId?: string): Promise<string> {
+    const sessions = await this.listSessions(port, cwd)
+    if (preferredSessionId && sessions.some((session) => session.id === preferredSessionId)) return preferredSessionId
+    try {
+      const liveSessionId = await this.getLiveSessionId(port)
+      if (liveSessionId && sessions.some((session) => session.id === liveSessionId)) return liveSessionId
+    } catch {
+      // 活会话探测属于增强能力，不可用时仍能按最近活跃会话完成绑定
+    }
+    const [latest] = [...sessions].sort((left, right) => (
+      (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
+    ))
+    if (!latest) {
+      throw new CodeBuddyApiError(409, '当前 Story 实例没有可用会话，请先在实例页创建一个实例后再操作定时任务。')
+    }
+    return latest.id
   }
 }
 
@@ -268,14 +340,12 @@ function extractRecord(payload: unknown, key: string): Record<string, unknown> |
  * 把上游任务对象归一为 RemoteScheduledTask。
  * cron 字段兼容 `cron` 与 `schedule` 两种命名；时间字段兼容毫秒与 ISO 字符串。
  * @param value 上游任务对象
- * @returns 归一后的任务；缺少必要字段时抛 502
+ * @returns 归一后的任务；缺少必要字段时返回 undefined（由调用方跳过该条）
  */
-function toRemoteTask(value: unknown): RemoteScheduledTask {
-  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) {
-    throw new CodeBuddyApiError(502, 'CodeBuddy returned a scheduled task without a valid ID.')
-  }
+function toRemoteTask(value: unknown): RemoteScheduledTask | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
   const cron = typeof value.cron === 'string' ? value.cron : typeof value.schedule === 'string' ? value.schedule : undefined
-  if (!cron) throw new CodeBuddyApiError(502, `Scheduled task ${value.id} has no cron expression.`)
+  if (!cron) return undefined
   const nextRun = toIso(value.nextRun)
   const expiresAt = toIso(value.expiresAt)
   return {
@@ -334,6 +404,15 @@ function toIso(value: unknown): string | undefined {
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
   }
   return undefined
+}
+
+/**
+ * 解析会话时间字段为有限数字。
+ * @param value 上游时间字段
+ * @returns 毫秒时间戳；无效时返回 undefined
+ */
+function timestampOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

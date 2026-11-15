@@ -35,6 +35,19 @@ describe('ScheduledTaskClient', () => {
     await expect(new ScheduledTaskClient(api).list(60201)).rejects.toBeInstanceOf(CodeBuddyApiError)
   })
 
+  it('单条任务缺字段时只跳过该条，不让整列表失败', async () => {
+    const { api } = stubApi({
+      tasks: [
+        { id: 'task-1', cron: '15,45 * * * *' },
+        { cron: '15 * * * *' },
+        { id: 'task-3' },
+        { id: 'task-4', schedule: '7 * * * *' },
+      ],
+    })
+    const tasks = await new ScheduledTaskClient(api).list(60201)
+    expect(tasks.map((task) => task.id)).toEqual(['task-1', 'task-4'])
+  })
+
   it('创建任务只透传显式提供的字段', async () => {
     const { api, call } = stubApi({ id: 'task-new' })
     await new ScheduledTaskClient(api).create(60201, {
@@ -119,5 +132,38 @@ describe('ScheduledTaskClient', () => {
     const ids = await new ScheduledTaskClient(api).listSessionIds(60201, 'D:/workspace/repo')
     expect(call.mock.calls[0]?.[1]).toBe('/api/v1/sessions?cwd=D%3A%2Fworkspace%2Frepo')
     expect(ids).toEqual(['session-a', 'session-b'])
+  })
+
+  it('自动绑定优先保留有效绑定，其次使用当前活会话', async () => {
+    const request = vi.fn(async (_port: number, path: string) => {
+      if (path.startsWith('/api/v1/sessions?')) {
+        return { data: { sessions: [{ id: 'session-a' }, { id: 'session-b' }] } }
+      }
+      if (path === '/api/v1/sessions/live') return { data: { sessionId: 'session-a' } }
+      throw new Error(`unexpected path: ${path}`)
+    })
+    const client = new ScheduledTaskClient({ request } as unknown as CodeBuddyApi)
+    await expect(client.resolveSessionId(60201, 'D:/workspace/repo', 'session-b')).resolves.toBe('session-b')
+    await expect(client.resolveSessionId(60201, 'D:/workspace/repo')).resolves.toBe('session-a')
+  })
+
+  it('没有活会话时绑定最近活跃会话', async () => {
+    const request = vi.fn(async (_port: number, path: string) => {
+      if (path.startsWith('/api/v1/sessions?')) {
+        return {
+          data: {
+            sessions: [
+              { id: 'older', updatedAt: 100 },
+              { id: 'latest', updatedAt: 300 },
+              { id: 'middle', updatedAt: 200 },
+            ],
+          },
+        }
+      }
+      if (path === '/api/v1/sessions/live') throw new Error('no live session')
+      throw new Error(`unexpected path: ${path}`)
+    })
+    const client = new ScheduledTaskClient({ request } as unknown as CodeBuddyApi)
+    await expect(client.resolveSessionId(60201, 'D:/workspace/repo')).resolves.toBe('latest')
   })
 })

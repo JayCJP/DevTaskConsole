@@ -132,12 +132,13 @@ function uniqueApplications(identities: ApplicationIdentity[]): Map<string, { ap
 /**
  * 按仓库名在 GitLab 中精确匹配项目 ID（同一进程内缓存结果）。
  * 只有唯一精确同名匹配才返回 ID，多个或零个匹配都视为无法确定。
+ * 除了发布链路查询，工作区创建合并请求也复用这一定位规则，保证两处选中同一个 GitLab 项目。
  * @param gitlab GitLab 查询能力
  * @param repoName git 仓库名
  * @param cache 已解析结果缓存
  * @returns GitLab 项目 ID；无法确定时返回 undefined
  */
-async function resolveProjectIdByName(
+export async function resolveProjectIdByName(
   gitlab: GitLabLookup,
   repoName: string,
   cache: Map<string, number | undefined>,
