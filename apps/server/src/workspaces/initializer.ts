@@ -377,8 +377,10 @@ function consumeLines(stream: Readable, onLine: (line: string) => void): void {
 function addLog(job: WorkspaceInitializationJob, line: string): void {
   const stage = stageFromLine(line)
   if (stage) job.stage = stage
-  if (job.logs.length === maximumLogLines) {
-    job.logs.shift()
+  // 用 >= 并循环裁剪：历史版本在恰好 5000 行时会先删后插再追加，导致长度变成 5001，
+  // 之后的 === 判断永远不命中、日志无限增长；循环裁剪可一次性把已超限的日志收回上限
+  if (job.logs.length >= maximumLogLines) {
+    while (job.logs.length >= maximumLogLines) job.logs.shift()
     if (job.logs[0] !== '[Older output truncated.]') job.logs.unshift('[Older output truncated.]')
   }
   job.logs.push(line)

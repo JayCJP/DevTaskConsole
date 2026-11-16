@@ -72,6 +72,96 @@ describe('StoryServiceSupervisor', () => {
     await expect(supervisor.get('STORY-1')).resolves.toMatchObject({ status: 'failed', port: 60260 })
   })
 
+  it('启动后健康检查超时时结束进程并保留 PID', async () => {
+    dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-story-services-'))
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-workspaces-'))
+    let portBusy = false
+    const killProcessTree = vi.fn(async () => { portBusy = false })
+    const supervisor = new StoryServiceSupervisor({
+      dataDirectory,
+      portStart: 60280,
+      portEnd: 60280,
+      launch: async () => {
+        portBusy = true
+        return 5678
+      },
+      isPortAvailable: async () => !portBusy,
+      isHealthy: async () => false,
+      wait: async () => {},
+      startupTimeoutMs: 1,
+      killProcessTree,
+    })
+
+    await expect(supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow('startup timeout')
+    // 已拉起的进程必须被结束，否则端口一直被占用、停止与重启都无从下手
+    expect(killProcessTree).toHaveBeenCalledWith(5678, 'STORY-1')
+    await expect(supervisor.get('STORY-1')).resolves.toMatchObject({
+      status: 'failed',
+      pid: 5678,
+      error: expect.not.stringContaining('清理未完成'),
+    })
+  })
+
+  it('清理后端口仍未释放时保留 PID 并如实记录原因', async () => {
+    dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-story-services-'))
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-workspaces-'))
+    let portBusy = false
+    const supervisor = new StoryServiceSupervisor({
+      dataDirectory,
+      portStart: 60290,
+      portEnd: 60290,
+      launch: async () => { portBusy = true; return 6789 },
+      isPortAvailable: async () => !portBusy,
+      isHealthy: async () => false,
+      wait: async () => {},
+      startupTimeoutMs: 1,
+      stopTimeoutMs: 1,
+      killProcessTree: async () => {},
+    })
+
+    await expect(supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow('startup timeout')
+    await expect(supervisor.get('STORY-1')).resolves.toMatchObject({
+      status: 'failed',
+      pid: 6789,
+      error: expect.stringContaining('启动失败后进程清理未完成'),
+    })
+  })
+
+  it('重启后仍能以保留的 PID 停止残留进程', async () => {
+    dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-story-services-'))
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-workspaces-'))
+    let portBusy = false
+    const failing = new StoryServiceSupervisor({
+      dataDirectory,
+      portStart: 60300,
+      portEnd: 60300,
+      launch: async () => { portBusy = true; return 7890 },
+      isPortAvailable: async () => !portBusy,
+      isHealthy: async () => false,
+      wait: async () => {},
+      startupTimeoutMs: 1,
+      stopTimeoutMs: 1,
+      killProcessTree: async () => {},
+    })
+    await expect(failing.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow()
+
+    const restarted = new StoryServiceSupervisor({
+      dataDirectory,
+      portStart: 60300,
+      portEnd: 60300,
+      launch: async () => 1,
+      isPortAvailable: async () => !portBusy,
+      isHealthy: async () => false,
+      wait: async () => {},
+      stopTimeoutMs: 1,
+      killProcessTree: async (pid: number) => {
+        expect(pid).toBe(7890)
+        portBusy = false
+      },
+    })
+    await expect(restarted.stop('STORY-1')).resolves.toMatchObject({ status: 'stopped', pid: 7890 })
+  })
+
   it('restarts persisted unhealthy services with the configured backoff', async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-story-services-'))
     workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-workspaces-'))

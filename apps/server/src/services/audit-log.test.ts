@@ -35,16 +35,37 @@ describe('AuditLog', () => {
     expect(entries[0]?.reversible).toBe(false)
   })
 
-  it('支持标记撤销，且只能标记一次', async () => {
+  it('支持原子占用撤销，且只能占用一次', async () => {
     const directory = await createDirectory()
     const log = new AuditLog(directory)
     const entry = await log.record({ action: 'cron.toggle', target: 'task-1' })
 
-    const undone = await log.markUndone(entry.id)
+    const undone = await log.claimUndo(entry.id)
     expect(undone?.undone).toBe(true)
     expect(undone?.undoneAt).toBeDefined()
     expect((await log.find(entry.id))?.undone).toBe(true)
-    expect(await log.markUndone('missing')).toBeUndefined()
+    expect(await log.claimUndo(entry.id)).toBeNull()
+    expect(await log.claimUndo('missing')).toBeUndefined()
+  })
+
+  it('并发占用同一条目只有一个成功', async () => {
+    const directory = await createDirectory()
+    const log = new AuditLog(directory)
+    const entry = await log.record({ action: 'cron.owner', target: 'task-1' })
+    const results = await Promise.all([log.claimUndo(entry.id), log.claimUndo(entry.id)])
+    expect(results.filter((result) => result !== null && result !== undefined)).toHaveLength(1)
+    expect(results.filter((result) => result === null)).toHaveLength(1)
+  })
+
+  it('释放占用后可再次撤销，并记录失败原因', async () => {
+    const directory = await createDirectory()
+    const log = new AuditLog(directory)
+    const entry = await log.record({ action: 'cron.update', target: 'task-1' })
+    await log.claimUndo(entry.id)
+    const released = await log.releaseUndo(entry.id, '上游超时')
+    expect(released).toMatchObject({ undone: false, error: '上游超时' })
+    expect(released?.undoneAt).toBeUndefined()
+    await expect(log.claimUndo(entry.id)).resolves.toMatchObject({ undone: true })
   })
 
   it('条数超过上限时丢弃最旧记录', async () => {

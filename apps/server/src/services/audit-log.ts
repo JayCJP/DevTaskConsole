@@ -105,17 +105,44 @@ export class AuditLog {
   }
 
   /**
-   * 标记条目已撤销。
+   * 原子占用一次撤销：检查与置位在同一次串行操作内完成（CAS）。
+   * 撤销要先占用再执行上游操作，否则并发请求都能通过 undone 检查并重复执行撤销。
    * @param id 审计条目 ID
-   * @returns 更新后的条目；不存在时返回 undefined
+   * @param isReversible 额外校验：条目当前是否允许撤销
+   * @returns 占用成功返回更新后的条目；条目不存在返回 undefined；已被占用返回 null
    */
-  async markUndone(id: string): Promise<AuditEntry | undefined> {
+  async claimUndo(
+    id: string,
+    isReversible: (entry: AuditEntry) => boolean = () => true,
+  ): Promise<AuditEntry | undefined | null> {
     return this.serialize(async () => {
       const entries = await this.readAll()
       const index = entries.findIndex((entry) => entry.id === id)
       if (index < 0) return undefined
       const current = entries[index] as AuditEntry
+      if (current.undone || !isReversible(current)) return null
       const updated: AuditEntry = { ...current, undone: true, undoneAt: new Date().toISOString() }
+      const next = [...entries]
+      next[index] = updated
+      await this.writeAll(next)
+      return updated
+    })
+  }
+
+  /**
+   * 撤销执行失败时释放占用，让用户可以重试。
+   * @param id 审计条目 ID
+   * @param error 失败原因摘要
+   * @returns 释放后的条目；不存在时返回 undefined
+   */
+  async releaseUndo(id: string, error: string): Promise<AuditEntry | undefined> {
+    return this.serialize(async () => {
+      const entries = await this.readAll()
+      const index = entries.findIndex((entry) => entry.id === id)
+      if (index < 0) return undefined
+      const current = entries[index] as AuditEntry
+      const { undone: _undone, undoneAt: _undoneAt, ...rest } = current
+      const updated: AuditEntry = { ...rest, undone: false, error }
       const next = [...entries]
       next[index] = updated
       await this.writeAll(next)

@@ -162,10 +162,12 @@ export class StoryServiceSupervisor {
         throw new StoryServiceStopError(`Port ${service.port} was not released before the stop timeout.`)
       }
 
+      // 保留 pid：便于排查与「端口意外复活」时再次停止，避免丢失唯一可定位进程的线索
       const stopped: StoryService = {
         storyId: service.storyId,
         port: service.port,
         cwd: service.cwd,
+        ...(service.pid !== undefined ? { pid: service.pid } : {}),
         status: 'stopped',
         updatedAt: new Date().toISOString(),
       }
@@ -274,24 +276,63 @@ export class StoryServiceSupervisor {
         await this.upsert(services, service)
       }
 
+      // 已启动进程的 PID 必须在失败分支可见：局部变量 service 永远不会带上 pid
+      let launchedPid: number | undefined
       try {
-        const pid = await this.launch(service.cwd, service.port, service.storyId)
-        await this.upsert(services, { ...service, pid, updatedAt: new Date().toISOString() })
+        launchedPid = await this.launch(service.cwd, service.port, service.storyId)
+        service = { ...service, pid: launchedPid, updatedAt: new Date().toISOString() }
+        await this.upsert(services, service)
         await this.waitUntilHealthy(service.port)
-        const running = { ...service, pid, status: 'running' as const, updatedAt: new Date().toISOString() }
+        const running: StoryService = {
+          ...service,
+          pid: launchedPid,
+          status: 'running',
+          updatedAt: new Date().toISOString(),
+        }
         await this.upsert(services, running)
         return running
       } catch (error) {
+        const reason = error instanceof Error ? error.message : 'CodeBuddy service failed to start.'
+        // 启动失败（含健康检查超时）时必须清理已拉起的进程树，
+        // 否则端口一直被占用，停止流程无从下手，重启也会不断叠出新进程
+        const leftover = await this.cleanupFailedLaunch(service.port, launchedPid, service.storyId)
         const failed: StoryService = {
           ...service,
+          ...(launchedPid !== undefined ? { pid: launchedPid } : {}),
           status: 'failed',
           updatedAt: new Date().toISOString(),
-          error: error instanceof Error ? error.message : 'CodeBuddy service failed to start.',
+          error: leftover
+            ? `${reason} 启动失败后进程清理未完成：${leftover}`
+            : reason,
         }
         await this.upsert(services, failed)
         throw error
       }
     })
+  }
+
+  /**
+   * 清理启动失败后遗留的进程树。
+   * 端口已释放时直接跳过，避免误杀已被系统回收并复用的 PID。
+   * @param port 服务端口
+   * @param pid 已启动的进程 PID；未启动成功时为 undefined
+   * @param storyId Story 标识，供外部托管实现定位专属工作区
+   * @returns 清理失败时的原因；清理成功或无需清理时返回 undefined
+   */
+  private async cleanupFailedLaunch(
+    port: number,
+    pid: number | undefined,
+    storyId: string,
+  ): Promise<string | undefined> {
+    if (pid === undefined) return undefined
+    if (await this.isPortAvailable(port)) return undefined
+    try {
+      await this.killProcessTree(pid, storyId)
+    } catch (error) {
+      return `结束进程 ${pid} 失败（${error instanceof Error ? error.message : String(error)}）`
+    }
+    if (await this.waitUntilPortReleased(port)) return undefined
+    return `进程 ${pid} 已尝试结束，但端口 ${port} 仍未释放`
   }
 
   private async allocatePort(services: StoryService[]): Promise<number> {
@@ -490,6 +531,8 @@ function isStoryService(value: unknown): value is StoryService {
  */
 export async function killProcessTree(pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid process ID for Story service stop.')
+  // Windows 下 taskkill 对不存在的 PID 只会返回非 0 退出码；Unix 下进程已退出会返回 ESRCH。
+  // 两种情况都说明「目标进程已不在」，属于清理成功，不应让启动失败后的清理流程再抛错。
   await new Promise<void>((resolvePromise, reject) => {
     const windows = process.platform === 'win32'
     const command = windows ? 'taskkill' : 'kill'
@@ -501,7 +544,10 @@ export async function killProcessTree(pid: number): Promise<void> {
       reject(error)
       return
     }
-    child.once('error', reject)
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ESRCH') resolvePromise()
+      else reject(error)
+    })
     child.once('close', () => resolvePromise())
   })
 }

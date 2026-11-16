@@ -444,36 +444,29 @@ export function registerCronRoutes(app: FastifyInstance, deps: CronRouteDeps): v
       const service = await requireService(storyId)
       const mapping = await deps.mappings.find(params.data.taskId)
       const prompt = body.data.prompt ?? `/start fixbugs ${storyId}`
-      // 先登记冲突检查，再调用上游：避免上游创建成功但本地记不下轮次
-      const existing = await deps.dispatches.openFor(params.data.taskId)
-      if (existing) {
-        throw new RouteError(
-          409,
-          'CRON_DISPATCH_CONFLICT',
-          `该任务还有未归档轮次 ${existing.roundId}，请先归档再派发新一轮。`,
-        )
-      }
-      const job = await createJob(deps, service, {
-        prompt,
-        name: `定时任务派发 · ${located.cron.storyTitle ?? storyId}`,
+      // 先原子预占轮次（冲突检查与写入在同一次串行操作内完成），再调用上游创建 Job。
+      // 若先检查再创建，并发请求都会建出 Job，只有其中一个能登记，另一个变成无人跟踪的孤儿 Job
+      const reserved = await deps.dispatches.reserve({
+        taskId: params.data.taskId,
+        storyId,
+        ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
+        ...(body.data.label ? { label: body.data.label } : {}),
       })
-      let dispatch
+      let job
       try {
-        dispatch = await deps.dispatches.create({
-          taskId: params.data.taskId,
-          storyId,
-          ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
-          ...(job.id ? { jobId: job.id } : {}),
-          ...(body.data.label ? { label: body.data.label } : {}),
+        job = await createJob(deps, service, {
+          prompt,
+          name: `定时任务派发 · ${located.cron.storyTitle ?? storyId}`,
         })
       } catch (error) {
-        // 上游 Job 已经创建成功，本地登记失败时不能当成普通错误：必须告诉用户 Job 可能已在跑
-        throw new RouteError(
-          502,
-          'CRON_DISPATCH_REGISTER_FAILED',
-          `上游已创建 Job${job.id ? ` ${job.id}` : ''}，但本地轮次登记失败：${messageOf(error)}。`
-          + '请先在 CodeBuddy 侧确认该 Job 状态，再决定是否重试派发。',
-        )
+        // 上游未创建成功：把预占的轮次归档，避免这条任务被占住而无法重试
+        await deps.dispatches.archive(reserved.roundId, 'failed')
+        throw error
+      }
+      // 上游已建 Job 但未返回 ID 时轮次照常保留，由用户在 CodeBuddy 侧确认后再归档
+      let dispatch = reserved
+      if (job.id) {
+        dispatch = (await deps.dispatches.attachJob(reserved.roundId, job.id)) ?? reserved
       }
       await deps.audit.record({
         action: 'cron.dispatch',

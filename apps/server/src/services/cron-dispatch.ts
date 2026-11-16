@@ -73,11 +73,13 @@ export class CronDispatchStore {
   }
 
   /**
-   * 登记一次新派发。
+   * 原子预占一个轮次：检查未归档轮次与写入在同一次串行操作内完成。
+   * 调用方必须先预占、再创建上游 Job，否则并发请求都会先建 Job，
+   * 只有其中一个登记成功，另一个的 Job 就成了无人跟踪的孤儿。
    * @param input 派发信息
-   * @returns 新建的轮次
+   * @returns 新建的轮次（此时还没有 jobId）
    */
-  async create(input: CronDispatchInput): Promise<CronDispatch> {
+  async reserve(input: CronDispatchInput): Promise<CronDispatch> {
     return this.serialize(async () => {
       const dispatches = await this.list()
       const open = dispatches.find((dispatch) => dispatch.taskId === input.taskId && dispatch.state === 'open')
@@ -100,6 +102,29 @@ export class CronDispatchStore {
       }
       await this.writeAll([...dispatches, dispatch])
       return dispatch
+    })
+  }
+
+  /**
+   * 回填预占轮次的上游 Job ID。
+   * @param roundId 轮次 ID
+   * @param jobId 上游 Job ID
+   * @returns 更新后的轮次；轮次不存在时返回 undefined
+   */
+  async attachJob(roundId: string, jobId: string): Promise<CronDispatch | undefined> {
+    return this.serialize(async () => {
+      const dispatches = await this.list()
+      const index = dispatches.findIndex((dispatch) => dispatch.roundId === roundId)
+      if (index < 0) return undefined
+      const updated: CronDispatch = {
+        ...(dispatches[index] as CronDispatch),
+        jobId,
+        updatedAt: new Date().toISOString(),
+      }
+      const next = [...dispatches]
+      next[index] = updated
+      await this.writeAll(next)
+      return updated
     })
   }
 
