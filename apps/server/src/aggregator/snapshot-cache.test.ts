@@ -2,38 +2,10 @@ import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SNAPSHOT_CACHE_VERSION, SnapshotCache, type SnapshotCacheFile } from './snapshot-cache.js'
+import { SnapshotCache, type SnapshotCacheFile } from './snapshot-cache.js'
+import { FIXTURE_ROOT as root, makeCacheEntry as makeEntry } from './snapshot-cache.fixture.js'
 
-const root = 'D:\\test-branch'
 let directory: string
-
-/** 构造一份最小合法的缓存条目 */
-function makeEntry(overrides: Partial<SnapshotCacheFile> = {}): SnapshotCacheFile {
-  const channel = { fetchedAt: '2026-11-16T00:00:00.000Z', ok: true, stale: false }
-  return {
-    version: SNAPSHOT_CACHE_VERSION,
-    snapshotAt: '2026-11-16T00:00:00.000Z',
-    workspacesRoot: root,
-    segments: {
-      local: {
-        fetchedAt: '2026-11-16T00:00:00.000Z',
-        channel,
-        requirements: [],
-        harnessBugs: [],
-        openQuestions: [],
-        harnessActive: [],
-        workspaces: [],
-        localRootAvailable: true,
-      },
-      tapd: {
-        fetchedAt: '2026-11-16T00:00:00.000Z',
-        channel,
-        enrichment: {},
-      },
-    },
-    ...overrides,
-  }
-}
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'devtask-snapshot-cache-'))
@@ -66,7 +38,7 @@ describe('SnapshotCache', () => {
 
   it('discards entries with a mismatched version', async () => {
     const cache = new SnapshotCache(directory)
-    await cache.write(makeEntry({ version: 999 as SnapshotCacheFile['version'] }))
+    await cache.write(makeEntry({ overrides: { version: 999 as SnapshotCacheFile['version'] } }))
     expect(cache.read(root)).toBeUndefined()
   })
 

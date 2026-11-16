@@ -69,15 +69,26 @@ export function extractJobPrefs(payload: unknown): unknown {
 
 export class CodeBuddyApi {
   /**
-   * @param timeoutMs 单次请求超时；默认 30s，runtime 快照链路注入 3s 以封顶首屏等待
+   * @param defaultTimeoutMs 实例默认超时；默认 30s。ScheduledTaskClient 等封装调用方不传单次超时时用它，
+   * runtime 快照链路注入 3s 实例以封顶首屏等待
    */
-  constructor(private readonly timeoutMs = 30_000) {}
+  constructor(private readonly defaultTimeoutMs = 30_000) {}
 
+  /**
+   * 发起一次 CodeBuddy HTTP 请求。
+   * @param port 实例端口
+   * @param path 请求路径
+   * @param method HTTP 方法
+   * @param body 可选请求体
+   * @param timeoutMs 可选单次超时；缺省时用实例默认值
+   * @returns 解析后的响应
+   */
   async request(
     port: number,
     path: string,
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     body?: unknown,
+    timeoutMs = this.defaultTimeoutMs,
   ): Promise<unknown> {
     const response = await fetch(this.url(port, path), {
       method,
@@ -88,7 +99,7 @@ export class CodeBuddyApi {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: 'error',
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) throw new CodeBuddyApiError(response.status, `CodeBuddy request failed with HTTP ${response.status}.`)
     // 删除类接口（如 DELETE /scheduled-tasks/{id}）返回 204 且没有响应体

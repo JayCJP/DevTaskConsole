@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Snapshot } from '@devtask/shared'
-import { SNAPSHOT_CACHE_VERSION, type LocalSegment, type SnapshotCacheFile, type TapdSegment } from './snapshot-cache.js'
+import { type LocalSegment, type SnapshotCacheFile, type TapdSegment } from './snapshot-cache.js'
+import { FIXTURE_ROOT as root, makeCacheEntry as makeEntry } from './snapshot-cache.fixture.js'
 import { createCachedSnapshotProvider, type SnapshotBuildOptions, type SnapshotBuildResult, type SnapshotCacheStore } from './snapshot.js'
-
-const root = 'D:\\test-branch'
 
 /** 最小合法快照 */
 function emptySnapshot(at = '2026-11-16T00:00:00.000Z'): Snapshot {
@@ -18,22 +17,6 @@ function emptySnapshot(at = '2026-11-16T00:00:00.000Z'): Snapshot {
     inbox: [],
     jobs: [],
     crons: [],
-  }
-}
-
-function makeEntry(at = '2026-11-16T00:00:00.000Z'): SnapshotCacheFile {
-  const channel = { fetchedAt: at, ok: true, stale: false }
-  return {
-    version: SNAPSHOT_CACHE_VERSION,
-    snapshotAt: at,
-    workspacesRoot: root,
-    segments: {
-      local: {
-        fetchedAt: at, channel, requirements: [], harnessBugs: [], openQuestions: [], harnessActive: [],
-        workspaces: [], localRootAvailable: true,
-      },
-      tapd: { fetchedAt: at, channel, enrichment: {} },
-    },
   }
 }
 

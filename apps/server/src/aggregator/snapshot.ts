@@ -32,13 +32,25 @@ const gitLab = new GitLabAdapter()
 const devOps = new DevOpsAdapter()
 const storyServiceSupervisor = new StoryServiceSupervisor()
 const codeBuddyApi = new CodeBuddyApi()
-/** runtime 段专用短超时实例：把实例不可达时的首屏等待封顶在 3s，不影响其它调用方的 30s 默认值 */
-const runtimeCodeBuddyApi = new CodeBuddyApi(3_000)
-const runtimeCronClient = new ScheduledTaskClient(runtimeCodeBuddyApi)
+/** runtime 段单次请求超时：实例不可达时把首屏等待封顶在 3s，不影响其它调用方的 30s 默认值 */
+const RUNTIME_TIMEOUT_MS = 3_000
+/** ScheduledTaskClient 内部调用不透传单次超时，用短超时实例保证 cron 链路同样封顶 */
+const runtimeCronClient = new ScheduledTaskClient(new CodeBuddyApi(RUNTIME_TIMEOUT_MS))
 
 /** 连通性 / viewer 内存缓存有效期：冷启动必拉一次，60s 内复用，手动刷新强制失效 */
 const CONNECTIVITY_TTL_MS = 60_000
 let connectivityMemory: { at: number; value: ConnectivitySegment } | undefined
+
+/**
+ * 标记缓存段的 stale 状态，返回新对象（不改动入参）。
+ * 读取命中时置 true 如实反映数据来自缓存；写盘时置 false 保持缓存文件干净。
+ * @param segment 缓存段（local 或 tapd）
+ * @param stale 是否标记为陈旧
+ * @returns 带新 stale 标记的段
+ */
+function markStale<T extends { channel: ChannelState }>(segment: T, stale: boolean): T {
+  return { ...segment, channel: { ...segment.channel, stale } }
+}
 
 /**
  * 解析工作区扫描根目录。
@@ -295,7 +307,7 @@ export async function buildSnapshotResult(
   let localRebuilt = false
   if (!force && options.cachedLocal) {
     // 缓存命中：如实标记 stale，fetchedAt 保留原抓取时间
-    local = { ...options.cachedLocal, channel: { ...options.cachedLocal.channel, stale: true } }
+    local = markStale(options.cachedLocal, true)
   } else {
     local = await loadLocalSegment(snapshotAt, workspacesRoot)
     localRebuilt = true
@@ -304,12 +316,12 @@ export async function buildSnapshotResult(
   let tapd: TapdSegment
   let tapdRebuilt = false
   if (!force && options.cachedTapd) {
-    tapd = { ...options.cachedTapd, channel: { ...options.cachedTapd.channel, stale: true } }
+    tapd = markStale(options.cachedTapd, true)
   } else {
     const fresh = await loadTapdSegment(snapshotAt, local.requirements, force)
     if (!fresh.channel.ok && options.cachedTapd) {
       // force 重建失败但旧缓存可用：保留旧 TAPD 段，只更新 local 段（评审 Q12）
-      tapd = { ...options.cachedTapd, channel: { ...options.cachedTapd.channel, stale: true } }
+      tapd = markStale(options.cachedTapd, true)
     } else {
       tapd = fresh
       tapdRebuilt = true
@@ -381,8 +393,8 @@ export function createCachedSnapshotProvider(options: {
           workspacesRoot: options.workspacesRoot,
           // stale 是读取时的派生标记，写盘时复位，保持缓存文件干净
           segments: {
-            local: { ...result.segments.local, channel: { ...result.segments.local.channel, stale: false } },
-            tapd: { ...result.segments.tapd, channel: { ...result.segments.tapd.channel, stale: false } },
+            local: markStale(result.segments.local, false),
+            tapd: markStale(result.segments.tapd, false),
           },
         })
       } catch (error) {
@@ -658,7 +670,8 @@ async function loadCodeBuddySnapshot(
       }
       try {
         const query = new URLSearchParams({ all: '1', cwd: inspected.cwd })
-        const result = await runtimeCodeBuddyApi.request(inspected.port, `/api/v1/jobs?${query}`, 'GET')
+        // 显式传单次超时（方案 §3.8）：runtime 链路封顶 3s，不影响其它 30s 调用方
+        const result = await codeBuddyApi.request(inspected.port, `/api/v1/jobs?${query}`, 'GET', undefined, RUNTIME_TIMEOUT_MS)
         const parsed = jobSchema.array().safeParse(result)
         if (!parsed.success) throw new Error('CodeBuddy returned an invalid jobs response.')
         return { jobs: parsed.data.map((job) => ({ ...job, storyId: service.storyId })) as Job[], error: undefined }
