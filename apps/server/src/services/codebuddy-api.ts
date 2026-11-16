@@ -68,6 +68,11 @@ export function extractJobPrefs(payload: unknown): unknown {
 }
 
 export class CodeBuddyApi {
+  /**
+   * @param timeoutMs 单次请求超时；默认 30s，runtime 快照链路注入 3s 以封顶首屏等待
+   */
+  constructor(private readonly timeoutMs = 30_000) {}
+
   async request(
     port: number,
     path: string,
@@ -83,7 +88,7 @@ export class CodeBuddyApi {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(this.timeoutMs),
     })
     if (!response.ok) throw new CodeBuddyApiError(response.status, `CodeBuddy request failed with HTTP ${response.status}.`)
     // 删除类接口（如 DELETE /scheduled-tasks/{id}）返回 204 且没有响应体

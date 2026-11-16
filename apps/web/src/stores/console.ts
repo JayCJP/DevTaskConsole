@@ -12,6 +12,8 @@ export const useConsoleStore = defineStore('console', () => {
   const loaded = ref(false)
   /** 在途请求：按“是否强制刷新”分开去重，手动刷新不会被在途的增量刷新吞掉 */
   const inflight = new Map<boolean, Promise<void>>()
+  /** 已落地快照的时间戳：多请求并发时丢弃迟到的旧响应，避免覆盖刚同步的新数据 */
+  let appliedSnapshotAt = ''
 
   /**
    * 拉取控制台统一快照。
@@ -27,7 +29,11 @@ export const useConsoleStore = defineStore('console', () => {
       error.value = ''
       try {
         const payload: unknown = await apiRequest(force ? '/api/v1/snapshot?refresh=1' : '/api/v1/snapshot')
-        snapshot.value = snapshotSchema.parse(payload)
+        const parsed = snapshotSchema.parse(payload)
+        // force 与普通请求可并发（inflight 按 force 分 key）：只接受不早于已落地快照的响应
+        if (parsed.snapshotAt < appliedSnapshotAt) return
+        snapshot.value = parsed
+        appliedSnapshotAt = parsed.snapshotAt
         refreshedAt.value = new Date().toISOString()
       } catch (cause) {
         error.value = cause instanceof Error ? cause.message : 'Snapshot request failed.'

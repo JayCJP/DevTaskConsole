@@ -27,7 +27,14 @@ import {
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
-import { buildCronFacts, buildSnapshot, getWorkspacesRoot, type CronFacts } from './aggregator/snapshot.js'
+import {
+  buildCronFacts,
+  createCachedSnapshotProvider,
+  getWorkspacesRoot,
+  type CronFacts,
+  type SnapshotCacheStore,
+} from './aggregator/snapshot.js'
+import { SnapshotCache } from './aggregator/snapshot-cache.js'
 import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
 import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
@@ -73,8 +80,10 @@ import { restoreCronOwners } from './services/cron-recovery.js'
 export interface ServerOptions {
   token: string
   logger?: boolean
-  /** 快照构建器；`force` 为 true 时跳过 TAPD 增强字段缓存 */
+  /** 快照构建器；`force` 为 true 时强制重建缓存段并刷新连通性。注入后完全接管，不套磁盘缓存 */
   snapshotProvider?: (force?: boolean) => Promise<Snapshot>
+  /** 快照磁盘缓存；测试可注入内存替身 */
+  snapshotCache?: SnapshotCacheStore
   /** 只读定时任务事实的构建器，测试时可注入替身 */
   cronFactsProvider?: () => Promise<CronFacts>
   devOpsAdapter?: DevOpsAdapter
@@ -159,10 +168,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     await workspaceInitializer.flush()
     await mcpClientRegistry.close()
   })
-  // 多个页面/标签页可能同时请求快照：并发时共享同一次构建，避免重复打 TAPD/GitLab/DevOps
+  // 多个页面/标签页可能同时请求快照：并发时共享同一次构建，避免重复打 TAPD/GitLab/DevOps。
+  // 注入的 provider 直接单飞；默认 provider 先读写磁盘缓存再单飞，force/non-force 按参数分 key。
   const snapshotProvider = createSingleFlight(
     options.snapshotProvider
-      ?? ((force?: boolean) => buildSnapshot(workspacesRoot, { forceTapd: force === true })),
+      ?? createCachedSnapshotProvider({
+        workspacesRoot,
+        cache: options.snapshotCache ?? new SnapshotCache(),
+        logError: (message) => app.log.error({ code: 'SNAPSHOT_CACHE_WRITE_FAILED' }, message),
+      }),
   )
   // 定时任务只读事实：并发去重，且完全不触达上游系统
   const cronFactsProvider = createSingleFlight(

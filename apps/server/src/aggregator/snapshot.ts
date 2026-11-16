@@ -16,7 +16,7 @@ import {
 } from '@devtask/shared'
 import { DevOpsAdapter } from '../integrations/devops.js'
 import { GitLabAdapter } from '../integrations/gitlab.js'
-import { TapdAdapter } from '../integrations/tapd.js'
+import { TapdAdapter, mergeTapdEnrichment } from '../integrations/tapd.js'
 import { listWorkspaces } from '../workspaces/registry.js'
 import { readLocalHarness } from './local-harness.js'
 import { CodeBuddyApi } from '../services/codebuddy-api.js'
@@ -25,12 +25,20 @@ import { StoryServiceSupervisor } from '../services/story-service-supervisor.js'
 import { CronMappingStore, readLocalCrons } from './cron-data.js'
 import { mergeCronFacts, type CronRealtimeSource } from './cron-merge.js'
 import { buildWorkspacePipelines } from './workspace-pipelines.js'
+import { SNAPSHOT_CACHE_VERSION, type LocalSegment, type SnapshotCacheFile, type TapdSegment } from './snapshot-cache.js'
 
 const tapd = new TapdAdapter()
 const gitLab = new GitLabAdapter()
 const devOps = new DevOpsAdapter()
 const storyServiceSupervisor = new StoryServiceSupervisor()
 const codeBuddyApi = new CodeBuddyApi()
+/** runtime 段专用短超时实例：把实例不可达时的首屏等待封顶在 3s，不影响其它调用方的 30s 默认值 */
+const runtimeCodeBuddyApi = new CodeBuddyApi(3_000)
+const runtimeCronClient = new ScheduledTaskClient(runtimeCodeBuddyApi)
+
+/** 连通性 / viewer 内存缓存有效期：冷启动必拉一次，60s 内复用，手动刷新强制失效 */
+const CONNECTIVITY_TTL_MS = 60_000
+let connectivityMemory: { at: number; value: ConnectivitySegment } | undefined
 
 /**
  * 解析工作区扫描根目录。
@@ -45,72 +53,344 @@ export function getWorkspacesRoot(): string {
   return join(homedir(), 'devtask-workspaces')
 }
 
+/** 不缓存的连通性与身份段 */
+interface ConnectivitySegment {
+  gitlab: ChannelState
+  devops: ChannelState
+  viewer?: ViewerIdentity
+}
+
+/** 不缓存的 runtime 段：来自运行中 Story 实例的 jobs 与定时任务 */
+interface RuntimeSegment {
+  codebuddyChannel: ChannelState
+  cronsChannel: ChannelState
+  jobs: Job[]
+  crons: Snapshot['crons']
+}
+
+/** 快照构建参数 */
+export interface SnapshotBuildOptions {
+  /** 手动刷新：强制重建 local + tapd 两段并刷新连通性内存缓存 */
+  force?: boolean
+  /** 命中的本地段缓存；注入后跳过磁盘扫描 */
+  cachedLocal?: LocalSegment
+  /** 命中的 TAPD 段缓存；注入后跳过整个 TAPD 请求（含 checkConnection） */
+  cachedTapd?: TapdSegment
+}
+
+/** 快照构建结果：快照本体 + 本次实际使用的段，供调用方写回磁盘缓存 */
+export interface SnapshotBuildResult {
+  snapshot: Snapshot
+  segments: { local: LocalSegment; tapd: TapdSegment }
+  /** 各段本次是否发生重建（决定是否需要写盘） */
+  rebuilt: { local: boolean; tapd: boolean }
+}
+
 /**
- * 构建控制台统一快照。
+ * 加载本地扫描段：工作区 story 文件与 workspace 列表。
+ * 磁盘递归较慢但变更不频繁，是可缓存的慢段之一。
+ * @param fetchedAt 快照时间
  * @param workspacesRoot 工作区根目录
- * @param options.forceTapd 是否跳过 TAPD 增强字段缓存（手动刷新时使用）
- * @returns 快照
+ * @returns 本地段
  */
-export async function buildSnapshot(
-  workspacesRoot = getWorkspacesRoot(),
-  options: { forceTapd?: boolean } = {},
-): Promise<Snapshot> {
-  const snapshotAt = new Date().toISOString()
-  const localResult = await readLocalHarness(workspacesRoot)
-  const localRootAvailable = await directoryExists(workspacesRoot)
-  const workspaceScan = await loadWorkspaceScan(workspacesRoot)
+async function loadLocalSegment(fetchedAt: string, workspacesRoot: string): Promise<LocalSegment> {
+  const [localResult, localRootAvailable, workspaceScan] = await Promise.all([
+    readLocalHarness(workspacesRoot),
+    directoryExists(workspacesRoot),
+    loadWorkspaceScan(workspacesRoot),
+  ])
   const localErrors = [...localResult.errors, ...(workspaceScan.error ? [workspaceScan.error] : [])]
-  // GitLab/DevOps 只做连通性探测（设置页需要展示通道状态），不再拉取 MR/构建/分支数据
-  const [tapdResult, gitlabChannel, devopsChannel, codeBuddyResult, cronResult, viewer] = await Promise.all([
-    loadTapdSnapshot(snapshotAt, localResult.requirements, options.forceTapd === true),
-    checkGitLabConnection(snapshotAt),
-    checkDevOpsConnection(snapshotAt),
-    loadCodeBuddySnapshot(snapshotAt, workspacesRoot, localResult.requirements),
-    loadCronSnapshot(snapshotAt, workspacesRoot, localResult.requirements, workspaceScan.workspaces),
+  const channel: ChannelState = {
+    fetchedAt,
+    ok: localRootAvailable && localErrors.length === 0,
+    stale: false,
+    ...(!localRootAvailable
+      ? { error: `Workspaces root is not available: ${workspacesRoot}` }
+      : localErrors.length
+        ? { error: localErrors.join(' ') }
+        : {}),
+  }
+  return {
+    fetchedAt,
+    channel,
+    requirements: localResult.requirements,
+    harnessBugs: localResult.harnessBugs,
+    openQuestions: localResult.openQuestions,
+    harnessActive: localResult.harnessActive,
+    workspaces: workspaceScan.workspaces,
+    localRootAvailable,
+  }
+}
+
+/**
+ * 加载 TAPD 段：校验连通性后强制/复用拉取，导出原始增强字段而非整份需求数组。
+ * 只存 TAPD 侧字段，重组时以本地需求为骨架叠加，避免本地新增/删除被旧数组覆盖。
+ * @param fetchedAt 快照时间
+ * @param requirements 本地需求骨架
+ * @param force 是否强制穿透 TAPD 的 60s 内存缓存
+ * @returns TAPD 段
+ */
+async function loadTapdSegment(
+  fetchedAt: string,
+  requirements: Snapshot['requirements'],
+  force: boolean,
+): Promise<TapdSegment> {
+  const storyIds = [...new Set(requirements
+    .filter((item): item is Requirement & { tapdStoryId: string } =>
+      typeof item.tapdStoryId === 'string' && item.tapdStoryId.trim().length > 0)
+    .map((item) => item.tapdStoryId))]
+  try {
+    const configured = await tapd.checkConnection()
+    if (!configured) {
+      return {
+        fetchedAt,
+        channel: { fetchedAt: null, ok: false, stale: false, error: 'TAPD is not configured.' },
+        enrichment: {},
+      }
+    }
+    const data = await tapd.aggregate(requirements, { force })
+    const raw = tapd.exportRawEnrichment(storyIds)
+    const segmentAt = data.cachedAt ?? fetchedAt
+    return {
+      fetchedAt: segmentAt,
+      // 复用内存缓存时如实回传缓存时间并标记 stale，避免把 60 秒前的数据说成刚拉取
+      channel: { fetchedAt: segmentAt, ok: true, stale: data.cachedAt !== undefined },
+      enrichment: Object.fromEntries(raw),
+    }
+  } catch (error) {
+    return {
+      fetchedAt,
+      channel: {
+        fetchedAt,
+        ok: false,
+        stale: false,
+        error: error instanceof Error ? error.message : 'TAPD data request failed.',
+      },
+      enrichment: {},
+    }
+  }
+}
+
+/**
+ * 加载 runtime 段：并发查询 jobs 与定时任务，不缓存、每次请求实时拉。
+ * @param fetchedAt 快照时间
+ * @param workspacesRoot 工作区根目录
+ * @param requirements 本地需求
+ * @param workspaces 工作区摘要
+ * @returns runtime 段
+ */
+async function loadRuntimeSegment(
+  fetchedAt: string,
+  workspacesRoot: string,
+  requirements: Snapshot['requirements'],
+  workspaces: WorkspaceSummary[],
+): Promise<RuntimeSegment> {
+  const [codeBuddyResult, cronResult] = await Promise.all([
+    loadCodeBuddySnapshot(fetchedAt, workspacesRoot, requirements),
+    loadCronSnapshot(fetchedAt, workspacesRoot, requirements, workspaces),
+  ])
+  return {
+    codebuddyChannel: codeBuddyResult.channel,
+    cronsChannel: cronResult.channel,
+    jobs: codeBuddyResult.jobs,
+    crons: cronResult.crons,
+  }
+}
+
+/**
+ * 加载连通性与 viewer 段，60s 内存缓存；手动刷新强制刷新。
+ * GitLab/DevOps 的 checkConnection 是远端 HTTP（10s/30s），不能每次首屏都打。
+ * @param fetchedAt 快照时间
+ * @param force 是否强制刷新内存缓存
+ * @returns 连通性段
+ */
+async function loadConnectivitySegment(fetchedAt: string, force: boolean): Promise<ConnectivitySegment> {
+  const now = Date.now()
+  if (!force && connectivityMemory && now - connectivityMemory.at < CONNECTIVITY_TTL_MS) {
+    return connectivityMemory.value
+  }
+  const [gitlab, devops, viewer] = await Promise.all([
+    checkGitLabConnection(fetchedAt),
+    checkDevOpsConnection(fetchedAt),
     loadViewerIdentity(),
   ])
+  const value: ConnectivitySegment = { gitlab, devops, ...(viewer ? { viewer } : {}) }
+  connectivityMemory = { at: now, value }
+  return value
+}
+
+/**
+ * 纯组装：把 local / tapd / runtime / 连通性四段合成最终快照，不触达任何数据源。
+ * TAPD 增强字段按 tapdStoryId 叠加到本地需求骨架上，与 `mergeTapdEnrichment` 共用语义。
+ * @param params 四段与快照时间
+ * @returns 最终快照
+ */
+function assembleSnapshot(params: {
+  workspacesRoot: string
+  snapshotAt: string
+  local: LocalSegment
+  tapd: TapdSegment
+  runtime: RuntimeSegment
+  connectivity: ConnectivitySegment
+}): Snapshot {
+  const { workspacesRoot, snapshotAt, local, tapd, runtime, connectivity } = params
+  const merged = mergeTapdEnrichment(local.requirements, new Map(Object.entries(tapd.enrichment)))
   const channels: Record<string, ChannelState> = {
-    localHarness: {
-      fetchedAt: snapshotAt,
-      ok: localRootAvailable && localErrors.length === 0,
-      stale: false,
-      ...(!localRootAvailable
-        ? { error: `Workspaces root is not available: ${workspacesRoot}` }
-        : localErrors.length
-          ? { error: localErrors.join(' ') }
-          : {}),
-    },
-    tapd: tapdResult.channel,
-    gitlab: gitlabChannel,
-    devops: devopsChannel,
-    codebuddy: codeBuddyResult.channel,
-    crons: cronResult.channel,
+    localHarness: local.channel,
+    tapd: tapd.channel,
+    gitlab: connectivity.gitlab,
+    devops: connectivity.devops,
+    codebuddy: runtime.codebuddyChannel,
+    crons: runtime.cronsChannel,
   }
 
   // 流水线先算出来：收件箱与看板/流水线必须共用同一份 Story 识别结果，不能各算一套
   const pipelines = buildWorkspacePipelines({
     workspacesRoot,
-    workspaces: workspaceScan.workspaces,
-    requirements: tapdResult.requirements,
-    harnessActive: localResult.harnessActive,
-    crons: cronResult.crons,
-    jobs: codeBuddyResult.jobs,
+    workspaces: local.workspaces,
+    requirements: merged.requirements,
+    harnessActive: local.harnessActive,
+    crons: runtime.crons,
+    jobs: runtime.jobs,
   })
-  const inbox = buildInbox(pipelines.workspacePipelines, localResult)
+  const inbox = buildInbox(pipelines.workspacePipelines, {
+    requirements: local.requirements,
+    openQuestions: local.openQuestions,
+  })
 
   return {
     snapshotAt,
-    ...(viewer ? { viewer } : {}),
+    ...(connectivity.viewer ? { viewer: connectivity.viewer } : {}),
     channels,
-    requirements: tapdResult.requirements,
-    bugs: tapdResult.bugs,
-    harnessBugs: localResult.harnessBugs,
-    openQuestions: localResult.openQuestions,
-    harnessActive: localResult.harnessActive,
+    requirements: merged.requirements,
+    bugs: merged.bugs,
+    harnessBugs: local.harnessBugs,
+    openQuestions: local.openQuestions,
+    harnessActive: local.harnessActive,
     inbox,
-    jobs: codeBuddyResult.jobs,
-    crons: cronResult.crons,
+    jobs: runtime.jobs,
+    crons: runtime.crons,
     ...pipelines,
+  }
+}
+
+/**
+ * 构建快照并返回本次实际使用的段。
+ *
+ * local / tapd 命中缓存时直接复用（stale 标 true），否则重建；runtime 与连通性每次实时/走内存缓存。
+ * TAPD 强制重建失败但旧缓存可用时保留旧段，只更新 local 段。
+ *
+ * @param workspacesRoot 工作区根目录
+ * @param options 构建参数
+ * @returns 快照构建结果
+ */
+export async function buildSnapshotResult(
+  workspacesRoot = getWorkspacesRoot(),
+  options: SnapshotBuildOptions = {},
+): Promise<SnapshotBuildResult> {
+  const snapshotAt = new Date().toISOString()
+  const force = options.force === true
+
+  let local: LocalSegment
+  let localRebuilt = false
+  if (!force && options.cachedLocal) {
+    // 缓存命中：如实标记 stale，fetchedAt 保留原抓取时间
+    local = { ...options.cachedLocal, channel: { ...options.cachedLocal.channel, stale: true } }
+  } else {
+    local = await loadLocalSegment(snapshotAt, workspacesRoot)
+    localRebuilt = true
+  }
+
+  let tapd: TapdSegment
+  let tapdRebuilt = false
+  if (!force && options.cachedTapd) {
+    tapd = { ...options.cachedTapd, channel: { ...options.cachedTapd.channel, stale: true } }
+  } else {
+    const fresh = await loadTapdSegment(snapshotAt, local.requirements, force)
+    if (!fresh.channel.ok && options.cachedTapd) {
+      // force 重建失败但旧缓存可用：保留旧 TAPD 段，只更新 local 段（评审 Q12）
+      tapd = { ...options.cachedTapd, channel: { ...options.cachedTapd.channel, stale: true } }
+    } else {
+      tapd = fresh
+      tapdRebuilt = true
+    }
+  }
+
+  const [runtime, connectivity] = await Promise.all([
+    loadRuntimeSegment(snapshotAt, workspacesRoot, local.requirements, local.workspaces),
+    loadConnectivitySegment(snapshotAt, force),
+  ])
+
+  const snapshot = assembleSnapshot({ workspacesRoot, snapshotAt, local, tapd, runtime, connectivity })
+  return {
+    snapshot,
+    segments: { local, tapd },
+    rebuilt: { local: localRebuilt, tapd: tapdRebuilt },
+  }
+}
+
+/**
+ * 构建控制台统一快照（对外兼容入口）。
+ * @param workspacesRoot 工作区根目录
+ * @param options 构建参数
+ * @returns 快照
+ */
+export async function buildSnapshot(
+  workspacesRoot = getWorkspacesRoot(),
+  options: SnapshotBuildOptions = {},
+): Promise<Snapshot> {
+  return (await buildSnapshotResult(workspacesRoot, options)).snapshot
+}
+
+/** 缓存存储的最小接口，便于测试注入内存替身 */
+export interface SnapshotCacheStore {
+  read(workspacesRoot: string): SnapshotCacheFile | undefined
+  write(entry: SnapshotCacheFile): Promise<void>
+}
+
+/**
+ * 构造带磁盘缓存的快照 provider：普通请求命中 local+tapd 缓存直返，force 强制重建并写盘。
+ * runtime 与连通性不经过此缓存——它们由 `buildSnapshotResult` 每次实时/走内存缓存。
+ *
+ * @param options.workspacesRoot 工作区根目录
+ * @param options.cache 缓存存储（默认由调用方注入 SnapshotCache）
+ * @param options.build 快照构建器，测试可注入替身
+ * @param options.logError 写盘失败时的日志回调
+ * @returns 带缓存的 provider，接收 force 参数
+ */
+export function createCachedSnapshotProvider(options: {
+  workspacesRoot: string
+  cache: SnapshotCacheStore
+  build?: (root: string, buildOptions: SnapshotBuildOptions) => Promise<SnapshotBuildResult>
+  logError?: (message: string) => void
+}): (force?: boolean) => Promise<Snapshot> {
+  const build = options.build ?? buildSnapshotResult
+  return async (force = false) => {
+    // force 时也读缓存：TAPD 强拉失败要保留旧段（Q12）
+    const cached = options.cache.read(options.workspacesRoot)
+    const result = await build(options.workspacesRoot, {
+      force,
+      cachedLocal: cached?.segments.local,
+      cachedTapd: cached?.segments.tapd,
+    })
+    if (force || !cached || result.rebuilt.local || result.rebuilt.tapd) {
+      try {
+        await options.cache.write({
+          version: SNAPSHOT_CACHE_VERSION,
+          snapshotAt: result.snapshot.snapshotAt,
+          workspacesRoot: options.workspacesRoot,
+          // stale 是读取时的派生标记，写盘时复位，保持缓存文件干净
+          segments: {
+            local: { ...result.segments.local, channel: { ...result.segments.local.channel, stale: false } },
+            tapd: { ...result.segments.tapd, channel: { ...result.segments.tapd.channel, stale: false } },
+          },
+        })
+      } catch (error) {
+        // 缓存是加速手段，写盘失败不阻断刷新，只记日志（评审 Q3）
+        options.logError?.(`Failed to write snapshot cache: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return result.snapshot
   }
 }
 
@@ -269,7 +549,7 @@ async function loadCronSnapshot(
 
 /**
  * 从运行中的 Story 服务读取实时定时任务。
- * 单个 Story 失败只记录原因并跳过，不影响其它 Story 的数据。
+ * 并发查询所有服务并用短超时封顶；单个 Story 失败只记录原因并跳过，不影响其它 Story。
  * @param requirements 本地 Harness 需求
  * @param workspacesRoot 工作区根目录，用于核对服务 cwd 与 Story 归属是否仍然一致
  * @param localCrons 本地任务事实，提供已保存的 session 绑定
@@ -291,7 +571,6 @@ async function loadRealtimeCrons(
       errors: [error instanceof Error ? error.message : 'Story service registry could not be read.'],
     }
   }
-  const client = new ScheduledTaskClient(codeBuddyApi)
   await Promise.all(services.map(async (service) => {
     if (service.status !== 'running') return
     const inspected = await storyServiceSupervisor.inspect(service.storyId)
@@ -308,12 +587,12 @@ async function loadRealtimeCrons(
       const bound = localCrons.find((cron) => (
         cron.storyId === service.storyId && (cron.ownerSessionId || cron.sessionId)
       ))
-      const sessionId = await client.resolveSessionId(
+      const sessionId = await runtimeCronClient.resolveSessionId(
         inspected.port,
         inspected.cwd,
         bound?.ownerSessionId ?? bound?.sessionId,
       )
-      const tasks = await client.list(inspected.port, { sessionId })
+      const tasks = await runtimeCronClient.list(inspected.port, { sessionId })
       sources.push({
         storyId: service.storyId,
         ...(workspacePath ? { workspacePath } : {}),
@@ -340,50 +619,58 @@ function sameWorkspace(left: string, right: string): boolean {
   return normalize(left) === normalize(right)
 }
 
+/**
+ * 从运行中的 Story 服务并发拉取 jobs；单服务失败只记原因，不影响其它服务。
+ * @param fetchedAt 快照时间
+ * @param workspacesRoot 工作区根目录
+ * @param requirements 本地需求
+ * @returns 通道状态与 jobs
+ */
 async function loadCodeBuddySnapshot(
   fetchedAt: string,
   workspacesRoot: string,
   requirements: Snapshot['requirements'],
 ): Promise<{ channel: ChannelState; jobs: Job[] }> {
-  const jobs: Job[] = []
-  const errors: string[] = []
   try {
     const services = await storyServiceSupervisor.list()
     if (!services.length) {
       return {
         channel: { fetchedAt: null, ok: false, stale: false, error: 'No Story services have been started yet.' },
-        jobs,
+        jobs: [],
       }
     }
-    for (const service of services) {
+    // 并发拉取所有服务，单服务耗时不再累加；短超时实例把最坏等待封顶在 3s
+    const results = await Promise.all(services.map(async (service) => {
       const requirement = requirements.find((item) => item.storyId === service.storyId)
       if (!requirement?.workspacePath) {
-        errors.push(`Story service ${service.storyId} has no associated workspace in the current snapshot.`)
-        continue
+        return { jobs: [] as Job[], error: `Story service ${service.storyId} has no associated workspace in the current snapshot.` }
       }
       const expectedCwd = resolve(workspacesRoot, requirement.workspacePath)
-      const sameWorkspace = process.platform === 'win32'
+      const isSameWorkspace = process.platform === 'win32'
         ? resolve(service.cwd).toLowerCase() === expectedCwd.toLowerCase()
         : resolve(service.cwd) === expectedCwd
-      if (!sameWorkspace) {
-        errors.push(`Story service ${service.storyId} workspace mapping no longer matches the snapshot.`)
-        continue
+      if (!isSameWorkspace) {
+        return { jobs: [] as Job[], error: `Story service ${service.storyId} workspace mapping no longer matches the snapshot.` }
       }
       const inspected = await storyServiceSupervisor.inspect(service.storyId)
       if (!inspected || inspected.status !== 'running') {
-        errors.push(inspected?.error ?? `Story service ${service.storyId} is unavailable.`)
-        continue
+        return { jobs: [] as Job[], error: inspected?.error ?? `Story service ${service.storyId} is unavailable.` }
       }
       try {
         const query = new URLSearchParams({ all: '1', cwd: inspected.cwd })
-        const result = await codeBuddyApi.request(inspected.port, `/api/v1/jobs?${query}`, 'GET')
+        const result = await runtimeCodeBuddyApi.request(inspected.port, `/api/v1/jobs?${query}`, 'GET')
         const parsed = jobSchema.array().safeParse(result)
         if (!parsed.success) throw new Error('CodeBuddy returned an invalid jobs response.')
-        jobs.push(...parsed.data.map((job) => ({ ...job, storyId: service.storyId })))
+        return { jobs: parsed.data.map((job) => ({ ...job, storyId: service.storyId })) as Job[], error: undefined }
       } catch (error) {
-        errors.push(error instanceof Error ? `${service.storyId}: ${error.message}` : `${service.storyId}: job listing failed.`)
+        return {
+          jobs: [] as Job[],
+          error: error instanceof Error ? `${service.storyId}: ${error.message}` : `${service.storyId}: job listing failed.`,
+        }
       }
-    }
+    }))
+    const jobs = results.flatMap((result) => result.jobs)
+    const errors = results.flatMap((result) => result.error ? [result.error] : [])
     return {
       channel: {
         fetchedAt,
@@ -401,7 +688,7 @@ async function loadCodeBuddySnapshot(
         stale: false,
         error: error instanceof Error ? error.message : 'CodeBuddy service registry could not be read.',
       },
-      jobs,
+      jobs: [],
     }
   }
 }
@@ -481,45 +768,6 @@ async function loadWorkspaceScan(
     return {
       workspaces: [],
       error: error instanceof Error ? error.message : 'Workspace scan failed.',
-    }
-  }
-}
-
-async function loadTapdSnapshot(
-  fetchedAt: string,
-  requirements: Snapshot['requirements'],
-  forceTapd: boolean,
-): Promise<{ channel: ChannelState; requirements: Snapshot['requirements']; bugs: Snapshot['bugs'] }> {
-  try {
-    const configured = await tapd.checkConnection()
-    if (!configured) {
-      return {
-        channel: { fetchedAt: null, ok: false, stale: false, error: 'TAPD is not configured.' },
-        requirements,
-        bugs: [],
-      }
-    }
-    const data = await tapd.aggregate(requirements, { force: forceTapd })
-    return {
-      channel: {
-        // 复用缓存时如实回传缓存时间并标记 stale，避免把 60 秒前的数据说成刚拉取
-        fetchedAt: data.cachedAt ?? fetchedAt,
-        ok: true,
-        stale: data.cachedAt !== undefined,
-      },
-      requirements: data.requirements,
-      bugs: data.bugs,
-    }
-  } catch (error) {
-    return {
-      channel: {
-        fetchedAt,
-        ok: false,
-        stale: false,
-        error: error instanceof Error ? error.message : 'TAPD data request failed.',
-      },
-      requirements,
-      bugs: [],
     }
   }
 }

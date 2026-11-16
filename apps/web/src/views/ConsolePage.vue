@@ -290,12 +290,13 @@ const cronQuery = ref('')
 /** 定时任务状态筛选 */
 const cronStatusFilter = ref<'all' | 'enabled' | 'paused' | 'attention'>('all')
 /** 派发轮次：用于展示未归档轮次并提供归档入口 */
-const cronDispatches = useCronDispatches(async () => { await store.refresh() })
+// cron 写操作会改变本地任务/轮次，发 force 让服务端重建 local 段；runtime 本就实时
+const cronDispatches = useCronDispatches(async () => { await store.refresh(true) })
 /** 定时任务写操作：乐观更新、失败回滚与撤销提示 */
 const cronActions = useCronActions({
   // 写操作会改变任务与轮次状态，两者都要刷新
   onRefresh: async () => {
-    await store.refresh()
+    await store.refresh(true)
     await cronDispatches.refresh()
   },
   onError: (message: string) => { cronError.value = message },
@@ -317,7 +318,7 @@ const cronEditorError = ref('')
 /** 审计抽屉开关 */
 const auditOpen = ref(false)
 /** 审计流水与撤销 */
-const auditTrail = useAuditTrail(async () => { await store.refresh() })
+const auditTrail = useAuditTrail(async () => { await store.refresh(true) })
 /* 组合式函数返回的 ref 需要顶层绑定，模板才会自动解包 */
 /** 执行记录列表 */
 const cronExecutionRows = cronExecutions.executions
@@ -1095,7 +1096,7 @@ async function submitCronEditor(payload: { cron: string; prompt?: string; mode?:
         expiryDays: 30,
       }),
     })
-    await store.refresh()
+    await store.refresh(true)
     await cronDispatches.refresh()
     cronEditorOpen.value = false
     // 上游创建成功但缺少归属配置时必须告知用户，否则任务会静默地没有 owner
@@ -1783,7 +1784,8 @@ function pollWorkspaceJob(jobId: string): void {
       )
       if (workspaceJob.value.status === 'running') pollWorkspaceJob(jobId)
       else if (workspaceJob.value.status === 'succeeded') {
-        await Promise.all([store.refresh(), refreshWorkspaces()])
+        // 工作区初始化改了本地扫描结果，发 force 重建 local 段
+        await Promise.all([store.refresh(true), refreshWorkspaces()])
       }
     } catch (cause) {
       workspaceError.value = cause instanceof Error ? cause.message : 'Unable to read initialization progress.'

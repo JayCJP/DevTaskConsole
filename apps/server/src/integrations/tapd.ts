@@ -24,7 +24,7 @@ export interface TapdAggregateResult {
 }
 
 /** TAPD 侧返回、可缓存到需求上的增强字段 */
-interface StoryEnrichment {
+export interface StoryEnrichment {
   title?: string
   status?: string
   priority?: string
@@ -34,9 +34,48 @@ interface StoryEnrichment {
   bugReopened?: number
 }
 
+/** 单个 TAPD Story 的原始缓存条目：增强字段 + 关联缺陷（缺陷不含 storyId） */
+export interface TapdStoryCacheEntry {
+  enrichment: StoryEnrichment
+  bugs: Array<Omit<Bug, 'storyId'>>
+}
+
 interface RelatedBug {
   bugId: string
   storyId?: string
+}
+
+/**
+ * 用 TAPD 原始增强字段合并本地需求骨架，并派生关联缺陷。
+ *
+ * 始终以传入的本地需求为骨架，只对带 `tapdStoryId` 的需求叠加 TAPD 字段，
+ * 因此本地新增/删除需求立即生效，不会被旧的 TAPD 数组覆盖。
+ * 该函数是纯函数——`aggregate()` 与快照磁盘缓存命中时的重组共用同一套合并语义。
+ *
+ * @param requirements 本地需求骨架
+ * @param enrichment tapdStoryId → 原始增强字段与缺陷
+ * @returns 增强后的需求与关联缺陷
+ */
+export function mergeTapdEnrichment(
+  requirements: Requirement[],
+  enrichment: ReadonlyMap<string, TapdStoryCacheEntry>,
+): { requirements: Requirement[]; bugs: Bug[] } {
+  const bugs: Bug[] = []
+  const seenBugs = new Set<string>()
+  const enrichedRequirements = requirements.map((requirement) => {
+    const tapdStoryId = requirement.tapdStoryId
+    if (!tapdStoryId) return requirement
+    const cached = enrichment.get(tapdStoryId)
+    if (!cached) return { ...requirement, tapdWorkspaceId }
+    for (const bug of cached.bugs) {
+      const key = `${requirement.storyId}:${bug.id}`
+      if (seenBugs.has(key)) continue
+      seenBugs.add(key)
+      bugs.push({ ...bug, storyId: requirement.storyId })
+    }
+    return { ...requirement, tapdWorkspaceId, ...cached.enrichment }
+  })
+  return { requirements: enrichedRequirements, bugs }
 }
 
 interface StoryDetails {
@@ -132,32 +171,40 @@ export class TapdAdapter {
       }
     }
 
-    const bugs: Bug[] = []
-    const seenBugs = new Set<string>()
+    // 从内存缓存取出原始增强字段，统一走纯函数合并——与快照缓存命中时的重组共用同一套语义
+    const raw = this.exportRawEnrichment(storyIds)
+    const merged = mergeTapdEnrichment(requirements, raw)
     const cacheTimes: number[] = []
     // 本次刚拉取过的 ID 不算“复用缓存”，否则会把新鲜数据误标成 stale
     const fetchedStoryIds = new Set(staleStoryIds)
-    const enrichedRequirements = requirements.map((requirement) => {
-      const tapdStoryId = requirement.tapdStoryId
-      if (!tapdStoryId) return requirement
-      const cached = this.enrichmentCache.get(tapdStoryId)
-      if (!cached) return { ...requirement, tapdWorkspaceId }
-      // 记录实际复用的缓存时间，供快照如实标注数据新鲜度
-      if (!fetchedStoryIds.has(tapdStoryId)) cacheTimes.push(cached.at)
-      for (const bug of cached.bugs) {
-        const key = `${requirement.storyId}:${bug.id}`
-        if (seenBugs.has(key)) continue
-        seenBugs.add(key)
-        bugs.push({ ...bug, storyId: requirement.storyId })
+    for (const storyId of raw.keys()) {
+      if (!fetchedStoryIds.has(storyId)) {
+        const entry = this.enrichmentCache.get(storyId)
+        if (entry) cacheTimes.push(entry.at)
       }
-      return { ...requirement, tapdWorkspaceId, ...cached.enrichment }
-    })
+    }
     return {
-      requirements: enrichedRequirements,
-      bugs,
+      requirements: merged.requirements,
+      bugs: merged.bugs,
       // 有任一需求复用了缓存，就按最早的那次时间标注
       ...(cacheTimes.length ? { cachedAt: new Date(Math.min(...cacheTimes)).toISOString() } : {}),
     }
+  }
+
+  /**
+   * 导出指定 Story 的 TAPD 原始增强字段（不含 `at`），供快照磁盘缓存持久化。
+   * 只导出当前内存缓存中确实存在的条目；未缓存的请求 ID 会被忽略。
+   *
+   * @param storyIds 需要导出的 TAPD Story ID 列表
+   * @returns tapdStoryId → 原始增强字段与缺陷
+   */
+  exportRawEnrichment(storyIds: string[]): Map<string, TapdStoryCacheEntry> {
+    const result = new Map<string, TapdStoryCacheEntry>()
+    for (const storyId of storyIds) {
+      const cached = this.enrichmentCache.get(storyId)
+      if (cached) result.set(storyId, { enrichment: cached.enrichment, bugs: cached.bugs })
+    }
+    return result
   }
 
   /**
