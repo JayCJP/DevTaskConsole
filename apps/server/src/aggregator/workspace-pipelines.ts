@@ -1,11 +1,8 @@
 import { isAbsolute, resolve } from 'node:path'
 import type {
-  Branch,
-  Build,
   Cron,
   HarnessActive,
   Job,
-  MergeRequest,
   Requirement,
   WorkspacePipeline,
   WorkspacePipelineStory,
@@ -20,9 +17,6 @@ export interface WorkspacePipelineInput {
   workspaces: WorkspaceSummary[]
   requirements: Requirement[]
   harnessActive: HarnessActive[]
-  mergeRequests: MergeRequest[]
-  builds: Build[]
-  branches: Branch[]
   crons: Cron[]
   jobs: Job[]
 }
@@ -48,17 +42,15 @@ export function buildWorkspacePipelines(input: WorkspacePipelineInput): Workspac
   const activeStoryIds = new Set(input.harnessActive.map((active) => active.storyId))
   const jobsByStory = groupByStory(input.jobs)
   const cronsByStory = groupByStory(input.crons)
-  const mergeRequestsByStory = groupByStory(input.mergeRequests)
 
   /**
-   * 构造 Story 节点：挂上属于它的合并请求、定时任务和实例。
+   * 构造 Story 节点：挂上属于它的定时任务和实例。
    * @param requirement 被选中的需求
    * @returns 工作区流水线中的 Story 节点
    */
   const toStory = (requirement: Requirement): WorkspacePipelineStory => ({
     requirement,
     harnessActive: activeStoryIds.has(requirement.storyId),
-    mergeRequests: mergeRequestsByStory.get(requirement.storyId) ?? [],
     crons: cronsByStory.get(requirement.storyId) ?? [],
     jobs: jobsByStory.get(requirement.storyId) ?? [],
   })
@@ -92,16 +84,6 @@ export function buildWorkspacePipelines(input: WorkspacePipelineInput): Workspac
         : {}),
       ...(story ? { story } : {}),
       storyCandidates: candidates.length,
-      // 合并请求 = 该 Story 的 MR + 第一个项目当前分支上的 MR（去重）
-      mergeRequests: primary
-        ? uniqueMergeRequests([
-            ...(storyId ? mergeRequestsByStory.get(storyId) ?? [] : []),
-            ...input.mergeRequests.filter((mergeRequest) =>
-              !mergeRequest.storyId && branchMatches(mergeRequest.sourceBranch, primary.branch)),
-          ])
-        : [],
-      builds: primary ? input.builds.filter((build) => build.app === primary.name) : [],
-      branches: primary ? input.branches.filter((branch) => branch.app === primary.name) : [],
       // 定时任务 = 该 Story 的任务 + 该项目目录下未关联 Story 的任务
       crons: primary
         ? uniqueCrons([
@@ -166,7 +148,7 @@ function normalizePath(path: string | undefined): string | undefined {
 
 /**
  * 按 Story ID 对带可选 storyId 的事实分组。
- * @param items 带 storyId 的事实（MR / 定时任务 / 实例）
+ * @param items 带 storyId 的事实（定时任务 / 实例）
  * @returns Story ID 到事实数组的映射
  */
 function groupByStory<T extends { storyId?: string }>(items: T[]): Map<string, T[]> {
@@ -176,21 +158,6 @@ function groupByStory<T extends { storyId?: string }>(items: T[]): Map<string, T
     grouped.set(item.storyId, [...(grouped.get(item.storyId) ?? []), item])
   }
   return grouped
-}
-
-/**
- * 合并请求按项目 + 编号去重，避免 Story 归属与分支归属重复计数。
- * @param mergeRequests 合并请求列表
- * @returns 去重后的列表
- */
-function uniqueMergeRequests(mergeRequests: MergeRequest[]): MergeRequest[] {
-  const seen = new Set<string>()
-  return mergeRequests.filter((mergeRequest) => {
-    const key = `${mergeRequest.projectId}:${mergeRequest.id}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 /**
@@ -205,14 +172,4 @@ function uniqueCrons(crons: Cron[]): Cron[] {
     seen.add(cron.id)
     return true
   })
-}
-
-/**
- * 判断合并请求的源分支是否就是项目当前分支。
- * @param sourceBranch 合并请求源分支
- * @param branch 项目当前分支
- * @returns 是否匹配
- */
-function branchMatches(sourceBranch: string, branch: string | undefined): boolean {
-  return Boolean(branch) && sourceBranch === branch
 }

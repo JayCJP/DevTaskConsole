@@ -43,17 +43,6 @@ describe('snapshot schema tolerance', () => {
       inbox: [],
       jobs: [],
       crons: [],
-      builds: [{ id: '1', app: 'web', succeed: true, buildDate: '2026-11-14T09:33:11+08:00' }],
-      branches: [{ app: 'web', name: 'origin/dev', lastCommitTime: '2026-11-14T09:33:11+08:00' }],
-      mergeRequests: [{
-        projectId: 1,
-        id: '2',
-        title: 'MR',
-        sourceBranch: 'feat/x',
-        targetBranch: 'dev',
-        state: 'merged',
-        mergedAt: '2026-11-11T12:16:22.144+08:00',
-      }],
     }
 
     expect(snapshotSchema.safeParse(snapshot).success).toBe(true)

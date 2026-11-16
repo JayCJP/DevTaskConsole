@@ -22,8 +22,6 @@ const emptySnapshot: Snapshot = {
   inbox: [],
   jobs: [],
   crons: [],
-  builds: [],
-  mergeRequests: [],
 }
 
 let dataDirectory: string

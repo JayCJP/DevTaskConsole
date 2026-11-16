@@ -25,8 +25,6 @@ beforeEach(() => {
       inbox: [],
       jobs: [],
       crons: [],
-      builds: [],
-      mergeRequests: [],
     }),
   })
 })

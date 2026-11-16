@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Document, FolderOpened, Promotion, Share, Timer } from '@element-plus/icons-vue'
-import type { Build, MergeRequest, Requirement, WorkspacePipeline } from '@devtask/shared'
+import { Document, FolderOpened, Timer } from '@element-plus/icons-vue'
+import type { Requirement, WorkspacePipeline } from '@devtask/shared'
 
 /**
- * 流水线可视化：一个工作区一条水平轨道，节点依次为 工作区 → Story → MR → 构建 → 定时。
+ * 流水线可视化：一个工作区一条水平轨道，节点依次为 工作区 → Story → 定时。
  * 只读展示源系统状态；节点点击只做跳转，不推进流程。
  */
 const props = defineProps<{ pipelines: WorkspacePipeline[] }>()
 
 const emit = defineEmits<{
   (event: 'open-story', requirement: Requirement): void
-  (event: 'open-merge-request', mergeRequest: MergeRequest): void
-  (event: 'open-build', build: Build): void
   (event: 'go-crons'): void
 }>()
 
@@ -20,7 +18,7 @@ const emit = defineEmits<{
 type StageTone = 'ready' | 'active' | 'empty' | 'danger'
 
 interface FlowStage {
-  key: 'workspace' | 'story' | 'mr' | 'build' | 'cron'
+  key: 'workspace' | 'story' | 'cron'
   label: string
   value: string
   hint: string
@@ -45,18 +43,12 @@ interface FlowRow {
   storyId?: string
   phase?: number
   requirement?: Requirement
-  mergeRequest?: MergeRequest
-  build?: Build
   stages: FlowStage[]
 }
 
 const rows = computed<FlowRow[]>(() => props.pipelines.map((pipeline) => {
   const story = pipeline.story
   const requirement = story?.requirement
-  // MR 数量与可点击的 MR 必须来自同一来源，否则会出现「0 个 MR 却能点进去」的矛盾展示
-  const storyMergeRequests = story?.mergeRequests ?? pipeline.mergeRequests
-  const mergeRequest = storyMergeRequests[0]
-  const build = pipeline.builds[0]
   const nextRun = pipeline.crons.find((cron) => cron.nextRun)?.nextRun
   const project = pipeline.primaryProject
 
@@ -77,24 +69,6 @@ const rows = computed<FlowRow[]>(() => props.pipelines.map((pipeline) => {
       hint: requirement ? requirement.storyId : '等待 plans',
       tone: story ? (story.harnessActive ? 'active' : 'ready') : 'empty',
       target: Boolean(requirement),
-    },
-    {
-      key: 'mr',
-      label: '合并请求',
-      // 同理：没有 MR 数据时不写 0，避免「一个都没有」与「没查」混在一起
-      value: mergeRequest ? String(storyMergeRequests.length) : '—',
-      hint: mergeRequestHint(mergeRequest),
-      tone: storyMergeRequests.length ? 'ready' : 'empty',
-      target: Boolean(mergeRequest),
-    },
-    {
-      key: 'build',
-      label: '构建',
-      // 没有构建数据时不给数字：显示 0 会被读成「构建了 0 次」，与「拿不到数据」混为一谈
-      value: build ? String(pipeline.builds.length) : '—',
-      hint: buildHint(build),
-      tone: build ? (build.succeed === false ? 'danger' : build.succeed ? 'ready' : 'active') : 'empty',
-      target: Boolean(build),
     },
     {
       key: 'cron',
@@ -120,40 +94,9 @@ const rows = computed<FlowRow[]>(() => props.pipelines.map((pipeline) => {
     ...(requirement ? { storyId: requirement.storyId } : {}),
     ...(requirement ? { phase: requirement.phase } : {}),
     ...(requirement ? { requirement } : {}),
-    ...(mergeRequest ? { mergeRequest } : {}),
-    ...(build ? { build } : {}),
     stages,
   }
 }))
-
-/** 合并请求状态的中文映射；未收录的状态回落到原文，并交给调用方补「未知」提示 */
-const mergeRequestStateLabels: Record<string, string> = {
-  opened: '待合并',
-  merged: '已合并',
-  closed: '已关闭',
-  locked: '已锁定',
-}
-
-/**
- * 合并请求节点的副标题：把上游英文枚举翻成产品的中文术语。
- * @param mergeRequest 最新一条 MR；没有 MR 时为 undefined
- * @returns 中文状态或「暂无 MR」；未收录状态原样返回
- */
-function mergeRequestHint(mergeRequest: MergeRequest | undefined): string {
-  if (!mergeRequest) return '暂无 MR'
-  return mergeRequestStateLabels[mergeRequest.state] ?? mergeRequest.state
-}
-
-/**
- * 构建节点的副标题：区分「没有构建记录」与「有记录但还在跑」。
- * @param build 最近一条构建记录；undefined 表示这个工作区还没有构建数据
- * @returns 描述文本
- */
-function buildHint(build: Build | undefined): string {
-  if (!build) return '没有构建记录'
-  if (build.succeed === null) return '运行中'
-  return build.succeed ? '最近成功' : '最近失败'
-}
 
 /**
  * 把时间格式化为本地 HH:mm，便于轨道下方紧凑展示。
@@ -178,19 +121,11 @@ function onStageClick(row: FlowRow, stage: FlowStage): void {
     emit('open-story', row.requirement)
     return
   }
-  if (stage.key === 'mr' && row.mergeRequest) {
-    emit('open-merge-request', row.mergeRequest)
-    return
-  }
-  if (stage.key === 'build' && row.build) {
-    emit('open-build', row.build)
-    return
-  }
   if (stage.key === 'cron') emit('go-crons')
 }
 
-/** 节点图标映射，与工作区/Story/MR/构建/定时五个阶段一一对应 */
-const stageIcons = { workspace: FolderOpened, story: Document, mr: Share, build: Promotion, cron: Timer }
+/** 节点图标映射，与工作区/Story/定时三个阶段一一对应 */
+const stageIcons = { workspace: FolderOpened, story: Document, cron: Timer }
 
 /** Harness 阶段刻度：P0 到 P6 */
 const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
@@ -284,9 +219,9 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
 .flow-node {
   display: grid;
   /*
-   * 节点宽度按容器收缩：五段轨道在宽屏各占 124px，容器不够时按「(宽 - 4 段连线) / 5」等比变窄。
+   * 节点宽度按容器收缩：三段轨道在宽屏各占 124px，容器不够时按「(宽 - 2 段连线) / 3」等比变窄。
    * 124px 是设计宽度，不是硬下限：min-width 留 0，容器再窄时节点继续压缩（标签与读数单行省略），
-   * 由 940px 断点接管纵向排布。若把 min-width 锁在 124px，五段轨道会在 960–1100px 之间横向溢出。
+   * 由 940px 断点接管纵向排布。若把 min-width 锁在 124px，轨道会在窄屏下横向溢出。
    */
   flex: 1 1 124px;
   min-width: 0;
@@ -310,7 +245,6 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
   width: 40px;
   height: 40px;
   place-items: center;
-  border-radius: 50%;
   color: var(--text-faint);
   font-size: 15px;
   transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
@@ -336,18 +270,11 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
  * 与实心的「有数据」盘形成形状差异，同时不占用 .flow-dot 的 border（节点圆盘整体不带边框）。
  * 用选择器提高优先级，压过下方 .tone-* 的实心底色。
  */
-.flow-node:not(.is-clickable) .flow-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--text-faint); box-sizing: border-box; }
 .flow-node:not(.is-clickable) .flow-value { color: var(--text-muted); font-weight: 500; }
 .flow-node:not(.is-clickable) .flow-hint { color: var(--text-muted); }
-.flow-node.is-clickable:hover .flow-dot { background: var(--brand-soft); color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 .flow-node.is-clickable:focus-visible { outline: none; }
 .flow-node.is-clickable:focus-visible .flow-dot { outline: 2px solid var(--brand); outline-offset: 2px; }
 
-/* 有数据的节点：实心盘 + 状态色图标；底色用对应状态色的极淡档，不再靠描边宣告状态 */
-/* 实心盘 + 状态色图标：底色只抬一档（--bg-raised），状态信息放在图标与文字上 */
-.tone-ready .flow-dot { background: var(--bg-raised); color: var(--success); }
-.tone-active .flow-dot { background: var(--bg-raised); color: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent); }
-.tone-danger .flow-dot { background: var(--bg-raised); color: var(--danger); }
 /* 连线：已走完的段用状态色，未到与空态段用 --text-faint 描线，卡片底上对比约 4.0:1（--line-strong 只有 2.0:1，太弱） */
 .flow-link { flex: 1 1 auto; min-width: 18px; height: 2px; margin-top: 20px; border-radius: var(--radius-xs); background: var(--text-faint); }
 /* 连线只用实色：通过的段用状态色，未到的段保持发丝线，不写渐变 */

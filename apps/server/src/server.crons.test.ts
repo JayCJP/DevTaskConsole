@@ -51,8 +51,6 @@ function snapshot(): Snapshot {
       workspacePath: 'work-one/repo-a',
       ownerSessionId: 'session-a',
     }],
-    builds: [],
-    mergeRequests: [],
   }
 }
 

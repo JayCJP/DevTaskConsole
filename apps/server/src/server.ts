@@ -7,6 +7,9 @@ import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import {
   applicationMappingSchema,
+  buildEnvironmentSpecs,
+  buildTriggerRequestSchema,
+  buildTriggerResultSchema,
   jobCreateRequestSchema,
   jobDetailSchema,
   jobPinRequestSchema,
@@ -845,6 +848,89 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       devOps.getBuildRecords(params.data.app, query.data.pageNo, query.data.pageSize))
   })
 
+  /**
+   * 触发构建（发布页写操作兜底）。
+   * 硬规则：Harness Phase 4-6 期间站点所有发布写操作禁用；high-risk 环境必须显式解锁；
+   * 不可乐观，必须等 DevOps 真实回执后才返回，并写审计。
+   */
+  app.post('/api/v1/devops/build', async (request, reply) => {
+    const parsed = buildTriggerRequestSchema.safeParse(request.body)
+    if (!parsed.success) return invalidParameters(reply)
+    const input = parsed.data
+
+    // 门控 1：Harness Phase 4-6 期间由发布助手负责，站点一律拒绝写操作
+    let gatePhase: number | undefined
+    try {
+      const snapshot = await snapshotProvider(false)
+      gatePhase = snapshot.harnessActive
+        .map((active) => active.phase)
+        .find((phase): phase is number => typeof phase === 'number' && phase >= 4 && phase <= 6)
+    } catch (error) {
+      request.log.error({ err: error }, 'Failed to read harness gate before build')
+      return reply.code(502).send({
+        error: { code: 'GATE_CHECK_FAILED', message: '无法确认 Harness 流程阶段，已拒绝触发构建以避免竞态。' },
+      })
+    }
+    if (gatePhase !== undefined) {
+      return reply.code(409).send({
+        error: {
+          code: 'HARNESS_PHASE_GATE',
+          message: `Harness 正在执行 Phase ${gatePhase}，由发布助手负责；该阶段站点禁止触发构建。`,
+          phase: gatePhase,
+        },
+      })
+    }
+
+    // 环境固定口径：分支 / build_other / env 字段均由后端映射决定，不信任前端传参
+    const spec = buildEnvironmentSpecs[input.env]
+    try {
+      const raw = await devOps.triggerBuild({
+        group: input.group,
+        app: input.app,
+        branch: spec.branch,
+        buildOther: spec.buildOther,
+        ...(spec.sendEnv ? { env: input.env } : {}),
+      })
+      const number = extractBuildNumber(raw)
+      const result = buildTriggerResultSchema.parse({
+        group: input.group,
+        app: input.app,
+        env: input.env,
+        branch: spec.branch,
+        buildOther: spec.buildOther,
+        ...(number ? { number } : {}),
+        ...(raw !== undefined ? { raw } : {}),
+        triggeredAt: new Date().toISOString(),
+      })
+      await auditLog.record({
+        action: 'build.trigger',
+        target: `${input.group}/${input.app}`,
+        reversible: false,
+        result: 'succeeded',
+        after: { branch: spec.branch, env: input.env, buildOther: spec.buildOther, ...(number ? { number } : {}) },
+      })
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '触发构建失败。'
+      const expiredSession = message.includes('session expired')
+      await auditLog.record({
+        action: 'build.trigger',
+        target: `${input.group}/${input.app}`,
+        reversible: false,
+        result: 'failed',
+        error: message,
+        after: { branch: spec.branch, env: input.env, buildOther: spec.buildOther },
+      }).catch(() => undefined)
+      request.log.error({ channel: 'DevOps', err: error }, 'Trigger build failed')
+      return reply.code(expiredSession ? 403 : 502).send({
+        error: {
+          code: expiredSession ? 'DEVOPS_SESSION_EXPIRED' : 'BUILD_TRIGGER_FAILED',
+          message,
+        },
+      })
+    }
+  })
+
   app.get('/api/v1/gitlab/projects', async (request, reply) => {
     const query = z.object({ search: z.string().min(1).max(200) }).safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
@@ -1051,6 +1137,25 @@ function invalidParameters(reply: FastifyReply): FastifyReply {
   return reply.code(400).send({
     error: { code: 'INVALID_PARAMETERS', message: 'The request parameters are invalid.' },
   })
+}
+
+/**
+ * 从 DevOps 触发构建的原始响应里尽力解析构建号。
+ * 响应格式不固定，解析不出时返回 undefined，不伪装成有构建号。
+ * @param raw DevOps 原始响应
+ * @returns 构建号字符串，或 undefined
+ */
+function extractBuildNumber(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const candidates = [record.number, record.build_no, record.buildNo, record.id]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate) return candidate
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return String(candidate)
+  }
+  const data = record.data
+  if (typeof data === 'object' && data !== null) return extractBuildNumber(data)
+  return undefined
 }
 
 function workspaceInitializationError(

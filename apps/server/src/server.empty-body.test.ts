@@ -25,8 +25,6 @@ describe('empty JSON body handling', () => {
         inbox: [],
         jobs: [],
         crons: [],
-        builds: [],
-        mergeRequests: [],
       }),
     })
     try {
@@ -61,8 +59,6 @@ describe('empty JSON body handling', () => {
         inbox: [],
         jobs: [],
         crons: [],
-        builds: [],
-        mergeRequests: [],
       }),
     })
     try {

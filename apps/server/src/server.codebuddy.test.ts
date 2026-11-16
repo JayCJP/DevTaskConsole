@@ -76,8 +76,6 @@ describe('CodeBuddy job proxy', () => {
         inbox: [],
         jobs: [],
         crons: [],
-        builds: [],
-        mergeRequests: [],
       }),
     })
 

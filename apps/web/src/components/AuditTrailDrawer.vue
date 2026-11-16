@@ -42,6 +42,7 @@ function actionLabel(action: AuditEntry['action']): string {
     'service.stop': '停止服务',
     'service.remove': '删除服务映射',
     'workspace.initialize.resume': '续跑初始化',
+    'build.trigger': '触发构建',
   }
   return labels[action]
 }

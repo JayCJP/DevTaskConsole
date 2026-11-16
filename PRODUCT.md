@@ -38,6 +38,7 @@ DevTask Console 是既有工具链的驾驶舱：把散在 TAPD、git worktree�
 已确认的约束：
 
 - TAPD / Harness / GitLab / DevOps 始终是唯一信源；不建库、不双写；e2e-state.json 与 dev-pass.json 只读。
+- 首屏统一快照不拉取 MR / 构建 / 分支数据（GitLab、DevOps 仅做连通性探测供连接自检页展示）；MR 详情按需查询，MR 创建走工作区操作。
 - 生产发布必须人拍板：站点默认只开放 dev / test；Harness Phase 4-6 期间发布写操作硬禁用。
 - 单机 + 本机令牌鉴权，不做权限体系。
 - 桌面优先，窄屏只做基础降级，不承诺完整移动端适配。

@@ -148,16 +148,58 @@ export class DevOpsAdapter {
     return credentials
   }
 
-  private async request(credentials: DevOpsCredentials, path: string): Promise<unknown> {
+  /**
+   * 触发一次构建（POST /deploy/build）。
+   * 参数按调用方给定的 group/app/branch/env 透传，build_other 由上层按环境映射后传入，
+   * 这里不自行猜测分支或环境，避免与 Harness 发布助手的口径冲突。
+   * @param input 构建参数（app/group/branch/buildOther/buildType/liveDockerBranch 等）
+   * @returns DevOps 原始响应；无法解析为 JSON 时返回 undefined（写操作以 HTTP 状态为准）
+   */
+  async triggerBuild(input: {
+    group: string
+    app: string
+    branch: string
+    buildOther: string
+    /** 仅 dev 环境传 env，其余环境在请求体中省略该字段 */
+    env?: string
+    buildType?: string
+    liveDockerBranch?: string
+    committedId?: string
+    committedMsg?: string
+  }): Promise<unknown> {
+    const credentials = await this.requireCredentials()
+    const payload: Record<string, unknown> = {
+      group: input.group,
+      app: input.app,
+      branch: input.branch,
+      committed_id: input.committedId ?? '',
+      committed_msg: input.committedMsg ?? '',
+      build_other: input.buildOther,
+      build_type: input.buildType ?? 'docker_build',
+      live_dcoker_branch: input.liveDockerBranch ?? 'origin/master',
+    }
+    // 只有 dev 环境携带 env；其它环境完全不出现该字段
+    if (input.env !== undefined) payload.env = input.env
+    return this.request(credentials, '/deploy/build', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  }
+
+  private async request(credentials: DevOpsCredentials, path: string, init?: RequestInit): Promise<unknown> {
     const response = await fetch(new URL(path.replace(/^\/+/, ''), `${credentials.host}/`), {
+      method: init?.method ?? 'GET',
+      ...(init?.body !== undefined ? { body: init.body } : {}),
       headers: {
         accept: 'application/json',
         cookie: credentials.cookie,
         referer: 'https://devops.vzan.com/index.html',
         'x-csrftoken': credentials.csrfToken,
+        ...(init?.headers ?? {}),
       },
       redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(30_000),
     })
     if (response.status === 403) {
       throw new Error('DevOps session expired (HTTP 403). Refresh the browser session credentials.')
@@ -166,7 +208,8 @@ export class DevOpsAdapter {
     try {
       return await response.json() as unknown
     } catch {
-      throw new Error('DevOps returned invalid JSON.')
+      // 写操作（触发构建）常返回 200/201 空体，此时以 HTTP 状态为准，不判失败。
+      return undefined
     }
   }
 }

@@ -14,7 +14,7 @@ export async function loadOrCreateToken(dataDirectory = getDataDirectory()): Pro
 
   try {
     const storedToken = (await readFile(tokenPath, 'utf8')).trim()
-    if (storedToken.length < 32) {
+    if (storedToken.length === 0) {
       throw new Error(`Stored control-panel token is invalid: ${tokenPath}`)
     }
     return storedToken

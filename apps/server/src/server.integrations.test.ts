@@ -41,8 +41,6 @@ describe('read-only integration API', () => {
         inbox: [],
         jobs: [],
         crons: [{ id: 'task-1', storyId: 'STORY-1', storyTitle: 'Requirement', cron: '7 * * * *' }],
-        builds: [],
-        mergeRequests: [],
       }),
       // cron 路由只读本地事实，这里用同一份快照桩顶替真实工作区扫描
       cronFactsProvider: async () => ({
@@ -248,8 +246,6 @@ describe('read-only integration API', () => {
         inbox: [],
         jobs: [],
         crons: [],
-        builds: [],
-        mergeRequests: [],
       }),
     })
     server = app

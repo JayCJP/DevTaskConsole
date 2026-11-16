@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   jobSchema,
   type ChannelState,
@@ -14,22 +14,11 @@ import {
   type WorkspacePipeline,
   type WorkspaceSummary,
 } from '@devtask/shared'
-import {
-  ApplicationMappingStore,
-  expandApplicationIdentities,
-  type ApplicationIdentity,
-} from '../integrations/application-mappings.js'
 import { DevOpsAdapter } from '../integrations/devops.js'
 import { GitLabAdapter } from '../integrations/gitlab.js'
 import { TapdAdapter } from '../integrations/tapd.js'
 import { listWorkspaces } from '../workspaces/registry.js'
 import { readLocalHarness } from './local-harness.js'
-import {
-  collectBranches,
-  collectBuildRecords,
-  collectMergeRequests,
-  type ReleaseProjectTarget,
-} from './release-data.js'
 import { CodeBuddyApi } from '../services/codebuddy-api.js'
 import { ScheduledTaskClient } from '../services/scheduled-tasks.js'
 import { StoryServiceSupervisor } from '../services/story-service-supervisor.js'
@@ -40,7 +29,6 @@ import { buildWorkspacePipelines } from './workspace-pipelines.js'
 const tapd = new TapdAdapter()
 const gitLab = new GitLabAdapter()
 const devOps = new DevOpsAdapter()
-const applicationMappings = new ApplicationMappingStore()
 const storyServiceSupervisor = new StoryServiceSupervisor()
 const codeBuddyApi = new CodeBuddyApi()
 
@@ -70,22 +58,13 @@ export async function buildSnapshot(
   const snapshotAt = new Date().toISOString()
   const localResult = await readLocalHarness(workspacesRoot)
   const localRootAvailable = await directoryExists(workspacesRoot)
-  const mappingResult = await loadApplicationMappings()
   const workspaceScan = await loadWorkspaceScan(workspacesRoot)
-  // 默认约定“仓库名 == DevOps 应用名”，只有名称不同的项目才有差异映射
-  const identities = expandApplicationIdentities(
-    [
-      ...workspaceScan.workspaces.flatMap((workspace) => workspace.projects.map((project) => project.name)),
-      ...mappingResult.mappings.map((mapping) => mapping.repoName),
-    ],
-    mappingResult.mappings,
-  )
-  const releaseTargets = buildReleaseTargets(localResult.requirements, workspaceScan.workspaces, workspacesRoot)
   const localErrors = [...localResult.errors, ...(workspaceScan.error ? [workspaceScan.error] : [])]
-  const [tapdResult, gitlabResult, devopsResult, codeBuddyResult, cronResult, viewer] = await Promise.all([
+  // GitLab/DevOps 只做连通性探测（设置页需要展示通道状态），不再拉取 MR/构建/分支数据
+  const [tapdResult, gitlabChannel, devopsChannel, codeBuddyResult, cronResult, viewer] = await Promise.all([
     loadTapdSnapshot(snapshotAt, localResult.requirements, options.forceTapd === true),
-    loadGitLabSnapshot(snapshotAt, releaseTargets, identities),
-    loadDevOpsSnapshot(snapshotAt, identities),
+    checkGitLabConnection(snapshotAt),
+    checkDevOpsConnection(snapshotAt),
     loadCodeBuddySnapshot(snapshotAt, workspacesRoot, localResult.requirements),
     loadCronSnapshot(snapshotAt, workspacesRoot, localResult.requirements, workspaceScan.workspaces),
     loadViewerIdentity(),
@@ -102,8 +81,8 @@ export async function buildSnapshot(
           : {}),
     },
     tapd: tapdResult.channel,
-    gitlab: gitlabResult.channel,
-    devops: devopsResult.channel,
+    gitlab: gitlabChannel,
+    devops: devopsChannel,
     codebuddy: codeBuddyResult.channel,
     crons: cronResult.channel,
   }
@@ -114,9 +93,6 @@ export async function buildSnapshot(
     workspaces: workspaceScan.workspaces,
     requirements: tapdResult.requirements,
     harnessActive: localResult.harnessActive,
-    mergeRequests: gitlabResult.mergeRequests,
-    builds: devopsResult.builds,
-    branches: devopsResult.branches,
     crons: cronResult.crons,
     jobs: codeBuddyResult.jobs,
   })
@@ -134,9 +110,6 @@ export async function buildSnapshot(
     inbox,
     jobs: codeBuddyResult.jobs,
     crons: cronResult.crons,
-    builds: devopsResult.builds,
-    branches: devopsResult.branches,
-    mergeRequests: gitlabResult.mergeRequests,
     ...pipelines,
   }
 }
@@ -433,20 +406,6 @@ async function loadCodeBuddySnapshot(
   }
 }
 
-async function loadApplicationMappings(): Promise<{
-  mappings: Awaited<ReturnType<ApplicationMappingStore['list']>>
-  error?: string
-}> {
-  try {
-    return { mappings: await applicationMappings.list() }
-  } catch (error) {
-    return {
-      mappings: [],
-      error: error instanceof Error ? error.message : 'Application mapping data could not be read.',
-    }
-  }
-}
-
 /**
  * 识别当前查看者在外部系统中的身份，供发布页“只看我的”筛选。
  * GitLab 取访问令牌对应用户名，DevOps 取当前登录账号；任一失败只缺省该字段，不阻塞快照。
@@ -464,82 +423,46 @@ async function loadViewerIdentity(): Promise<ViewerIdentity | undefined> {
   return viewer.gitlabUsername || viewer.devopsOperator ? viewer : undefined
 }
 
-async function loadGitLabSnapshot(
-  fetchedAt: string,
-  targets: ReleaseProjectTarget[],
-  identities: ApplicationIdentity[],
-): Promise<{ channel: ChannelState; mergeRequests: Snapshot['mergeRequests'] }> {
+/**
+ * 探测 GitLab 连通性：只做配置/令牌可用性检查，不拉取合并请求数据。
+ * 合并请求已从首屏快照移除，设置页仍需据此展示通道是否连通。
+ * @param fetchedAt 快照时间
+ * @returns 通道状态
+ */
+async function checkGitLabConnection(fetchedAt: string): Promise<ChannelState> {
   try {
     const configured = await gitLab.checkConnection()
-    if (!configured) {
-      return {
-        channel: { fetchedAt: null, ok: false, stale: false, error: 'GitLab is not configured.' },
-        mergeRequests: [],
-      }
-    }
-    const outcome = await collectMergeRequests(targets, identities, gitLab)
-    return {
-      channel: {
-        fetchedAt,
-        // 部分项目失败仍算通道可用，失败原因单独透出，避免一票否决
-        ok: outcome.items.length > 0 || outcome.errors.length === 0,
-        stale: false,
-        ...(outcome.errors.length ? { error: outcome.errors.join(' ') } : {}),
-      },
-      mergeRequests: outcome.items,
-    }
+    return configured
+      ? { fetchedAt, ok: true, stale: false }
+      : { fetchedAt: null, ok: false, stale: false, error: 'GitLab is not configured.' }
   } catch (error) {
     return {
-      channel: {
-        fetchedAt,
-        ok: false,
-        stale: false,
-        error: error instanceof Error ? error.message : 'GitLab data request failed.',
-      },
-      mergeRequests: [],
+      fetchedAt,
+      ok: false,
+      stale: false,
+      error: error instanceof Error ? error.message : 'GitLab connection check failed.',
     }
   }
 }
 
-async function loadDevOpsSnapshot(
-  fetchedAt: string,
-  identities: ApplicationIdentity[],
-): Promise<{ channel: ChannelState; builds: Snapshot['builds']; branches: NonNullable<Snapshot['branches']> }> {
+/**
+ * 探测 DevOps 连通性：只做登录会话可用性检查，不拉取构建/分支数据。
+ * 构建与分支已从首屏快照移除，设置页仍需据此展示通道是否连通。
+ * @param fetchedAt 快照时间
+ * @returns 通道状态
+ */
+async function checkDevOpsConnection(fetchedAt: string): Promise<ChannelState> {
   try {
     const configured = await devOps.checkConnection()
-    if (!configured) {
-      return {
-        channel: { fetchedAt: null, ok: false, stale: false, error: 'DevOps is not configured.' },
-        builds: [],
-        branches: [],
-      }
-    }
-    const [buildOutcome, branchOutcome] = await Promise.all([
-      collectBuildRecords(identities, devOps),
-      collectBranches(identities, devOps),
-    ])
-    const errors = [...buildOutcome.errors, ...branchOutcome.errors]
-    return {
-      channel: {
-        fetchedAt,
-        // 单个应用查询失败时仍展示其它应用的数据，只在全部失败时标记通道不可用
-        ok: buildOutcome.items.length + branchOutcome.items.length > 0 || errors.length === 0,
-        stale: false,
-        ...(errors.length ? { error: errors.join(' ') } : {}),
-      },
-      builds: buildOutcome.items,
-      branches: branchOutcome.items,
-    }
+    return configured
+      ? { fetchedAt, ok: true, stale: false }
+      : { fetchedAt: null, ok: false, stale: false, error: 'DevOps is not configured.' }
   } catch (error) {
     return {
-      channel: {
-        fetchedAt,
-        ok: false,
-        stale: false,
-        error: error instanceof Error ? error.message : 'DevOps data request failed.',
-      },
-      builds: [],
-      branches: [],
+      fetchedAt,
+      ok: false,
+      stale: false,
+      error: error instanceof Error ? error.message : 'DevOps connection check failed.',
     }
   }
 }
@@ -560,59 +483,6 @@ async function loadWorkspaceScan(
       error: error instanceof Error ? error.message : 'Workspace scan failed.',
     }
   }
-}
-
-/**
- * 把工作区第一个项目转换成发布链路查询目标。
- * 与流水线视图保持一致：一个工作区只查它 `folders[0]` 项目的 MR，
- * Story 必须是位于该项目目录下的需求，避免把工作区名当成仓库名去查。
- * @param requirements 本地 Harness 需求
- * @param workspaces 工作区摘要
- * @returns 项目目标列表（仅保留第一个项目下有 Story 的工作区）
- */
-function buildReleaseTargets(
-  requirements: Requirement[],
-  workspaces: WorkspaceSummary[],
-  workspacesRoot: string,
-): ReleaseProjectTarget[] {
-  const targets: ReleaseProjectTarget[] = []
-  for (const workspace of workspaces) {
-    const primary = workspace.projects[0]
-    if (!primary) continue
-    const storyIds = requirements
-      .filter((requirement) => requirementInDirectory(requirement, primary.path, workspacesRoot))
-      .map((requirement) => requirement.storyId)
-    if (!storyIds.length) continue
-    targets.push({
-      repoName: primary.name,
-      ...(primary.branch ? { branch: primary.branch } : {}),
-      storyIds: [...new Set(storyIds)],
-    })
-  }
-  return targets
-}
-
-/**
- * 判断需求是否就位于给定项目目录（与流水线视图的识别规则保持一致）。
- * @param requirement 本地 Harness 需求
- * @param projectPath 项目目录绝对路径
- * @param workspacesRoot 工作区扫描根目录
- * @returns 是否同一目录；需求缺少工作区路径时返回 false
- */
-function requirementInDirectory(
-  requirement: Requirement,
-  projectPath: string,
-  workspacesRoot: string,
-): boolean {
-  if (!requirement.workspacePath) return false
-  const directory = isAbsolute(requirement.workspacePath)
-    ? resolve(requirement.workspacePath)
-    : resolve(workspacesRoot, requirement.workspacePath)
-  const normalize = (path: string): string => {
-    const normalized = resolve(path)
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
-  }
-  return normalize(directory) === normalize(projectPath)
 }
 
 async function loadTapdSnapshot(

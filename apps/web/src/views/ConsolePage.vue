@@ -2,12 +2,14 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   applicationMappingSchema,
+  buildEnvironmentSpecs,
+  buildTriggerResultSchema,
   defaultDevOpsGroup,
+  type BuildEnvironment,
+  type BuildEnvironmentSpec,
   defaultMergeRequestTargetBranch,
   defaultTapdWorkspaceId,
   jobSchema,
-  mergeRequestDiffSummarySchema,
-  mergeRequestSchema,
   mergeRequestTargetBranches,
   repositoryCandidateSchema,
   resumableSessionSchema,
@@ -22,8 +24,6 @@ import {
   type CronMode,
   type InboxItem,
   type Job,
-  type MergeRequest,
-  type MergeRequestDiffSummary,
   type MergeRequestTargetBranch,
   type RepositoryCandidate,
   type WorkspaceDeleteResult,
@@ -79,11 +79,7 @@ async function refreshSnapshot(force = false): Promise<void> {
   await store.refresh(force)
 }
 const gitLabProjectSchema = z.object({ id: z.number().int().positive(), pathWithNamespace: z.string() })
-const mergeRequestDetailsSchema = z.object({
-  approvals: z.object({ approved: z.boolean(), approvedBy: z.array(z.string()) }),
-  changesCount: z.number().int().nonnegative(),
-  changedFiles: z.array(z.string()),
-})
+
 const detailOpen = computed({
   get: () => selectedRequirement.value !== null,
   set: (open: boolean) => {
@@ -287,9 +283,6 @@ const jobTranscript = ref('')
 const jobOutput = ref('')
 const jobError = ref('')
 const jobActionLoading = ref(false)
-const selectedMergeRequest = ref<MergeRequest | null>(null)
-const mergeRequestLoading = ref(false)
-const mergeRequestError = ref('')
 /** 定时任务写操作错误 */
 const cronError = ref('')
 /** 定时任务搜索关键词 */
@@ -406,7 +399,6 @@ function dismissCronNotice(id: string): void {
   cronActions.dismiss(id)
 }
 /** MR diff 摘要，按 `projectId:iid` 缓存 */
-const mergeRequestSummaries = ref<Record<string, MergeRequestDiffSummary>>({})
 let jobStreamController: AbortController | undefined
 /** 实例页列表轮询定时器 */
 let jobsPollTimer: ReturnType<typeof setInterval> | undefined
@@ -974,6 +966,8 @@ watch([page, () => store.snapshot?.requirements.length], ([value]) => {
     void refreshWorkspaces()
   }
   if (value === 'instances') void refreshStoryServices()
+  // 发布页按工作区列出项目，并按需拉取每个项目的 DevOps 只读数据
+  if (value === 'releases') void prepareReleasePage()
   // 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取
   if (value === 'board') void board.load()
 }, { immediate: true })
@@ -1016,75 +1010,11 @@ function openRequirement(requirement: Requirement): void {
 }
 
 /**
- * 打开最近一次构建的制品页（只读跳转）。
- * @param build 构建记录
- */
-function openBuildArtifact(build: { fileUrl?: string }): void {
-  if (build.fileUrl) window.open(build.fileUrl, '_blank', 'noreferrer')
-}
-
-/**
  * 流水线定时节点跳转到定时任务页。
  * @returns Promise<void>，忽略导航结果
  */
 function goCrons(): void {
   void router.push('/crons')
-}
-
-async function openMergeRequest(mergeRequest: MergeRequest): Promise<void> {
-  mergeRequestLoading.value = true
-  mergeRequestError.value = ''
-  try {
-    const details = mergeRequestDetailsSchema.parse(await apiRequest<unknown>(
-      `/api/v1/gitlab/projects/${mergeRequest.projectId}/merge-requests/${encodeURIComponent(mergeRequest.id)}`,
-    ))
-    selectedMergeRequest.value = mergeRequestSchema.parse({ ...mergeRequest, ...details })
-  } catch (cause) {
-    mergeRequestError.value = cause instanceof Error ? cause.message : 'Unable to load merge request details.'
-  } finally {
-    mergeRequestLoading.value = false
-  }
-  // diff 摘要属于增强信息，单独请求，失败不影响审批与文件清单展示
-  await loadMergeRequestSummary(mergeRequest)
-}
-
-/**
- * 拉取 MR diff 摘要（变更文件数、增删行、热点文件）。
- * @param mergeRequest 目标 MR
- * @returns Promise<void>
- */
-async function loadMergeRequestSummary(mergeRequest: MergeRequest): Promise<void> {
-  const key = `${mergeRequest.projectId}:${mergeRequest.id}`
-  if (mergeRequestSummaries.value[key]) return
-  try {
-    const summary = mergeRequestDiffSummarySchema.parse(await apiRequest<unknown>(
-      `/api/v1/gitlab/projects/${mergeRequest.projectId}/merge-requests/${encodeURIComponent(mergeRequest.id)}/diff-summary`,
-    ))
-    mergeRequestSummaries.value = { ...mergeRequestSummaries.value, [key]: summary }
-  } catch {
-    // 摘要失败时保持缺省，页面对应位置显示「无法确认」
-  }
-}
-
-/**
- * 读取 MR 的 diff 摘要缓存。
- * @param mergeRequest 目标 MR
- * @returns 摘要；未加载或不支持时返回 undefined
- */
-function mergeRequestSummary(mergeRequest: MergeRequest): MergeRequestDiffSummary | undefined {
-  return mergeRequestSummaries.value[`${mergeRequest.projectId}:${mergeRequest.id}`]
-}
-
-/**
- * 判断 MR 是否处于「Phase 4 但未合并」的阻断状态。
- * 属于该 Story 且当前阶段为 4、MR 尚未合并时需要提示「确认已合并再进入 Phase 5」。
- * @param mergeRequest 目标 MR
- * @returns 需要阻断提示时返回 true
- */
-function isMergeBlocked(mergeRequest: MergeRequest): boolean {
-  if (!mergeRequest.storyId) return false
-  const requirement = store.snapshot?.requirements.find((row) => row.storyId === mergeRequest.storyId)
-  return requirement?.phase === 4 && mergeRequest.state !== 'merged'
 }
 
 /**
@@ -2049,6 +1979,309 @@ async function confirmDeleteWorkspace(): Promise<void> {
   }
 }
 
+/* ------------------------- 发布页：按工作区构建与创建 MR ------------------------- */
+
+/** 发布页的 6 档构建环境，顺序即分段器展示顺序 */
+const buildEnvironments: readonly BuildEnvironment[] = ['dev', 'test', 'pre', 'pre-txnj', 'prod-txnj', 'prod']
+/** 当前选中的构建环境 */
+const selectedBuildEnv = ref<BuildEnvironment>('dev')
+/** DevOps 数据是否连接：取统一快照的通道状态 */
+const devopsOk = computed(() => store.snapshot?.channels.devops?.ok ?? false)
+/**
+ * 当前是否处于 Harness Phase 4-6 门控区间：该区间发布写操作硬禁用，由发布助手负责。
+ */
+const releaseGatePhase = computed<number | undefined>(() => {
+  const phases = (store.snapshot?.harnessActive ?? [])
+    .map((active) => active.phase)
+    .filter((phase): phase is number => typeof phase === 'number' && phase >= 4 && phase <= 6)
+  return phases.length ? Math.min(...phases) : undefined
+})
+/** 构建写操作是否可用：门控未命中 + DevOps 已连接 */
+const buildAllowed = computed(() => !releaseGatePhase.value && devopsOk.value)
+/** 构建不可用的原因文案（用于按钮 tooltip 与横幅），可用时为空 */
+const buildBlockReason = computed(() => {
+  if (releaseGatePhase.value !== undefined) {
+    return `Harness 正在执行 Phase ${releaseGatePhase.value}，由发布助手负责；此阶段禁止触发构建与创建 MR。`
+  }
+  if (!devopsOk.value) return 'DevOps 通道不可用，无法触发构建或创建 MR；请到「连接与配置」检查会话。'
+  return ''
+})
+
+/**
+ * 取环境固定口径（分支 / build_other / MR 目标分支），模板通过函数访问。
+ * @param env 环境标识
+ * @returns 环境固定参数
+ */
+function envSpecOf(env: BuildEnvironment): BuildEnvironmentSpec {
+  return buildEnvironmentSpecs[env]
+}
+
+/**
+ * 取环境对应的 build_other 值（模板通过函数访问）。
+ * @param env 环境标识
+ * @returns build_other 字符串
+ */
+function buildOtherOf(env: BuildEnvironment): string {
+  return buildEnvironmentSpecs[env].buildOther
+}
+
+/**
+ * 取环境对应的构建分支（模板通过函数访问）。
+ * @param env 环境标识
+ * @returns origin/xxx 形式的分支
+ */
+function branchOfEnv(env: BuildEnvironment): string {
+  return buildEnvironmentSpecs[env].branch
+}
+
+/** 二次确认弹窗：待构建的清单（每项 = 一个应用） */
+interface BuildConfirmItem {
+  workspace: string
+  project: string
+  group: string
+  app: string
+}
+/** 二次确认弹窗开关 */
+const buildConfirmOpen = ref(false)
+/** 二次确认弹窗展示的构建清单 */
+const buildConfirmItems = ref<BuildConfirmItem[]>([])
+/** 正在提交构建的应用集合（真实回执前禁用重复点击） */
+const buildingApps = ref<string[]>([])
+/** 构建结果汇总：逐应用记录成功/失败 */
+interface BuildOutcome {
+  app: string
+  ok: boolean
+  message: string
+  number?: string
+}
+const buildOutcomes = ref<BuildOutcome[]>([])
+
+/**
+ * 计算某项目最终用于构建的 DevOps 应用名：优先人工映射，否则沿用仓库名。
+ * @param projectName 项目/仓库名
+ * @returns DevOps 应用名
+ */
+function devopsAppOf(projectName: string): string {
+  return applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsApp ?? projectName
+}
+
+/**
+ * 计算某项目最终用于构建的 DevOps 分组：优先人工映射，否则用默认分组。
+ * @param projectName 项目/仓库名
+ * @returns DevOps 分组名
+ */
+function devopsGroupOf(projectName: string): string {
+  return applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsGroup ?? defaultDevOpsGroup
+}
+
+/**
+ * 切换构建环境时只需更新选中项；无锁状态可清理。
+ * @param env 目标环境
+ */
+function selectBuildEnv(env: BuildEnvironment): void {
+  selectedBuildEnv.value = env
+}
+
+/**
+ * 打开二次确认弹窗：逐项列出即将构建的应用，用户核对后才提交。
+ * @param items 待构建清单
+ */
+function openBuildConfirm(items: BuildConfirmItem[]): void {
+  buildConfirmItems.value = items
+  buildOutcomes.value = []
+  buildConfirmOpen.value = true
+}
+
+/**
+ * 为单个项目打开构建确认。
+ * @param workspace 工作区名
+ * @param project 项目名
+ */
+function requestSingleBuild(workspace: string, project: string): void {
+  openBuildConfirm([{
+    workspace,
+    project,
+    group: devopsGroupOf(project),
+    app: devopsAppOf(project),
+  }])
+}
+
+/**
+ * 收集某工作区中可构建的项目清单。
+ * @param workspaceName 工作区名
+ * @returns 构建清单
+ */
+function collectBuildItems(workspaceName: string): BuildConfirmItem[] {
+  const workspace = workspaces.value.find((item) => item.name === workspaceName)
+  if (!workspace) return []
+  return workspace.projects.map((project) => ({
+    workspace: workspace.name,
+    project: project.name,
+    group: devopsGroupOf(project.name),
+    app: devopsAppOf(project.name),
+  }))
+}
+
+/**
+ * 为整个工作区的所有项目打开一键构建确认。
+ * @param workspace 工作区名
+ */
+function requestWorkspaceBuild(workspace: string): void {
+  const items = collectBuildItems(workspace)
+  if (!items.length) {
+    actionToasts.notify(`工作区「${workspace}」没有项目，无法构建。`, 'error')
+    return
+  }
+  openBuildConfirm(items)
+}
+
+/** 二次确认是否可提交：仅在途时禁用 */
+const canSubmitBuild = computed(() => buildingApps.value.length === 0)
+
+/**
+ * 真正提交构建：逐应用串行请求，等每个真实回执后再推进，不乐观更新。
+ * 分支、build_other、env 字段完全由后端按所选环境固定映射决定。
+ * @returns Promise<void>
+ */
+async function submitBuilds(): Promise<void> {
+  if (!canSubmitBuild.value) return
+  const env = selectedBuildEnv.value
+  buildOutcomes.value = []
+  for (const item of buildConfirmItems.value) {
+    buildingApps.value.push(item.app)
+    try {
+      const result = buildTriggerResultSchema.parse(await apiRequest<unknown>('/api/v1/devops/build', {
+        method: 'POST',
+        body: JSON.stringify({ group: item.group, app: item.app, env }),
+      }))
+      buildOutcomes.value.push({
+        app: item.app,
+        ok: true,
+        message: result.number ? `构建号 ${result.number}` : '已提交构建',
+        ...(result.number ? { number: result.number } : {}),
+      })
+    } catch (cause) {
+      buildOutcomes.value.push({
+        app: item.app,
+        ok: false,
+        message: cause instanceof Error ? cause.message : '触发构建失败。',
+      })
+    } finally {
+      buildingApps.value = buildingApps.value.filter((name) => name !== item.app)
+    }
+  }
+  const failed = buildOutcomes.value.filter((outcome) => !outcome.ok).length
+  actionToasts.notify(
+    failed ? `构建完成：成功 ${buildOutcomes.value.length - failed} 个，失败 ${failed} 个。` : `构建已提交：${buildOutcomes.value.length} 个。`,
+    failed ? 'error' : 'success',
+  )
+}
+
+/**
+ * 判断某应用当前是否正在提交构建。
+ * @param app DevOps 应用名
+ * @returns 提交中返回 true
+ */
+function isAppBuilding(app: string): boolean {
+  return buildingApps.value.includes(app)
+}
+
+/* ------------------------- 发布页：创建 MR ------------------------- */
+
+/** 当前正在创建 MR 的「工作区/项目」键集合 */
+const releaseMrCreating = ref<string[]>([])
+/** 创建 MR 的错误提示 */
+const releaseMrError = ref('')
+/** 创建 MR 结果弹窗开关 */
+const releaseMrDialogOpen = ref(false)
+/** 创建 MR 结果弹窗展示的项（含可打开的 MR 链接） */
+const releaseMrDialogItems = ref<WorkspaceMergeRequestCreateItem[]>([])
+
+/**
+ * 生成一项 MR 结果的键。
+ * @param workspace 工作区名
+ * @param project 项目名
+ * @returns 唯一键
+ */
+function mrKey(workspace: string, project: string): string {
+  return `${workspace}/${project}`
+}
+
+/**
+ * 在发布页为指定项目创建 MR：源分支取项目检出分支，目标分支跟随顶部所选环境。
+ * 不传项目名表示对该工作区全部项目批量创建。
+ * 成功后弹出结果对话框列出 MR 链接，支持新窗口打开。
+ * @param workspace 工作区名
+ * @param projects 指定项目名清单；缺省表示工作区全部
+ * @returns Promise<void>
+ */
+async function createReleaseMr(workspace: string, projects?: string[]): Promise<void> {
+  if (releaseMrCreating.value.length || !buildAllowed.value) return
+  const names = projects ?? (workspaces.value.find((item) => item.name === workspace)?.projects.map((project) => project.name) ?? [])
+  if (!names.length) return
+  releaseMrError.value = ''
+  releaseMrCreating.value.push(...names.map((name) => mrKey(workspace, name)))
+  try {
+    const result: unknown = await apiRequest(
+      `/api/v1/workspaces/${encodeURIComponent(workspace)}/merge-requests`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          targetBranch: buildEnvironmentSpecs[selectedBuildEnv.value].mrTargetBranch,
+          projects: names,
+        }),
+      },
+    )
+    const parsed = workspaceMergeRequestCreateResultSchema.parse(result)
+    const failed = parsed.items.filter((item) => item.status === 'failed')
+    if (failed.length) {
+      releaseMrError.value = failed.map((item) => `${item.project}：${item.message ?? '创建失败'}`).join('；')
+    }
+    const succeeded = parsed.items.filter((item) => item.status !== 'failed')
+    if (succeeded.length) {
+      releaseMrDialogItems.value = succeeded
+      releaseMrDialogOpen.value = true
+    }
+    actionToasts.notify(
+      failed.length
+        ? `合并请求处理完成：成功 ${succeeded.length} 个，失败 ${failed.length} 个。`
+        : `合并请求处理完成：${succeeded.length} 个。`,
+      failed.length ? 'error' : 'success',
+    )
+  } catch (cause) {
+    releaseMrError.value = cause instanceof Error ? cause.message : '创建合并请求失败。'
+    actionToasts.notify(`创建合并请求失败：${releaseMrError.value}`, 'error')
+  } finally {
+    releaseMrCreating.value = releaseMrCreating.value.filter((key) => !names.some((name) => key === mrKey(workspace, name)))
+  }
+}
+
+/**
+ * MR 结果状态文案（结果弹窗用）。
+ * @param status 结果状态
+ * @returns 中文文案
+ */
+function releaseMrStatusLabel(status: WorkspaceMergeRequestCreateItem['status']): string {
+  return status === 'created' ? '已创建' : status === 'exists' ? '已存在' : '失败'
+}
+
+/**
+ * MR 结果状态样式类（结果弹窗用）。
+ * @param status 结果状态
+ * @returns 标签样式类
+ */
+function releaseMrStatusClass(status: WorkspaceMergeRequestCreateItem['status']): string {
+  return status === 'created' ? 'tag-success' : status === 'exists' ? 'tag-warning' : 'tag-danger'
+}
+
+/**
+ * 进入发布页时加载差异映射与工作区列表。
+ * @returns Promise<void>
+ */
+async function prepareReleasePage(): Promise<void> {
+  await Promise.all([loadApplicationMappings(), refreshWorkspaces()])
+}
+
 /**
  * 格式化时间为本地可读文本。
  * @param value ISO 时间字符串
@@ -2064,8 +2297,9 @@ function formatWorkspaceTime(value?: string): string {
     <div class="page-heading-row">
       <div>
         <h1>{{ pageHeading }}</h1>
-        <!-- 只在收件箱保留副标题：其余页面的说明由各分区标题自带，H1 不再叠加同义句 -->
+        <!-- 只在收件箱与发布页保留副标题：其余页面的说明由各分区标题自带，H1 不再叠加同义句 -->
         <p v-if="page === 'inbox'" class="page-subtitle">先处理真正需要你决策的事项。</p>
+        <p v-else-if="page === 'releases'" class="page-subtitle">按工作区构建项目 · 状态来自 DevOps 与本机快照，不伪装成实时</p>
       </div>
       <div class="heading-actions">
         <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
@@ -2228,8 +2462,6 @@ function formatWorkspaceTime(value?: string): string {
         <PipelineFlow
           :pipelines="workspacePipelines"
           @open-story="openRequirement"
-          @open-merge-request="openMergeRequest"
-          @open-build="openBuildArtifact"
           @go-crons="goCrons"
         />
 
@@ -2584,8 +2816,124 @@ function formatWorkspaceTime(value?: string): string {
     </template>
 
     <template v-else-if="page === 'releases'">
+      <!-- 护栏横幅：门控 / 通道不可用，状态同时用色与文字表达 -->
+      <div v-if="buildBlockReason" class="release-guard" :class="releaseGatePhase !== undefined ? 'is-danger' : 'is-warning'" role="alert">
+        <svg class="release-guard-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 1.7 16.4a1 1 0 0 0 .87 1.5h15a1 1 0 0 0 .87-1.5L10 2.5Zm0 4.2a1 1 0 0 1 1 1v4.1a1 1 0 1 1-2 0V7.7a1 1 0 0 1 1-1Zm0 8.3a1.15 1.15 0 1 1 0-2.3 1.15 1.15 0 0 1 0 2.3Z" fill="currentColor"/></svg>
+        <div>
+          <strong>{{ releaseGatePhase !== undefined ? 'Harness 发布窗口已锁定' : 'DevOps 通道不可用' }}</strong>
+          <p>{{ buildBlockReason }}</p>
+        </div>
+      </div>
+
+      <!-- 发射控制条：环境分段器 + 固定分支/build_other 展示 + 操作按钮 -->
+      <section class="surface release-control">
+        <div class="release-control-row">
+          <div class="release-env-picker">
+            <span class="release-label">构建 / MR 环境</span>
+            <div class="env-segments" role="group" aria-label="构建环境">
+              <button
+                v-for="env in buildEnvironments"
+                :key="env"
+                type="button"
+                class="env-segment"
+                :class="{ 'is-active': selectedBuildEnv === env, 'is-prod': env === 'prod' }"
+                :aria-pressed="selectedBuildEnv === env"
+                @click="selectBuildEnv(env)"
+              >
+                <span>{{ env }}</span>
+              </button>
+            </div>
+            <div class="release-env-facts">
+              <span>构建分支 <code>{{ branchOfEnv(selectedBuildEnv) }}</code></span>
+              <span>build_other <code>{{ buildOtherOf(selectedBuildEnv) }}</code></span>
+              <span>MR 目标 <code>{{ envSpecOf(selectedBuildEnv).mrTargetBranch }}</code></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 工作区分组的项目清单 -->
       <section class="surface">
-        <div class="empty-state"><strong>发布功能敬请期待</strong></div>
+        <div class="section-heading">
+          <div><h2>工作区项目</h2><p>构建分支与 build_other 由顶部所选环境统一决定；MR 源分支取项目当前检出分支。</p></div>
+          <span class="count-pill">{{ workspaces.length }} 个工作区</span>
+        </div>
+        <p v-if="releaseMrError" class="release-data-error" role="status">{{ releaseMrError }}</p>
+        <div v-if="workspacesLoading" class="empty-compact">正在加载工作区…</div>
+        <div v-else-if="!workspaces.length" class="empty-state"><strong>还没有工作区</strong><p>请先在「工作区」页创建工作区；发布页按工作区列出可构建的项目。</p></div>
+        <div v-else class="release-workspace-list">
+          <article v-for="workspace in workspaces" :key="workspace.name" class="release-workspace">
+            <div class="release-workspace-head">
+              <div class="release-workspace-title">
+                <strong>{{ workspace.name }}</strong>
+                <span class="count-pill">{{ workspace.projects.length }} 个项目</span>
+                <span v-if="workspace.missingProjects.length" class="tag tag-danger">{{ workspace.missingProjects.length }} 个目录缺失</span>
+              </div>
+              <div class="release-workspace-actions">
+                <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
+                  <span>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      plain
+                      :disabled="!buildAllowed || buildingApps.length > 0"
+                      @click="requestWorkspaceBuild(workspace.name)"
+                    >构建此工作区全部</el-button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
+                  <span>
+                    <el-button
+                      size="small"
+                      plain
+                      :disabled="!buildAllowed || releaseMrCreating.length > 0"
+                      :loading="releaseMrCreating.some((key) => key.startsWith(workspace.name + '/'))"
+                      @click="createReleaseMr(workspace.name)"
+                    >批量创建 MR</el-button>
+                  </span>
+                </el-tooltip>
+              </div>
+            </div>
+            <div class="release-project-table">
+              <div class="release-project-head">
+                <span>项目</span><span>DevOps 应用</span><span>检出分支（MR 源）</span><span>操作</span>
+              </div>
+              <div v-for="project in workspace.projects" :key="project.name" class="release-project-row">
+                <div class="release-project-name">
+                  <strong>{{ project.name }}</strong>
+                </div>
+                <div class="release-project-app">
+                  <code>{{ devopsAppOf(project.name) }}</code>
+                  <small>{{ devopsGroupOf(project.name) }}</small>
+                </div>
+                <code class="release-project-branch">{{ project.branch || '未知' }}</code>
+                <div class="release-project-actions">
+                  <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
+                    <span>
+                      <el-button
+                        size="small"
+                        :loading="isAppBuilding(devopsAppOf(project.name))"
+                        :disabled="!buildAllowed || buildingApps.length > 0"
+                        @click="requestSingleBuild(workspace.name, project.name)"
+                      >构建</el-button>
+                    </span>
+                  </el-tooltip>
+                  <el-tooltip :disabled="buildAllowed && !!project.branch" :content="!project.branch ? '未读取到检出分支，无法创建 MR' : buildBlockReason" placement="bottom">
+                    <span>
+                      <el-button
+                        size="small"
+                        plain
+                        :loading="releaseMrCreating.includes(mrKey(workspace.name, project.name))"
+                        :disabled="!buildAllowed || !project.branch || releaseMrCreating.length > 0"
+                        @click="createReleaseMr(workspace.name, [project.name])"
+                      >创建 MR</el-button>
+                    </span>
+                  </el-tooltip>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
       </section>
     </template>
 
@@ -2714,48 +3062,7 @@ function formatWorkspaceTime(value?: string): string {
       <el-button @click="selectedRequirement = null">关闭</el-button>
     </template>
   </el-drawer>
-  <el-drawer
-    :model-value="selectedMergeRequest !== null"
-    title="Merge Request 详情"
-    size="min(560px, 94vw)"
-    @close="selectedMergeRequest = null"
-  >
-    <template v-if="selectedMergeRequest">
-      <p class="eyebrow">{{ selectedMergeRequest.sourceBranch }} → {{ selectedMergeRequest.targetBranch }}</p>
-      <h2>{{ selectedMergeRequest.title }}</h2>
-      <div class="detail-grid">
-        <span>审批</span><strong>{{ selectedMergeRequest.approvals?.approved ? '已批准' : '未批准' }}</strong>
-        <span>批准人</span><strong>{{ selectedMergeRequest.approvals?.approvedBy.join('、') || '无' }}</strong>
-        <span>变更文件</span><strong>{{ selectedMergeRequest.changesCount ?? '未知' }}</strong>
-        <span>增删行</span>
-        <strong>
-          <template v-if="mergeRequestSummary(selectedMergeRequest)">
-            +{{ mergeRequestSummary(selectedMergeRequest)?.additions ?? '?' }} /
-            -{{ mergeRequestSummary(selectedMergeRequest)?.deletions ?? '?' }}
-            <small v-if="mergeRequestSummary(selectedMergeRequest)?.truncated" class="muted">（仅统计部分文件）</small>
-          </template>
-          <template v-else>无法确认</template>
-        </strong>
-      </div>
-      <section v-if="isMergeBlocked(selectedMergeRequest)" class="bug-detail-list">
-        <h3>Phase 4 合并阻断</h3>
-        <p class="muted">该 Story 处于 Phase 4 且此 MR 尚未合并；请确认已合并后再进入 Phase 5。</p>
-      </section>
-      <section v-if="mergeRequestSummary(selectedMergeRequest)?.hotFiles.length" class="bug-detail-list">
-        <h3>变更热点文件</h3>
-        <ul>
-          <li v-for="file in mergeRequestSummary(selectedMergeRequest)?.hotFiles" :key="file"><code>{{ file }}</code></li>
-        </ul>
-      </section>
-      <section class="bug-detail-list">
-        <h3>文件列表</h3>
-        <ul v-if="selectedMergeRequest.changedFiles?.length">
-          <li v-for="file in selectedMergeRequest.changedFiles" :key="file"><code>{{ file }}</code></li>
-        </ul>
-        <p v-else class="muted">没有变更文件，或 GitLab 未返回文件列表。</p>
-      </section>
-    </template>
-  </el-drawer>
+
 
   <!-- 工作区详情抽屉：展示该工作区包含哪些项目 -->
   <el-drawer
@@ -2985,6 +3292,63 @@ function formatWorkspaceTime(value?: string): string {
     <template #footer>
       <el-button :disabled="deleting" @click="closeDeleteDialog">{{ deleteResult ? '关闭' : '取消' }}</el-button>
       <el-button type="danger" :loading="deleting" :disabled="!canConfirmDelete || deleting || Boolean(deleteResult)" @click="confirmDeleteWorkspace">确认删除</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 构建二次确认：逐项列出应用/分支/build_other，写清副作用后才允许提交 -->
+  <el-dialog
+    v-model="buildConfirmOpen"
+    :title="`确认构建 · ${selectedBuildEnv}`"
+    width="min(680px, 94vw)"
+    :close-on-click-modal="false"
+    :close-on-press-escape="buildingApps.length === 0"
+  >
+    <p class="release-confirm-intro">将对下列 {{ buildConfirmItems.length }} 个应用触发 <code>{{ selectedBuildEnv }}</code> 构建：分支 <code>{{ branchOfEnv(selectedBuildEnv) }}</code>，build_other <code>{{ buildOtherOf(selectedBuildEnv) }}</code>。构建为不可逆写操作，提交后会等待 DevOps 真实回执。</p>
+    <div class="release-confirm-list">
+      <div v-for="item in buildConfirmItems" :key="`${item.workspace}/${item.app}`" class="release-confirm-row">
+        <div class="release-confirm-target">
+          <strong>{{ item.app }}</strong>
+          <small>{{ item.workspace }} / {{ item.project }} · {{ item.group }}</small>
+        </div>
+        <span v-if="buildOutcomes.find((outcome) => outcome.app === item.app)?.ok" class="tag tag-success">已提交</span>
+        <span v-else-if="buildOutcomes.find((outcome) => outcome.app === item.app)?.ok === false" class="tag tag-danger">失败</span>
+        <span v-else-if="isAppBuilding(item.app)" class="tag tag-warning">提交中</span>
+        <span v-else class="tag">待提交</span>
+      </div>
+    </div>
+    <p v-for="outcome in buildOutcomes.filter((item) => !item.ok)" :key="outcome.app" class="release-confirm-error" role="alert">{{ outcome.app }}：{{ outcome.message }}</p>
+    <template #footer>
+      <el-button :disabled="buildingApps.length > 0" @click="buildConfirmOpen = false">{{ buildOutcomes.length ? '关闭' : '取消' }}</el-button>
+      <el-button type="primary" :loading="buildingApps.length > 0" :disabled="!canSubmitBuild" @click="submitBuilds">确认构建</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 创建 MR 结果：列出 MR 链接，支持新窗口打开 -->
+  <el-dialog
+    v-model="releaseMrDialogOpen"
+    title="合并请求已处理"
+    width="min(560px, 94vw)"
+  >
+    <p class="release-mr-intro">下列项目的合并请求已处理完成，点击链接在新窗口打开。</p>
+    <div class="release-mr-list">
+      <div v-for="item in releaseMrDialogItems" :key="item.project" class="release-mr-row">
+        <div class="release-mr-target">
+          <strong>{{ item.project }}</strong>
+          <small>{{ item.sourceBranch || '未知分支' }} → {{ item.targetBranch }}</small>
+        </div>
+        <span class="tag" :class="releaseMrStatusClass(item.status)">{{ releaseMrStatusLabel(item.status) }}</span>
+        <a
+          v-if="item.webUrl"
+          :href="item.webUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="release-mr-link"
+        >打开 MR ↗</a>
+        <span v-else class="release-unknown">无链接</span>
+      </div>
+    </div>
+    <template #footer>
+      <el-button type="primary" @click="releaseMrDialogOpen = false">关闭</el-button>
     </template>
   </el-dialog>
 

@@ -131,7 +131,7 @@ export const workspaceDeleteResultSchema = z.object({
  * 工作区创建合并请求时可选的基线目标分支。
  * 顺序即前端下拉的展示顺序，第一个 `test` 为默认值。
  */
-export const mergeRequestTargetBranches = ['test', 'pre', 'pre-txnj', 'master', 'prod-txnj'] as const
+export const mergeRequestTargetBranches = ['dev', 'test', 'pre', 'pre-txnj', 'master', 'prod-txnj'] as const
 
 /** 目标分支的默认值（前端下拉默认选中） */
 export const defaultMergeRequestTargetBranch = 'test'
@@ -538,6 +538,7 @@ export const auditActionSchema = z.enum([
   'service.stop',
   'service.remove',
   'workspace.initialize.resume',
+  'build.trigger',
 ])
 
 /**
@@ -630,6 +631,68 @@ export const branchSchema = z.object({
   lastCommitTime: upstreamDateTimeSchema.optional(),
 })
 
+/**
+ * 构建环境标识。前端分段器与后端共用同一口径。
+ * 6 档环境各有固定的 build_other 与分支映射，见下方 buildEnvironmentSpecs。
+ */
+export const buildEnvironmentSchema = z.enum(['dev', 'test', 'pre', 'pre-txnj', 'prod-txnj', 'prod'])
+export type BuildEnvironment = z.infer<typeof buildEnvironmentSchema>
+
+/**
+ * 单个构建环境的固定参数口径。
+ * - buildOther：DevOps `build_other` 参数值；prod 特例为 `build`。
+ * - branch：该环境统一使用的构建分支（origin/ 形式）；prod 特例为 `origin/master`。
+ * - env：仅 dev 传 `env=dev`，其余环境在请求体中完全省略 env 字段。
+ */
+export interface BuildEnvironmentSpec {
+  buildOther: string
+  branch: string
+  /** 是否向 DevOps 传 env 字段（仅 dev 为 true） */
+  sendEnv: boolean
+  /** 该环境创建 MR 时的目标分支 */
+  mrTargetBranch: string
+}
+
+/**
+ * 环境 → 构建/MR 固定参数映射（前后端唯一口径）。
+ * 集中在这里避免前端分段器、后端触发构建、MR 目标分支各自硬编码产生漂移。
+ */
+export const buildEnvironmentSpecs: Record<BuildEnvironment, BuildEnvironmentSpec> = {
+  dev: { buildOther: 'dev', branch: 'origin/dev', sendEnv: true, mrTargetBranch: 'dev' },
+  test: { buildOther: 'test', branch: 'origin/test', sendEnv: false, mrTargetBranch: 'test' },
+  pre: { buildOther: 'pre', branch: 'origin/pre', sendEnv: false, mrTargetBranch: 'pre' },
+  'pre-txnj': { buildOther: 'pre-txnj', branch: 'origin/pre-txnj', sendEnv: false, mrTargetBranch: 'pre-txnj' },
+  'prod-txnj': { buildOther: 'prod-txnj', branch: 'origin/prod-txnj', sendEnv: false, mrTargetBranch: 'prod-txnj' },
+  prod: { buildOther: 'build', branch: 'origin/master', sendEnv: false, mrTargetBranch: 'master' },
+}
+
+/**
+ * 触发构建请求体。
+ * 分支与 build_other 由后端按 env 的固定映射决定，不信任前端传来的分支；
+ * group/app 来自应用映射。
+ */
+export const buildTriggerRequestSchema = z.object({
+  group: z.string().min(1).max(200),
+  app: z.string().min(1).max(200),
+  env: buildEnvironmentSchema,
+})
+export type BuildTriggerRequest = z.infer<typeof buildTriggerRequestSchema>
+
+/** 触发构建的回执：向上游原样透传并补一份口径，不伪装成部署成功 */
+export const buildTriggerResultSchema = z.object({
+  group: z.string(),
+  app: z.string(),
+  env: buildEnvironmentSchema,
+  branch: z.string(),
+  buildOther: z.string(),
+  /** DevOps 原始响应，便于追溯 */
+  raw: z.unknown().optional(),
+  /** 构建号（能从响应解析时） */
+  number: z.string().optional(),
+  triggeredAt: z.string(),
+})
+export type BuildTriggerResult = z.infer<typeof buildTriggerResultSchema>
+
 export const mergeRequestSchema = z.object({
   projectId: z.number().int().positive(),
   id: z.string(),
@@ -657,8 +720,6 @@ export const workspacePipelineStorySchema = z.object({
   requirement: requirementSchema,
   /** 是否存在 `.harness-active` 活跃流程标记 */
   harnessActive: z.boolean(),
-  /** 归属该 Story 的合并请求 */
-  mergeRequests: z.array(mergeRequestSchema),
   /** 归属该 Story 的定时任务 */
   crons: z.array(cronSchema),
   /** 归属该 Story 的 CodeBuddy 实例 */
@@ -700,12 +761,6 @@ export const workspacePipelineSchema = z.object({
   story: workspacePipelineStorySchema.optional(),
   /** 第一个项目下检测到的 Story 份数，大于 1 表示有多余 plans，仅展示其中一份 */
   storyCandidates: z.number().int().nonnegative(),
-  /** 合并请求：第一个项目当前分支 + 该 Story */
-  mergeRequests: z.array(mergeRequestSchema),
-  /** 构建记录：按第一个项目名（默认等于 DevOps 应用名）匹配 */
-  builds: z.array(buildSchema),
-  /** 远程分支：按第一个项目名匹配 */
-  branches: z.array(branchSchema),
   /** 定时任务：位于第一个项目目录下的全部任务 */
   crons: z.array(cronSchema),
 })
@@ -734,9 +789,6 @@ export const snapshotSchema = z.object({
   inbox: z.array(inboxItemSchema),
   jobs: z.array(jobSchema),
   crons: z.array(cronSchema),
-  builds: z.array(buildSchema),
-  branches: z.array(branchSchema).optional(),
-  mergeRequests: z.array(mergeRequestSchema),
   /** 以工作区为根组织的流水线视图；工作区扫描失败时缺省 */
   workspacePipelines: z.array(workspacePipelineSchema).optional(),
 })

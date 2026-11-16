@@ -1018,5 +1018,168 @@
   .channel-purpose { display: block; margin-left: 0; }
 }
 
+/* ---------- 9. 发布页：构建发射台 ---------- */
+
+/* 护栏横幅：状态同时用色与文字表达，危险档用红色、其余用警示色 */
+.release-guard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--warning-soft) 40%, var(--surface));
+}
+.release-guard.is-danger {
+  border-color: color-mix(in oklch, var(--danger) 45%, var(--line));
+  background: color-mix(in oklch, var(--danger-soft) 40%, var(--surface));
+}
+.release-guard-icon { width: 18px; height: 18px; flex: 0 0 18px; margin-top: 1px; color: var(--amber); }
+.release-guard.is-danger .release-guard-icon { color: var(--red); }
+.release-guard strong { color: var(--text-strong); font-size: 13px; font-weight: 620; }
+.release-guard p { margin: 3px 0 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.55; }
+
+/* 发射控制条：环境与操作同屏，不拆成向导 */
+.release-control { padding: 18px 20px; }
+.release-control-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.release-env-picker { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.release-label { color: var(--text-muted); font-size: 11px; font-weight: 550; letter-spacing: .04em; }
+
+/* 6 档环境分段器：签名组件，选中态用仪器蓝，prod 档用危险色提示其不可逆影响 */
+.env-segments {
+  display: inline-flex;
+  gap: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+.env-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.env-segment:hover { background: var(--bg-hover); color: var(--text-strong); }
+.env-segment:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.env-segment.is-active {
+  border-color: color-mix(in oklch, var(--brand) 55%, var(--line));
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 620;
+}
+.env-segment.is-active.is-prod {
+  border-color: color-mix(in oklch, var(--danger) 55%, var(--line));
+  background: color-mix(in oklch, var(--danger-soft) 45%, var(--surface));
+  color: var(--danger);
+}
+/* 所选环境的固定口径：构建分支 / build_other / MR 目标，凹陷底色承载机器数据 */
+.release-env-facts { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; color: var(--text-muted); font-size: 11px; }
+.release-env-facts code { margin-left: 4px; color: var(--text); font-family: var(--font-mono); font-size: 10.5px; }
+.release-data-error { margin: 12px 0 0; color: var(--red); font-size: 12.5px; }
+
+/* 工作区分组的项目清单 */
+.release-workspace-list { display: grid; gap: 14px; }
+.release-workspace { border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--surface); }
+.release-workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-subtle);
+}
+.release-workspace-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.release-workspace-title strong { color: var(--text-strong); font-size: 13px; font-weight: 620; }
+.release-workspace-actions { display: flex; align-items: center; gap: 8px; }
+
+/* 项目表：沿用映射表的网格口径，凹陷块承载机器输出 */
+.release-project-table { display: grid; overflow-x: auto; }
+.release-project-head, .release-project-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.3fr) minmax(130px, 1.1fr) minmax(160px, 1.4fr) minmax(170px, auto);
+  align-items: center;
+  gap: 12px;
+  min-width: 660px;
+  padding: 9px 16px;
+}
+.release-project-head {
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: .06em;
+  border-bottom: 1px solid var(--line-subtle);
+}
+.release-project-row { border-top: 1px solid var(--line-subtle); font-size: 12.5px; }
+.release-project-row:first-of-type { border-top: 0; }
+.release-project-name { display: flex; flex-direction: column; gap: 2px; }
+.release-project-name strong { overflow: hidden; color: var(--text); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.release-project-app { display: flex; flex-direction: column; gap: 2px; }
+.release-project-app code { color: var(--text); font-size: 11px; }
+.release-project-app small { color: var(--text-faint); font-size: 10px; }
+.release-project-branch { color: var(--text-muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.release-project-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+/* 构建二次确认弹窗 */
+.release-confirm-intro { margin: 0 0 14px; color: var(--text-muted); font-size: 12.5px; line-height: 1.6; }
+.release-confirm-intro code { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
+.release-confirm-list { display: grid; gap: 0; border: 1px solid var(--line-subtle); border-radius: var(--radius-sm); }
+.release-confirm-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line-subtle);
+  font-size: 12.5px;
+}
+.release-confirm-row:first-child { border-top: 0; }
+.release-confirm-target { display: flex; flex-direction: column; gap: 2px; }
+.release-confirm-target strong { color: var(--text-strong); font-weight: 600; }
+.release-confirm-target small { color: var(--text-faint); font-size: 10px; }
+.release-confirm-error { margin: 10px 0 0; color: var(--red); font-size: 12.5px; }
+
+/* 创建 MR 结果弹窗：逐项列出 MR 链接，新窗口打开 */
+.release-mr-intro { margin: 0 0 14px; color: var(--text-muted); font-size: 12.5px; line-height: 1.6; }
+.release-mr-list { display: grid; border: 1px solid var(--line-subtle); border-radius: var(--radius-sm); }
+.release-mr-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-subtle);
+  font-size: 12.5px;
+}
+.release-mr-row:first-child { border-top: 0; }
+.release-mr-target { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.release-mr-target strong { color: var(--text-strong); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.release-mr-target small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; overflow-wrap: anywhere; }
+.release-mr-link { color: var(--brand); font-size: 12.5px; text-decoration: none; white-space: nowrap; }
+.release-mr-link:hover { color: var(--brand-hover); text-decoration: underline; }
+.release-mr-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--radius-xs); }
+.release-unknown { color: var(--text-faint); font-size: 11px; }
+
+/* 窄屏降级：项目表改为明确横向滚动 */
+@media (max-width: 640px) {
+  .env-segment { padding: 0 8px; font-size: 11px; }
+  .release-workspace-head { flex-direction: column; align-items: flex-start; }
+  .release-workspace-actions { width: 100%; flex-wrap: wrap; }
+  .release-env-facts { gap: 6px 12px; }
+}
+
 
 
