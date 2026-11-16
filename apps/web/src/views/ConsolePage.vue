@@ -2064,7 +2064,8 @@ function formatWorkspaceTime(value?: string): string {
     <div class="page-heading-row">
       <div>
         <h1>{{ pageHeading }}</h1>
-        <p class="page-subtitle">{{ page === 'inbox' ? '先处理真正需要你决策的事项。' : '状态来自各自系统；控制台只聚合展示与提供安全入口。' }}</p>
+        <!-- 只在收件箱保留副标题：其余页面的说明由各分区标题自带，H1 不再叠加同义句 -->
+        <p v-if="page === 'inbox'" class="page-subtitle">先处理真正需要你决策的事项。</p>
       </div>
       <div class="heading-actions">
         <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
@@ -2076,7 +2077,7 @@ function formatWorkspaceTime(value?: string): string {
 
     <div v-if="store.error" class="notice notice-warning" role="status">
       <span class="notice-symbol">!</span>
-      <div><strong>数据暂不可用</strong><p>{{ store.error }}</p></div>
+      <div><strong>数据暂不可用</strong><p>{{ store.error }}</p><p>此页只聚合展示上游系统状态，不会替代它们执行操作；修复上方原因后可重试。</p></div>
       <el-button text @click="refreshSnapshot(true)">重试</el-button>
     </div>
 
