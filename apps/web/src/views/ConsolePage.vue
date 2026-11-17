@@ -20,6 +20,7 @@ import {
   workspaceSummarySchema,
   type Requirement,
   type ApplicationMapping,
+  type BoardStory,
   type Cron,
   type CronMode,
   type InboxItem,
@@ -852,10 +853,149 @@ const emptyWorkspaceGuides = computed<Record<string, string>>(() => {
   const guides: Record<string, string> = {}
   for (const group of instanceGroups.value) {
     const subject = group.project?.name ? `项目 ${group.project.name} ` : '当前工作区'
-    guides[group.key] = `${subject}下还没有 Story。请在 ${group.path} 目录执行 /start <storyId> 生成 Story，随后回到本页刷新即可看到实例入口。`
+    guides[group.key] = `${subject}下还没有 Story。点「新建 Story」在右侧填写信息创建骨架，即可启动实例并在对话中执行 /start 补全需求。`
   }
   return guides
 })
+
+/* ------------------------- 空工作区：新建最小 Story 骨架 ------------------------- */
+
+/** 新建 Story 表单草稿：业务标识 + 标题 */
+const storyDraft = ref<{ storyId: string; title: string }>({ storyId: '', title: '' })
+/** 新建 Story 的表单校验 / 接口错误 */
+const storyCreateError = ref('')
+/** 新建 Story 提交中标记 */
+const storyCreating = ref(false)
+/** 当前在右侧创建区锁定的空工作区 key；非空时右侧展示新建 Story 表单 */
+const selectedEmptyGroupKey = ref('')
+/** 当前创建表单锁定的工作区 key 与 name */
+const storyTargetWorkspace = ref<{ key: string; name: string }>({ key: '', name: '' })
+/**
+ * 工作区关联的 TAPD 需求推导状态：
+ * pending 查询中 / bound 已关联（带 TAPD 来源）/ unbound 未关联。
+ * 由看板「工作区 ↔ TAPD 需求」绑定自动推导，无需用户输入。
+ */
+const storyTapdBinding = ref<
+  | { state: 'pending' }
+  | { state: 'bound'; storyIdInTapd: string; tapdUrl?: string; owner?: string; title: string }
+  | { state: 'unbound' }
+>({ state: 'pending' })
+/** TAPD 推导代际令牌：快速切换工作区时作废旧推导，避免把 A 的绑定写到 B 的 Story */
+let storyBindingGeneration = 0
+
+/**
+ * 选中一个空工作区并在右侧打开「新建 Story」表单。
+ * 清空当前 Story / Job 选中态，避免右侧同时渲染实例内容与创建表单；
+ * 然后从看板绑定自动推导该工作区关联的 TAPD 需求（board 未加载时主动补拉）。
+ * 使用代际令牌保证：快速切换工作区时，只有最后一次推导能写入结果。
+ * @param group 被点击的空工作区实例分组
+ * @returns Promise<void>
+ */
+async function selectEmptyWorkspace(group: InstanceGroup): Promise<void> {
+  const generation = ++storyBindingGeneration
+  selectedEmptyGroupKey.value = group.key
+  storyTargetWorkspace.value = { key: group.key, name: group.name }
+  storyDraft.value = { storyId: '', title: '' }
+  storyCreateError.value = ''
+  selectedStoryId.value = ''
+  if (selectedJob.value) {
+    jobStreamController?.abort()
+    selectedJob.value = null
+    jobExtras.clearDetail()
+    jobTranscript.value = ''
+    jobOutput.value = ''
+  }
+
+  // 自动带出 TAPD 关联：board 仅在看板页加载，实例页可能未加载，这里按需补拉
+  storyTapdBinding.value = { state: 'pending' }
+  try {
+    if (!board.fetchedAt || board.error) await board.load()
+    // 请求飞行期间可能已切到别的工作区，令牌不符则丢弃，避免串数据
+    if (generation !== storyBindingGeneration) return
+    const stories: BoardStory[] = board.stories
+    const binding = stories.find((story) => story.workspaceName === group.name)
+    // 写入前二次校验：目标工作区必须与当前锁定一致，否则丢弃旧推导
+    if (generation !== storyBindingGeneration || storyTargetWorkspace.value.name !== group.name) return
+    if (binding?.storyId) {
+      storyTapdBinding.value = {
+        state: 'bound',
+        storyIdInTapd: binding.storyId,
+        ...(binding.tapdUrl ? { tapdUrl: binding.tapdUrl } : {}),
+        ...(binding.owner ? { owner: binding.owner } : {}),
+        title: binding.title,
+      }
+    } else {
+      storyTapdBinding.value = { state: 'unbound' }
+    }
+  } catch {
+    // board.load() 内部已吞异常并写 board.error，这里仅兜底为未关联
+    if (generation !== storyBindingGeneration) return
+    storyTapdBinding.value = { state: 'unbound' }
+  }
+}
+
+/** 取消在右侧的新建 Story 表单，回到默认占位态。 */
+function cancelStoryCreate(): void {
+  if (storyCreating.value) return
+  selectedEmptyGroupKey.value = ''
+  storyTargetWorkspace.value = { key: '', name: '' }
+  storyDraft.value = { storyId: '', title: '' }
+  storyCreateError.value = ''
+  storyTapdBinding.value = { state: 'pending' }
+}
+
+/**
+ * 提交新建最小 Story 骨架。
+ * 成功后强制刷新快照重建 local 扫描段，instanceGroups 为 computed 会自动重算，
+ * 新 Story 卡片随即出现，用户即可启动实例并在对话中执行 /start 补全。
+ * @returns Promise<void>，失败信息写入 storyCreateError
+ */
+async function submitStoryCreate(): Promise<void> {
+  const draft = storyDraft.value
+  const storyId = draft.storyId.trim()
+  const title = draft.title.trim()
+  // 前端校验：与后端 storyCreateRequestSchema 同口径，提前给出友好提示
+  if (!/^[A-Za-z0-9._-]+$/.test(storyId) || storyId === '.' || storyId === '..') {
+    storyCreateError.value = 'Story ID 仅允许字母、数字、点、下划线、连字符，且不能是 . 或 ..'
+    return
+  }
+  if (!title) {
+    storyCreateError.value = '请填写 Story 标题。'
+    return
+  }
+  storyCreating.value = true
+  storyCreateError.value = ''
+  try {
+    // 组装 TAPD 来源：仅在推导出绑定时携带，后端据此写 sources.storyIdInTapd
+    const binding = storyTapdBinding.value
+    const sources = binding.state === 'bound'
+      ? {
+          storyIdInTapd: binding.storyIdInTapd,
+          ...(binding.tapdUrl ? { tapdUrl: binding.tapdUrl } : {}),
+          ...(binding.owner ? { owner: binding.owner } : {}),
+        }
+      : undefined
+    await apiRequest('/api/v1/stories', {
+      method: 'POST',
+      body: JSON.stringify({
+        storyId,
+        title,
+        workspaceName: storyTargetWorkspace.value.name,
+        ...(sources ? { sources } : {}),
+      }),
+    })
+    // 重建 local 段：readPlans 扫描到新目录，实例卡片自动出现
+    await store.refresh(true)
+    // 创建完成后退出创建态并自动聚焦新 Story，右侧切换为实例操作面板
+    selectedEmptyGroupKey.value = ''
+    selectedStoryId.value = storyId
+    actionToasts.notify(`Story「${title}」已创建，现在可以启动实例并在对话中执行 /start ${storyId}`, 'success')
+  } catch (cause) {
+    storyCreateError.value = cause instanceof Error ? cause.message : '创建 Story 失败。'
+  } finally {
+    storyCreating.value = false
+  }
+}
 
 /**
  * 定时页分组：同样以工作区为根，一个工作区只展示第一个项目的 Story 任务。
@@ -2545,29 +2685,51 @@ function formatWorkspaceTime(value?: string): string {
           <el-button text @click="board.load()">重试</el-button>
         </div>
         <div v-if="board.stories.length" class="board-list">
-          <article v-for="story in board.stories" :key="story.storyId" class="board-row">
-            <div class="board-main">
-              <a :href="story.tapdUrl" target="_blank" rel="noreferrer">{{ story.title }}</a>
-              <small>
-                <code>{{ story.storyId }}</code>
-                <span v-if="story.statusLabel || story.status" :title="story.status">状态 {{ story.statusLabel ?? story.status }}</span>
-                <span v-if="story.iterationName">{{ story.iterationName }}</span>
-                <span v-if="story.owner">{{ story.owner }}</span>
-              </small>
+          <article v-for="story in board.stories" :key="story.storyId" class="board-parent" :class="{ 'is-expanded': board.isParentExpanded(story.storyId) }">
+            <div class="board-row board-parent-row">
+              <div class="board-main">
+                <button type="button" class="board-expand-button" :aria-expanded="board.isParentExpanded(story.storyId)" :aria-label="board.isParentExpanded(story.storyId) ? '收起子需求' : '展开子需求'" @click="board.toggleParent(story.storyId)">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </button>
+                <a :href="story.parentTapdUrl ?? story.tapdUrl" target="_blank" rel="noreferrer">{{ story.title }}</a>
+                <small>
+                  <code>{{ story.storyId }}</code>
+                  <span v-if="story.statusLabel || story.status" :title="story.status">状态 {{ story.statusLabel ?? story.status }}</span>
+                  <span v-if="story.iterationName">{{ story.iterationName }}</span>
+                  <span v-if="story.owner">{{ story.owner }}</span>
+                  <span v-if="board.childrenOf(story).length" class="board-child-count">{{ board.childrenOf(story).length }} 个子需求</span>
+                  <span v-if="story.bugNew || story.bugReopened" class="board-bug-count">本人缺陷 {{ (story.bugNew ?? 0) + (story.bugReopened ?? 0) }}</span>
+                </small>
+              </div>
+              <div class="board-workspace">
+                <el-select v-model="board.workspaceDraft[story.storyId]" clearable filterable placeholder="选择本地工作区" @change="board.bindSelected(story)">
+                  <el-option v-for="workspace in board.workspaceOptionsFor(story)" :key="workspace.name" :label="workspace.name" :value="workspace.name" />
+                </el-select>
+                <code v-if="story.workspacePath">{{ story.workspacePath }}</code>
+                <small v-else-if="story.workspaceName" class="mapping-error">目录未找到：{{ story.workspaceName }}</small>
+                <small v-if="!story.inTapdList" class="tag tag-warning">本地手动添加</small>
+              </div>
+              <div class="board-actions">
+                <el-button size="small" :loading="board.unbindingStoryId === story.storyId" :disabled="!story.workspaceName" @click="board.unbindWorkspace(story.storyId)">解绑</el-button>
+              </div>
+              <p v-if="board.rowErrors[story.storyId]" class="mapping-error" role="alert">{{ board.rowErrors[story.storyId] }}</p>
             </div>
-            <div class="board-workspace">
-              <el-select v-model="board.workspaceDraft[story.storyId]" clearable filterable placeholder="选择本地工作区" @change="board.bindSelected(story)">
-                <el-option v-for="workspace in board.workspaceOptionsFor(story)" :key="workspace.name" :label="workspace.name" :value="workspace.name" />
-              </el-select>
-              <code v-if="story.workspacePath">{{ story.workspacePath }}</code>
-              <small v-else-if="story.workspaceName" class="mapping-error">目录未找到：{{ story.workspaceName }}</small>
-              <small v-else class="muted">未关联本地工作区</small>
-              <small v-if="!story.inTapdList" class="tag tag-warning">本地手动添加</small>
+            <div v-show="board.isParentExpanded(story.storyId)" class="board-children">
+              <div v-for="child in board.childrenOf(story)" :key="child.storyId" class="board-row board-child-row">
+                <div class="board-main">
+                  <a :href="child.parentTapdUrl ?? child.tapdUrl" target="_blank" rel="noreferrer">{{ child.title }}</a>
+                  <small>
+                    <code>{{ child.storyId }}</code>
+                    <span v-if="child.statusLabel || child.status" :title="child.status">状态 {{ child.statusLabel ?? child.status }}</span>
+                    <span v-if="child.owner">{{ child.owner }}</span>
+                  </small>
+                </div>
+                <div class="board-workspace">
+                  <small class="muted">工作区绑定在父需求上</small>
+                </div>
+              </div>
+              <div v-if="!board.childrenOf(story).length" class="board-children-empty">该父需求下没有未发布的子需求。</div>
             </div>
-            <div class="board-actions">
-              <el-button size="small" :loading="board.unbindingStoryId === story.storyId" :disabled="!story.workspaceName" @click="board.unbindWorkspace(story.storyId)">解绑</el-button>
-            </div>
-            <p v-if="board.rowErrors[story.storyId]" class="mapping-error" role="alert">{{ board.rowErrors[story.storyId] }}</p>
           </article>
         </div>
         <div v-else-if="board.loading" class="empty-compact">正在查询 TAPD 需求…</div>
@@ -2589,7 +2751,7 @@ function formatWorkspaceTime(value?: string): string {
 
       <el-dialog v-model="board.manualOpen" title="手动添加需求" width="min(560px, 94vw)" :close-on-click-modal="false" @close="board.closeManual()">
         <div class="board-manual-form">
-          <label>TAPD 需求链接或 ID<el-input v-model="board.manualDraft.tapdStoryId" placeholder="https://www.tapd.cn/.../view/1138... 或纯数字 ID" /></label>
+          <label>TAPD 需求链接或 ID<el-input v-model="board.manualDraft.tapdStoryId" placeholder="https://www.tapd.cn/.../view/1138... 或纯数字 ID；子需求链接会自动绑定到其父需求" /></label>
           <label>需求名称（可选，TAPD 查询不到时展示）<el-input v-model="board.manualDraft.storyTitle" /></label>
           <label>关联本地工作区<el-select v-model="board.manualDraft.workspaceName" filterable placeholder="选择 *.code-workspace 识别出的工作区">
             <el-option v-for="workspace in board.workspaces" :key="workspace.name" :label="workspace.name" :value="workspace.name" />
@@ -2651,6 +2813,7 @@ function formatWorkspaceTime(value?: string): string {
           <div v-for="group in instanceGroups" :key="group.key" class="workspace-block">
             <div class="workspace-block-head">
               <div class="workspace-main"><strong>{{ group.name }}</strong><small><code>{{ group.path }}</code></small></div>
+              <el-button v-if="!group.stories.length" class="workspace-create-story" type="primary" size="small" plain @click="selectEmptyWorkspace(group)">新建 Story</el-button>
             </div>
             <article class="project-block">
               <div class="project-head">
@@ -2658,7 +2821,9 @@ function formatWorkspaceTime(value?: string): string {
                 <code v-if="group.project?.branch">{{ group.project?.branch }}</code>
                 <small class="muted">{{ group.stories.length }} 个 Story</small>
               </div>
-              <div v-if="!group.stories.length" class="project-empty">{{ emptyWorkspaceGuides[group.key] }}</div>
+              <div v-if="!group.stories.length" class="project-empty">
+                <span>{{ emptyWorkspaceGuides[group.key] }}</span>
+              </div>
               <template v-for="requirement in group.stories" :key="requirement.storyId">
                 <InstanceStoryCard
                   :story-id="requirement.storyId"
@@ -2832,6 +2997,41 @@ function formatWorkspaceTime(value?: string): string {
               <div class="instance-form-actions">
                 <el-button type="primary" :loading="jobActionLoading" :disabled="!jobReply.trim()" @click="replyToJob">发送</el-button>
               </div>
+            </div>
+          </template>
+          <template v-else-if="selectedEmptyGroupKey">
+            <p class="eyebrow">NEW STORY</p>
+            <h2>新建 Story 骨架</h2>
+            <p class="muted">
+              在「{{ storyTargetWorkspace.name }}」的第一个项目下创建最小 Story。创建后即可启动 CodeBuddy 实例，在对话中执行
+              /start {{ storyDraft.storyId || '<storyId>' }} 由 Harness 补全需求。
+            </p>
+            <div class="instance-field story-tapd-binding">
+              <span>已关联 TAPD 需求</span>
+              <template v-if="storyTapdBinding.state === 'pending'">
+                <span class="muted">正在查询工作区的 TAPD 关联…</span>
+              </template>
+              <template v-else-if="storyTapdBinding.state === 'bound'">
+                <span class="tapd-bound-hint">已关联需求 #{{ storyTapdBinding.storyIdInTapd }}（{{ storyTapdBinding.title }}）</span>
+              </template>
+              <template v-else>
+                <span class="muted">该工作区暂未关联 TAPD 需求，将创建不关联 TAPD 的骨架。</span>
+              </template>
+            </div>
+            <div class="instance-form">
+              <label class="instance-field">
+                <span>Story ID</span>
+                <el-input v-model="storyDraft.storyId" placeholder="如 customer-service-onboarding" />
+              </label>
+              <label class="instance-field">
+                <span>Story 标题</span>
+                <el-input v-model="storyDraft.title" placeholder="一句话描述这个 Story 要做什么" />
+              </label>
+            </div>
+            <p v-if="storyCreateError" class="mapping-error" role="alert">{{ storyCreateError }}</p>
+            <div class="instance-form-actions">
+              <el-button @click="cancelStoryCreate()">取消</el-button>
+              <el-button type="primary" :loading="storyCreating" :disabled="storyTapdBinding.state === 'pending'" @click="submitStoryCreate()">创建 Story</el-button>
             </div>
           </template>
           <template v-else>

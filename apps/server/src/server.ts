@@ -13,6 +13,7 @@ import {
   buildEnvironmentSpecs,
   buildTriggerRequestSchema,
   buildTriggerResultSchema,
+  defaultTapdWorkspaceId,
   jobCreateRequestSchema,
   jobDetailSchema,
   jobPinRequestSchema,
@@ -78,6 +79,7 @@ import { ServiceMonitor } from './services/service-monitor.js'
 import { registerCronRoutes } from './routes/crons.js'
 import { registerServiceRoutes } from './routes/services.js'
 import { registerAuditRoutes } from './routes/audit.js'
+import { registerStoryRoutes } from './routes/stories.js'
 import { restoreCronOwners } from './services/cron-recovery.js'
 
 export interface ServerOptions {
@@ -91,7 +93,7 @@ export interface ServerOptions {
   cronFactsProvider?: () => Promise<CronFacts>
   devOpsAdapter?: DevOpsAdapter
   gitLabAdapter?: GitLabAdapter
-  tapdAdapter?: Pick<TapdAdapter, 'listOwnedStories'>
+  tapdAdapter?: Pick<TapdAdapter, 'listOwnedStories' | 'resolveParentStoryId'>
   applicationMappingStore?: ApplicationMappingStore
   cronMappingStore?: CronMappingStore
   workspaceBindingStore?: WorkspaceBindingStore
@@ -242,6 +244,11 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     client: scheduledTasks,
     mappings: cronMappings,
   })
+  // 空工作区从 0 到 1：创建最小 Story 骨架，供实例页启动 CodeBuddy 后用 /start 补全
+  registerStoryRoutes(app, {
+    workspacesRoot,
+    audit: auditLog,
+  })
 
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/api/auth/login') {
@@ -355,7 +362,12 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const body = workspaceBindingRequestSchema.safeParse(request.body)
     if (!body.success) return invalidParameters(reply)
     try {
-      const tapdStoryId = normalizeTapdStoryId(body.data.tapdStoryId)
+      const normalizedId = normalizeTapdStoryId(body.data.tapdStoryId)
+      // 工作区绑定统一挂在父需求上：粘贴子需求链接时解析为其父需求 ID
+      const tapdStoryId = await tapd.resolveParentStoryId(normalizedId)
+      const tapdUrl = tapdStoryId === normalizedId
+        ? body.data.tapdUrl
+        : `https://www.tapd.cn/${defaultTapdWorkspaceId}/prong/stories/view/${tapdStoryId}`
       // 绑定目标必须是一个真实存在的工作区，避免保存指向空目录的映射
       const workspaces = await listWorkspaces(workspacesRoot)
       const target = workspaces.find((workspace) => workspace.name === body.data.workspaceName)
@@ -371,7 +383,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         tapdStoryId,
         workspaceName: target.name,
         ...(body.data.storyTitle ? { storyTitle: body.data.storyTitle } : {}),
-        ...(body.data.tapdUrl ? { tapdUrl: body.data.tapdUrl } : {}),
+        ...(tapdUrl ? { tapdUrl } : {}),
       })
     } catch (error) {
       if (error instanceof WorkspaceBindingConflictError) {

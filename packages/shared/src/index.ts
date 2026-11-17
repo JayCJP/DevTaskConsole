@@ -180,11 +180,8 @@ export const workspaceMergeRequestCreateResultSchema = z.object({
   items: z.array(workspaceMergeRequestCreateItemSchema),
 })
 
-/**
- * TAPD 需求（数据元）：按处理人从 TAPD 查询得到的只读快照。
- * storyId 为 TAPD 需求 ID，tapdUrl 为可直接打开的详情链接。
- */
-export const tapdStorySchema = z.object({
+/** TAPD 需求公共字段（父行与折叠子行共用） */
+const tapdStoryFields = {
   storyId: z.string(),
   title: z.string(),
   /** TAPD 原始状态码（如 status_9），不做本地猜测式翻译 */
@@ -197,6 +194,31 @@ export const tapdStorySchema = z.object({
   priority: z.string().optional(),
   createdAt: z.string().optional(),
   tapdUrl: z.string().url(),
+}
+
+/**
+ * TAPD 子需求（数据元）：按处理人从 TAPD 查询得到的只读快照。
+ * storyId 为 TAPD 需求 ID，tapdUrl 为可直接打开的详情链接。
+ */
+export const tapdChildStorySchema = z.object(tapdStoryFields)
+
+/**
+ * TAPD 需求数据元：父需求一行 + 折叠的子需求。
+ * 顶层为父需求行（tapdUrl 指向父），children 为子需求。
+ */
+export const tapdStorySchema = z.object({
+  ...tapdStoryFields,
+  /** TAPD 父需求 ID；"0" 或缺省表示自身即父需求 */
+  parentStoryId: z.string().optional(),
+  /** 折叠在其下的子需求 */
+  children: z.array(tapdChildStorySchema).optional(),
+  /** 看板行是否为父需求行（用于前端区分渲染父/子） */
+  isParentRow: z.boolean().optional(),
+  /** 该行展示用的父需求链接：子行指向其父，父行指向自身 */
+  parentTapdUrl: z.string().url().optional(),
+  /** 该需求（或其子需求集合）下关联到本人（看板 owner）的新增/重开缺陷数 */
+  bugNew: z.number().int().nonnegative().optional(),
+  bugReopened: z.number().int().nonnegative().optional(),
 })
 
 /**
@@ -539,6 +561,7 @@ export const auditActionSchema = z.enum([
   'service.remove',
   'workspace.initialize.resume',
   'build.trigger',
+  'story.create',
 ])
 
 /**
@@ -793,8 +816,8 @@ export const snapshotSchema = z.object({
   workspacePipelines: z.array(workspacePipelineSchema).optional(),
 })
 
-/** 看板行：TAPD 需求 + 其绑定的本地工作区 */
-export const boardStorySchema = z.object({
+/** 看板行公共字段：TAPD 需求 + 其绑定的本地工作区（父行与折叠子行共用） */
+const boardStoryFields = {
   storyId: z.string(),
   title: z.string(),
   status: z.string().optional(),
@@ -812,6 +835,26 @@ export const boardStorySchema = z.object({
   /** 解析成功的工作区配置文件绝对路径 */
   workspaceFile: z.string().optional(),
   boundAt: z.string().datetime().optional(),
+}
+
+/** 看板折叠区的子需求行：不绑定工作区；parentTapdUrl 指向所属父需求 */
+export const boardChildStorySchema = z.object({
+  ...boardStoryFields,
+  parentTapdUrl: z.string().optional(),
+})
+
+/** 看板行：父需求一行 + 折叠的子需求；工作区绑定挂在父需求 storyId 上 */
+export const boardStorySchema = z.object({
+  ...boardStoryFields,
+  /** 折叠在父需求下的子需求（看板按「父一行、子折叠」展示） */
+  children: z.array(boardChildStorySchema).optional(),
+  /** 是否为父需求行 */
+  isParentRow: z.boolean().optional(),
+  /** 父需求详情链接（父行指向自身，子行指向父） */
+  parentTapdUrl: z.string().optional(),
+  /** 该父需求下关联到看板 owner 本人的新增/重开缺陷数（子需求汇总去重） */
+  bugNew: z.number().int().nonnegative().optional(),
+  bugReopened: z.number().int().nonnegative().optional(),
 })
 
 /** 看板接口响应：TAPD 需求列表 + 可绑定的工作区清单 */
@@ -1127,8 +1170,10 @@ export type WorkspacePipelineStory = z.infer<typeof workspacePipelineStorySchema
 export type WorkspacePipelineProject = z.infer<typeof workspacePipelineProjectSchema>
 export type WorkspacePipeline = z.infer<typeof workspacePipelineSchema>
 export type TapdStory = z.infer<typeof tapdStorySchema>
+export type TapdChildStory = z.infer<typeof tapdChildStorySchema>
 export type WorkspaceBinding = z.infer<typeof workspaceBindingSchema>
 export type WorkspaceBindingRequest = z.infer<typeof workspaceBindingRequestSchema>
 export type BoardStory = z.infer<typeof boardStorySchema>
+export type BoardChildStory = z.infer<typeof boardChildStorySchema>
 export type BoardResponse = z.infer<typeof boardResponseSchema>
 export type LoginRequest = z.infer<typeof loginRequestSchema>

@@ -38,24 +38,55 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
   const unbindingStoryId = ref('')
   /** 行级保存错误，按需求 ID 记录 */
   const rowErrors = ref<Record<string, string>>({})
-  /** 行内工作区下拉的编辑草稿，key 为 TAPD 需求 ID */
+  /** 父行工作区下拉的编辑草稿，key 为父需求 ID（子需求不绑定工作区） */
   const workspaceDraft = ref<Record<string, string>>({})
+  /** 当前展开的父需求 ID 集合（看板按「父一行、子折叠」展示） */
+  const expandedParentIds = ref<Set<string>>(new Set())
   const manualOpen = ref(false)
   const manualDraft = ref<ManualDraft>({ tapdStoryId: '', storyTitle: '', workspaceName: '' })
   const manualError = ref('')
   const manualSaving = ref(false)
 
-  /** 已被其他需求绑定的工作区名，用于下拉去重 */
+  /** 已被其它父需求绑定的工作区名，用于下拉去重（工作区只绑定在父需求上） */
   const boundWorkspaceNames = computed(() => new Set(
-    stories.value.flatMap((story) => (story.workspaceName ? [story.workspaceName] : [])),
+    stories.value.flatMap((story) => story.workspaceName ? [story.workspaceName] : []),
   ))
 
   /**
-   * 计算某一行可选的工作区：排除已绑定给其他需求的工作区，保留自身当前绑定。
+   * 判断某个父需求行是否处于展开状态。
+   * @param storyId 父需求 ID
+   * @returns 是否展开
+   */
+  function isParentExpanded(storyId: string): boolean {
+    return expandedParentIds.value.has(storyId)
+  }
+
+  /**
+   * 切换父需求行的展开/收起状态。
+   * @param storyId 父需求 ID
+   */
+  function toggleParent(storyId: string): void {
+    const next = new Set(expandedParentIds.value)
+    if (next.has(storyId)) next.delete(storyId)
+    else next.add(storyId)
+    expandedParentIds.value = next
+  }
+
+  /**
+   * 返回父行的折叠子需求列表（缺省视为空数组）。
    * @param story 看板行
+   * @returns 子需求数组
+   */
+  function childrenOf(story: BoardStory) {
+    return story.children ?? []
+  }
+
+  /**
+   * 计算某一行可选的工作区：排除已绑定给其他父需求的工作区，保留自身当前绑定。
+   * @param story 看板父行（工作区只绑定在父需求上）
    * @returns 可选项工作区列表
    */
-  function workspaceOptionsFor(story: BoardStory): WorkspaceSummary[] {
+  function workspaceOptionsFor(story: Pick<BoardStory, 'storyId' | 'workspaceName'>): WorkspaceSummary[] {
     return workspaces.value.filter((workspace) =>
       workspace.name === story.workspaceName || !boundWorkspaceNames.value.has(workspace.name))
   }
@@ -79,8 +110,11 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
       fetchedAt.value = parsed.fetchedAt ?? ''
       channelOk.value = parsed.ok
       hiddenReleased.value = parsed.hiddenReleased
-      // 刷新后把行内下拉重置为服务端已保存的绑定，避免残留未保存的编辑
-      workspaceDraft.value = Object.fromEntries(parsed.stories.map((story) => [story.storyId, story.workspaceName ?? '']))
+      // 刷新后把父行下拉重置为服务端已保存的绑定，避免残留未保存的编辑
+      // 工作区只绑定在父需求上，子需求不参与绑定
+      workspaceDraft.value = Object.fromEntries(parsed.stories.map((story) => [
+        story.storyId, story.workspaceName ?? '',
+      ]))
       if (parsed.error) error.value = parsed.error
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : '看板数据加载失败。'
@@ -133,10 +167,10 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
 
   /**
    * 保存某一行下拉中选择的工作区；清空选择时等价于解绑。
-   * @param story 看板行
+   * @param story 看板父行（工作区只绑定在父需求上）
    * @returns Promise<void>
    */
-  async function bindSelected(story: BoardStory): Promise<void> {
+  async function bindSelected(story: Pick<BoardStory, 'storyId' | 'workspaceName' | 'title' | 'tapdUrl'>): Promise<void> {
     const workspaceName = workspaceDraft.value[story.storyId] ?? ''
     if (!workspaceName) {
       if (story.workspaceName) await unbindWorkspace(story.storyId)
@@ -229,6 +263,10 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
     unbindingStoryId,
     rowErrors,
     workspaceDraft,
+    expandedParentIds,
+    isParentExpanded,
+    toggleParent,
+    childrenOf,
     manualOpen,
     manualDraft,
     manualError,

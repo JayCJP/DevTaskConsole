@@ -1,4 +1,5 @@
-import { releasedStoryStatusLabels, type BoardResponse, type BoardStory, type TapdStory, type WorkspaceBinding, type WorkspaceSummary } from '@devtask/shared'
+import { releasedStoryStatusLabels, type BoardChildStory, type BoardResponse, type BoardStory, type TapdStory, type WorkspaceBinding, type WorkspaceSummary } from '@devtask/shared'
+import type { TapdParentStory } from '../integrations/tapd.js'
 
 /** 看板默认查询的 TAPD 处理人 */
 export const defaultBoardOwner = '蔡杰鹏'
@@ -14,8 +15,17 @@ const releasedStoryStatusCode = 'status_9'
 
 /** 看板聚合所需的最小依赖，便于测试时注入替身 */
 export interface BoardDependencies {
-  /** 按处理人查询 TAPD 需求 */
-  tapd: { listOwnedStories: (owner: string) => Promise<{ stories: TapdStory[]; urlTemplate: string }> }
+  /**
+   * 按处理人查询 TAPD 需求。
+   * `parentStories` 提供时按「父一行、子折叠」展示；缺省时降级为扁平 stories。
+   */
+  tapd: {
+    listOwnedStories: (owner: string) => Promise<{
+      stories: TapdStory[]
+      parentStories?: TapdParentStory[]
+      urlTemplate: string
+    }>
+  }
   /** 读取本地绑定关系 */
   bindings: { list: () => Promise<WorkspaceBinding[]> }
   /** 扫描本地工作区 */
@@ -57,35 +67,81 @@ export async function buildBoard(
   }
 
   let tapdStories: TapdStory[] = []
+  let parentStories: TapdParentStory[] | undefined
   let urlTemplate = fallbackUrlTemplate
   let tapdOk = false
   try {
     const result = await dependencies.tapd.listOwnedStories(normalizedOwner)
     tapdStories = result.stories
+    parentStories = result.parentStories
     urlTemplate = result.urlTemplate
     tapdOk = true
   } catch (error) {
     errors.push(`TAPD 需求查询失败：${messageOf(error)}`)
   }
 
-  // 默认排除“已发布”需求：已发布属于终态，不再占用看板注意力
-  const allStoryIds = new Set(tapdStories.map((story) => story.storyId))
-  const visibleTapdStories = includeReleased
-    ? tapdStories
-    : tapdStories.filter((story) => !isReleasedStory(story))
-  const hiddenReleased = tapdStories.length - visibleTapdStories.length
-  const visibleStoryIds = new Set(visibleTapdStories.map((story) => story.storyId))
-
   const workspaceByName = new Map(workspaces.map((workspace) => [workspace.name, workspace]))
   const bindingByStoryId = new Map(bindings.map((binding) => [binding.tapdStoryId, binding]))
-  const stories: BoardStory[] = visibleTapdStories.map((story) =>
-    toBoardStory(story, bindingByStoryId.get(story.storyId), workspaceByName, true))
+
+  // 父行模式：每个父需求一行，子需求折叠。已发布过滤以子需求为准：
+  // 父行下只要有一个子需求未发布就显示父行；全部子都发布才隐藏。
+  const rows = parentStories?.length
+    ? parentStories
+    : toFallbackParents(tapdStories, urlTemplate)
+  // 已展示为父行/子行的 ID 不再作为「本地手动添加」的幽灵行重复出现；
+  // 被「已发布」筛选隐藏的父需求，其绑定仍需在兜底列表中露出，便于解绑/查看。
+  const visibleStoryIds = new Set<string>()
+  let hiddenReleased = 0
+  const stories: BoardStory[] = []
+  for (const row of rows) {
+    // 无子需求的父行按自身状态判断发布（自身即数据元）
+    const releaseTargets = row.children.length ? row.children : [row]
+    const visibleChildren = includeReleased
+      ? row.children
+      : row.children.filter((child) => !isReleasedStory(child))
+    hiddenReleased += includeReleased ? 0 : releaseTargets.filter(isReleasedStory).length
+    if (!includeReleased && releaseTargets.every(isReleasedStory)) continue
+
+    const parentStory = toBoardStory(
+      {
+        storyId: row.storyId,
+        title: row.title,
+        tapdUrl: row.tapdUrl,
+        ...(row.status ? { status: row.status } : {}),
+        ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
+        ...(row.owner ? { owner: row.owner } : {}),
+        ...(row.iterationName ? { iterationName: row.iterationName } : {}),
+        ...(row.bugNew !== undefined ? { bugNew: row.bugNew } : {}),
+        ...(row.bugReopened !== undefined ? { bugReopened: row.bugReopened } : {}),
+      },
+      undefined,
+      workspaceByName,
+      true,
+    )
+    parentStory.isParentRow = true
+    const parentUrl = row.parentTapdUrl ?? row.tapdUrl
+    parentStory.parentTapdUrl = parentUrl
+    // 工作区绑定统一挂在父需求上：子需求不单独绑定，只展示所属父需求的信息
+    parentStory.children = visibleChildren.map((child) => toBoardChild(child, parentUrl))
+    visibleStoryIds.add(row.storyId)
+    for (const child of visibleChildren) visibleStoryIds.add(child.storyId)
+    const bound = bindingByStoryId.get(row.storyId)
+    if (bound) {
+      parentStory.workspaceName = bound.workspaceName
+      const workspace = workspaceByName.get(bound.workspaceName)
+      if (workspace) {
+        parentStory.workspacePath = workspace.path
+        if (workspace.workspaceFile) parentStory.workspaceFile = workspace.workspaceFile
+      }
+      parentStory.boundAt = bound.updatedAt
+    }
+    stories.push(parentStory)
+  }
 
   // 本地手动绑定但不在当前 TAPD 结果中的需求仍需展示，避免绑定“消失”；
   // 若该需求被“已发布”筛选隐藏，则遵循筛选结果不展示。
   for (const binding of bindings) {
     if (visibleStoryIds.has(binding.tapdStoryId)) continue
-    if (!includeReleased && allStoryIds.has(binding.tapdStoryId)) continue
     stories.push(toBoardStory(
       {
         storyId: binding.tapdStoryId,
@@ -94,7 +150,7 @@ export async function buildBoard(
       },
       binding,
       workspaceByName,
-      allStoryIds.has(binding.tapdStoryId),
+      false,
     ))
   }
 
@@ -108,6 +164,41 @@ export async function buildBoard(
     ...(errors.length ? { error: errors.join(' ') } : {}),
     stories,
     workspaces,
+  }
+}
+
+/**
+ * 无父子信息时，把扁平需求列表降级为每个需求自身作为父行（兼容旧调用方与测试替身）。
+ * @param stories 扁平 TAPD 需求
+ * @param urlTemplate 详情链接模板
+ * @returns 父行列表
+ */
+function toFallbackParents(stories: TapdStory[], urlTemplate: string): TapdParentStory[] {
+  return stories.map((story) => ({
+    ...story,
+    children: [],
+    isParentRow: true,
+    parentTapdUrl: story.tapdUrl ?? urlTemplate.replace('{id}', story.storyId),
+  }))
+}
+
+/**
+ * 把 TAPD 子需求与绑定信息合成为看板折叠子行。
+ * @param story 子需求
+ * @param parentTapdUrl 所属父需求链接
+ * @returns 看板子行（不含工作区绑定信息，绑定统一在父行）
+ */
+function toBoardChild(story: TapdStory, parentTapdUrl: string): BoardChildStory {
+  return {
+    storyId: story.storyId,
+    parentTapdUrl,
+    title: story.title,
+    ...(story.status ? { status: story.status } : {}),
+    ...(story.statusLabel ? { statusLabel: story.statusLabel } : {}),
+    ...(story.owner ? { owner: story.owner } : {}),
+    ...(story.iterationName ? { iterationName: story.iterationName } : {}),
+    tapdUrl: story.tapdUrl,
+    inTapdList: true,
   }
 }
 
@@ -146,6 +237,8 @@ function toBoardStory(
     ...(story.statusLabel ? { statusLabel: story.statusLabel } : {}),
     ...(story.owner ? { owner: story.owner } : {}),
     ...(story.iterationName ? { iterationName: story.iterationName } : {}),
+    ...(story.bugNew !== undefined ? { bugNew: story.bugNew } : {}),
+    ...(story.bugReopened !== undefined ? { bugReopened: story.bugReopened } : {}),
     ...(binding ? { workspaceName: binding.workspaceName } : {}),
     // 工作区目录被删除时仍保留绑定名，由前端提示“目录未找到”
     ...(workspace ? { workspacePath: workspace.path } : {}),

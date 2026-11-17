@@ -144,4 +144,173 @@ describe('board aggregation', () => {
     expect(board.stories[0]).toMatchObject({ workspaceName: 'deleted-workspace', inTapdList: true })
     expect(board.stories[0]?.workspacePath).toBeUndefined()
   })
+
+  it('shows one parent row with folded children and filters released state by children', async () => {
+    const parentId = '2000'
+    const releasedChild: TapdStory = {
+      storyId: '2001',
+      title: '已发布子需求',
+      status: 'status_9',
+      statusLabel: '已发布',
+      tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/2001',
+    }
+    const activeChild: TapdStory = {
+      storyId: '2002',
+      title: '进行中子需求',
+      status: 'status_4',
+      statusLabel: '方案中',
+      owner: '蔡杰鹏;',
+      tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/2002',
+    }
+    const deps = createDependencies({
+      tapd: {
+        listOwnedStories: async () => ({
+          stories: [releasedChild, activeChild],
+          parentStories: [{
+            storyId: parentId,
+            title: '父需求',
+            status: 'status_7',
+            statusLabel: '开发中',
+            tapdUrl: `https://www.tapd.cn/38260062/prong/stories/view/${parentId}`,
+            children: [releasedChild, activeChild],
+            isParentRow: true,
+            parentTapdUrl: `https://www.tapd.cn/38260062/prong/stories/view/${parentId}`,
+            bugNew: 2,
+          }],
+          urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+        }),
+      },
+      bindings: { list: async () => [] },
+    })
+
+    const board = await buildBoard('蔡杰鹏', deps)
+
+    // 父行一视同仁展示，父链接指向父需求；已发布子被过滤，隐藏数按子需求计
+    expect(board.stories).toHaveLength(1)
+    expect(board.stories[0]).toMatchObject({
+      storyId: parentId,
+      title: '父需求',
+      tapdUrl: `https://www.tapd.cn/38260062/prong/stories/view/${parentId}`,
+      isParentRow: true,
+      bugNew: 2,
+    })
+    expect(board.stories[0]?.children?.map((child) => child.storyId)).toEqual(['2002'])
+    expect(board.stories[0]?.children?.[0]?.parentTapdUrl).toBe(
+      `https://www.tapd.cn/38260062/prong/stories/view/${parentId}`)
+    expect(board.hiddenReleased).toBe(1)
+  })
+
+  it('hides a parent row only when all its children are released', async () => {
+    const allReleased: TapdStory = {
+      storyId: '3001',
+      title: '子需求',
+      status: 'status_9',
+      statusLabel: '已发布',
+      tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/3001',
+    }
+    const deps = createDependencies({
+      tapd: {
+        listOwnedStories: async () => ({
+          stories: [allReleased],
+          parentStories: [{
+            storyId: '3000',
+            title: '父需求',
+            tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/3000',
+            children: [allReleased],
+            isParentRow: true,
+            parentTapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/3000',
+          }],
+          urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+        }),
+      },
+      bindings: { list: async () => [] },
+    })
+
+    const board = await buildBoard('蔡杰鹏', deps)
+
+    expect(board.stories).toHaveLength(0)
+    expect(board.hiddenReleased).toBe(1)
+  })
+
+  it('does not duplicate a parent row when a workspace is bound to the parent story id', async () => {
+    const child: TapdStory = {
+      storyId: '4001',
+      title: '子需求',
+      status: 'status_4',
+      statusLabel: '方案中',
+      tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/4001',
+    }
+    // 用户通过「手动添加」粘贴父需求链接，绑定挂在父 ID 上
+    const bindings: WorkspaceBinding[] = [
+      { tapdStoryId: '4000', workspaceName: 'feature-x', updatedAt: '2026-11-14T00:00:00.000Z' },
+    ]
+    const deps = createDependencies({
+      tapd: {
+        listOwnedStories: async () => ({
+          stories: [child],
+          parentStories: [{
+            storyId: '4000',
+            title: '父需求',
+            tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/4000',
+            children: [child],
+            isParentRow: true,
+            parentTapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/4000',
+          }],
+          urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+        }),
+      },
+      bindings: { list: async () => bindings },
+    })
+
+    const board = await buildBoard('蔡杰鹏', deps)
+
+    // 工作区只绑定在父需求上：父行显示绑定，子行不携带绑定，也不产生幽灵重复行
+    expect(board.stories).toHaveLength(1)
+    expect(board.stories[0]).toMatchObject({
+      storyId: '4000',
+      isParentRow: true,
+      workspaceName: 'feature-x',
+    })
+    expect(board.stories[0]?.children?.[0]).not.toHaveProperty('workspaceName')
+  })
+
+  it('keeps a binding visible when its parent row is hidden by the released filter', async () => {
+    const releasedChild: TapdStory = {
+      storyId: '5001',
+      title: '已发布子需求',
+      status: 'status_9',
+      statusLabel: '已发布',
+      tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/5001',
+    }
+    const bindings: WorkspaceBinding[] = [
+      { tapdStoryId: '5000', workspaceName: 'deleted-workspace', updatedAt: '2026-11-14T00:00:00.000Z' },
+    ]
+    const deps = createDependencies({
+      tapd: {
+        listOwnedStories: async () => ({
+          stories: [releasedChild],
+          parentStories: [{
+            storyId: '5000',
+            title: '父需求',
+            tapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/5000',
+            children: [releasedChild],
+            isParentRow: true,
+            parentTapdUrl: 'https://www.tapd.cn/38260062/prong/stories/view/5000',
+          }],
+          urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+        }),
+      },
+      bindings: { list: async () => bindings },
+    })
+
+    const board = await buildBoard('蔡杰鹏', deps)
+
+    // 父行被已发布过滤隐藏后，其绑定仍需作为兜底行露出，用户才能解绑
+    expect(board.stories).toHaveLength(1)
+    expect(board.stories[0]).toMatchObject({
+      storyId: '5000',
+      inTapdList: false,
+      workspaceName: 'deleted-workspace',
+    })
+  })
 })

@@ -6,8 +6,12 @@ type ToolListing = Awaited<ReturnType<McpClientRegistry['listTools']>>
 type ToolResult = Awaited<ReturnType<McpClientRegistry['callTool']>>
 const tapdWorkspaceId = defaultTapdWorkspaceId
 const storyFields = 'id,name,status,priority_label,owner,iteration_id,iteration_name'
-/** 按处理人列需求时额外需要的创建时间字段 */
-const ownedStoryFields = `${storyFields},created`
+/**
+ * 按处理人列需求时额外需要的字段：
+ * - created：创建时间
+ * - parent_id / ancestor_id / children_id：父子关系，用于把子需求聚合到父需求行
+ */
+const ownedStoryFields = `${storyFields},created,parent_id,ancestor_id,children_id`
 /** TAPD 未返回 url_template 时使用的需求详情链接模板 */
 const defaultStoryUrlTemplate = 'https://www.tapd.cn/38260062/prong/stories/view/{id}'
 const bugFields = 'id,title,status,current_owner,created,module,description'
@@ -38,6 +42,22 @@ export interface StoryEnrichment {
 export interface TapdStoryCacheEntry {
   enrichment: StoryEnrichment
   bugs: Array<Omit<Bug, 'storyId'>>
+}
+
+/**
+ * 看板父子需求行：父需求一行，折叠其子需求。
+ * tapdUrl 指向父需求；bugNew/bugReopened 为父+子范围内关联到看板 owner 的缺陷数。
+ */
+export interface TapdParentStory extends TapdStory {
+  /** 折叠在其下的子需求（自身为父、无子时为空数组） */
+  children: TapdStory[]
+  /** 父行/子行标识 */
+  isParentRow: boolean
+  /** 父需求详情链接（父行指向自身） */
+  parentTapdUrl: string
+  /** 关联到看板 owner 的新增/重开缺陷数（父子汇总去重） */
+  bugNew?: number
+  bugReopened?: number
 }
 
 interface RelatedBug {
@@ -333,11 +353,22 @@ export class TapdAdapter {
   /**
    * 按处理人查询 TAPD 需求，作为看板的数据元。
    * 只读查询，不按标题或仓库名做本地猜测。
+   *
+   * 除扁平子需求列表（`stories`）外，额外返回按父需求聚合的 `parentStories`：
+   * 每个父需求一行（tapdUrl 指向父），子需求折叠在 `children` 中，
+   * 且父行汇总其「父 + 全部子」范围内关联到当前处理人本人的新增/重开缺陷数。
+   * 批量取父、父子聚合失败时降级为「每个子需求自身即父行」，不阻断看板。
+   *
    * @param owner TAPD 处理人姓名，例如“蔡杰鹏”
-   * @returns 需求列表与 TAPD 详情链接模板
+   * @returns 扁平需求列表、父子聚合列表与 TAPD 详情链接模板
    * @throws Error 处理人为空、MCP 未配置或响应结构非法
    */
-  async listOwnedStories(owner: string): Promise<{ stories: TapdStory[]; urlTemplate: string }> {
+  async listOwnedStories(owner: string): Promise<{
+    stories: TapdStory[]
+    /** 父子聚合行；未提供时看板降级为扁平 stories */
+    parentStories?: TapdParentStory[]
+    urlTemplate: string
+  }> {
     const normalizedOwner = owner.trim()
     if (!normalizedOwner) throw new Error('TAPD 处理人不能为空。')
     const value = await this.callJsonTool('get_stories_or_tasks', {
@@ -352,7 +383,10 @@ export class TapdAdapter {
     const rows = getDataRows(value, 'get_stories_or_tasks')
     const urlTemplate = readUrlTemplate(value) ?? defaultStoryUrlTemplate
     const statusLabels = await this.loadStoryStatusLabels()
-    const stories = rows.map((row) => {
+    const { stories, parentIds } = rows.reduce<{
+      stories: Array<TapdStory & { parentId?: string }>
+      parentIds: Set<string>
+    }>((acc, row) => {
       const fields = unwrapEntity(row, 'Story')
       const storyId = requiredText(fields.id, 'story id')
       const title = optionalText(fields.name) ?? storyId
@@ -362,7 +396,9 @@ export class TapdAdapter {
       const iterationName = optionalText(fields.iteration_name)
       const priority = optionalText(fields.priority_label)
       const createdAt = optionalText(fields.created)
-      return {
+      const parentId = optionalText(fields.parent_id)
+      if (parentId && parentId !== '0') acc.parentIds.add(parentId)
+      acc.stories.push({
         storyId,
         title,
         tapdUrl: urlTemplate.replace('{id}', storyId),
@@ -372,9 +408,204 @@ export class TapdAdapter {
         ...(iterationName ? { iterationName } : {}),
         ...(priority ? { priority } : {}),
         ...(createdAt ? { createdAt } : {}),
+        ...(parentId && parentId !== '0' ? { parentId } : {}),
+      })
+      return acc
+    }, { stories: [], parentIds: new Set<string>() })
+
+    let parentStories: TapdParentStory[]
+    try {
+      const parentDetails = await this.fetchParents([...parentIds], urlTemplate, statusLabels)
+      parentStories = this.groupByParent(stories, parentDetails, urlTemplate)
+    } catch {
+      // 父子分组失败时每个需求自身作为父行，保证看板仍可用
+      parentStories = stories.map((story) => ({
+        ...story,
+        children: [],
+        isParentRow: true,
+        parentTapdUrl: story.tapdUrl,
+      }))
+    }
+    // bug 计数是展示增强：失败时保留已分组的父子结构，仅不显示计数
+    try {
+      await this.attachBoardBugs(parentStories, normalizedOwner)
+    } catch {
+      // 忽略计数失败，父子分组与父链接仍然有效
+    }
+    // stories 对外保持 TapdStory[] 形态（去掉内部使用的 parentId 附加字段）
+    const publicStories: TapdStory[] = stories.map(({ parentId: _parentId, ...story }) => story)
+    return { stories: publicStories, parentStories, urlTemplate }
+  }
+
+  /**
+   * 把一个 TAPD 需求 ID 归一化为父需求 ID：
+   * 若该需求是子需求（parent_id 非 0）则返回其父需求 ID，否则返回自身。
+   * 用于工作区绑定统一挂在父需求上的口径。TAPD 查询失败时返回原 ID，不阻断绑定保存。
+   *
+   * @param storyId TAPD 需求 ID（纯数字）
+   * @returns 父需求 ID，或查询失败时的原 ID
+   */
+  async resolveParentStoryId(storyId: string): Promise<string> {
+    try {
+      const value = await this.callJsonTool('get_stories_or_tasks', {
+        workspace_id: tapdWorkspaceId,
+        options: {
+          entity_type: 'stories',
+          id: storyId,
+          limit: 1,
+          fields: 'id,parent_id',
+        },
+      })
+      const rows = getDataRows(value, 'get_stories_or_tasks')
+      const parentId = rows.length ? optionalText(unwrapEntity(rows[0], 'Story').parent_id) : undefined
+      return parentId && parentId !== '0' ? parentId : storyId
+    } catch {
+      return storyId
+    }
+  }
+
+  /**
+   * 批量按 ID 查询父需求详情（标题/状态/链接）。
+   * @param parentIds 父需求 ID 列表
+   * @param urlTemplate 需求详情链接模板
+   * @param statusLabels 状态码到中文名的映射
+   * @returns 父需求 ID 到 TapdStory 的映射
+   */
+  private async fetchParents(
+    parentIds: string[],
+    urlTemplate: string,
+    statusLabels: Map<string, string>,
+  ): Promise<Map<string, TapdStory>> {
+    const result = new Map<string, TapdStory>()
+    if (!parentIds.length) return result
+    const fields = `${storyFields},parent_id,children_id`
+    // 按 100 分批，避免父需求超过 limit 时响应被截断导致整组降级
+    for (let i = 0; i < parentIds.length; i += 100) {
+      const slice = parentIds.slice(i, i + 100)
+      const value = await this.callJsonTool('get_stories_or_tasks', {
+        workspace_id: tapdWorkspaceId,
+        options: {
+          entity_type: 'stories',
+          id: slice.join(','),
+          limit: 200,
+          fields,
+        },
+      })
+      for (const row of getDataRows(value, 'get_stories_or_tasks')) {
+        const f = unwrapEntity(row, 'Story')
+        const storyId = requiredText(f.id, 'story id')
+        const status = optionalText(f.status)
+        result.set(storyId, {
+          storyId,
+          title: optionalText(f.name) ?? storyId,
+          tapdUrl: urlTemplate.replace('{id}', storyId),
+          ...(status ? { status } : {}),
+          ...(status ? { statusLabel: statusLabels.get(status) } : {}),
+          ...(optionalText(f.owner) ? { owner: optionalText(f.owner) } : {}),
+          ...(optionalText(f.iteration_name) ? { iterationName: optionalText(f.iteration_name) } : {}),
+        })
       }
+    }
+    return result
+  }
+
+  /**
+   * 把子需求按父需求分组为看板父行。
+   * 无父的子需求（自身即父，或父详情查询缺失）按自身单独成行。
+   *
+   * @param stories 扁平需求列表（含内部 parentId）
+   * @param parentDetails 父需求详情映射
+   * @param urlTemplate 需求详情链接模板（父详情缺失时兜底）
+   * @returns 父行列表（按首次出现顺序）
+   */
+  private groupByParent(
+    stories: Array<TapdStory & { parentId?: string }>,
+    parentDetails: Map<string, TapdStory>,
+    urlTemplate: string,
+  ): TapdParentStory[] {
+    const parents = new Map<string, TapdParentStory>()
+    for (const story of stories) {
+      // parent_id 为 0 或未返回时，该需求自身即父行
+      if (!story.parentId) parents.set(story.storyId, toParentStory(story, []))
+    }
+    // groupChildrenByParent 为每个 parentId 都建行（父详情缺失时用 ID 兜底），
+    // 因此每个有父的子需求都必然落在其父行中，无需额外兜底分支。
+    for (const [parentId, children] of groupChildrenByParent(stories)) {
+      const detail = parentDetails.get(parentId)
+      const fallback: TapdStory = {
+        storyId: parentId,
+        title: parentId,
+        tapdUrl: urlTemplate.replace('{id}', parentId),
+      }
+      parents.set(parentId, toParentStory(detail ?? fallback, children))
+    }
+    return [...parents.values()]
+  }
+
+  /**
+   * 为父行附加「关联到看板 owner 本人」的新增/重开缺陷数。
+   * 查询范围为父需求 + 其全部子需求 ID（对齐 cron-prompt 的主+子约定），
+   * 但归属判定仍使用当前处理人，而不是父需求 leader。
+   *
+   * @param parents 父行列表（原地写入 bugNew/bugReopened）
+   * @param owner 看板处理人（如“蔡杰鹏”）
+   */
+  private async attachBoardBugs(parents: TapdParentStory[], owner: string): Promise<void> {
+    const relatedValue = await this.callJsonTool('get_related_bugs', {
+      workspace_id: tapdWorkspaceId,
+      options: { story_id: parents.map(toBoardQueryIds).join(',') },
     })
-    return { stories, urlTemplate }
+    const bugsByStory = new Map<string, Set<string>>()
+    const allBugIds = new Set<string>()
+    for (const row of getDataRows(relatedValue, 'get_related_bugs')) {
+      const f = unwrapEntity(row, 'Bug')
+      const bugId = requiredText(f.bug_id ?? f.id, 'related bug id')
+      const storyId = optionalText(f.story_id)
+      if (!storyId) continue
+      const set = bugsByStory.get(storyId) ?? new Set<string>()
+      set.add(bugId)
+      bugsByStory.set(storyId, set)
+      allBugIds.add(bugId)
+    }
+    if (!allBugIds.size) return
+    const bugIds = [...allBugIds]
+    const fetched = new Map<string, TapdBug>()
+    // get_bug 每次 limit 200；按 100 切片避免截断
+    for (let i = 0; i < bugIds.length; i += 100) {
+      const slice = bugIds.slice(i, i + 100)
+      const value = await this.callJsonTool('get_bug', {
+        workspace_id: tapdWorkspaceId,
+        options: {
+          id: slice.join(','),
+          status: 'new|reopened',
+          limit: 200,
+          fields: bugFields,
+        },
+      })
+      for (const bug of parseBoardBugResponse(value, new Set(slice))) {
+        fetched.set(bug.id, bug)
+      }
+    }
+    for (const parent of parents) {
+      const ids = [parent.storyId, ...parent.children.map((c) => c.storyId)]
+      const seen = new Set<string>()
+      let bugNew = 0
+      let bugReopened = 0
+      for (const storyId of ids) {
+        for (const bugId of bugsByStory.get(storyId) ?? []) {
+          if (seen.has(bugId)) continue
+          const bug = fetched.get(bugId)
+          if (!bug || !hasOwnerMatch(bug.currentOwner, owner)) continue
+          seen.add(bugId)
+          if (bug.status === 'new') bugNew += 1
+          else if (bug.status === 'reopened') bugReopened += 1
+        }
+      }
+      if (bugNew || bugReopened) {
+        parent.bugNew = bugNew
+        parent.bugReopened = bugReopened
+      }
+    }
   }
 
   /**
@@ -468,6 +699,42 @@ function parseRelatedBugs(value: unknown, storyIds: string[]): RelatedBug[] {
   })
 }
 
+/**
+ * 看板缺陷汇总用的宽松解析：跳过缺少 status/current_owner 的缺陷
+ * （TAPD 中新缺陷可能尚未分配处理人），避免单条缺字段导致整个父行降级。
+ * 响应结构与截断校验仍与 parseBugResponse 一致。
+ *
+ * @param value TAPD get_bug 响应
+ * @param expectedBugIds 本次请求的缺陷 ID 集合
+ * @returns 字段完整的缺陷列表
+ */
+function parseBoardBugResponse(value: unknown, expectedBugIds: Set<string>): TapdBug[] {
+  if (!isRecord(value) || !Array.isArray(value.data)) {
+    throw new Error('TAPD get_bug returned an invalid response.')
+  }
+  const count = parseCount(value.count)
+  if (count === undefined) throw new Error('TAPD get_bug returned an invalid count.')
+  if (count > value.data.length) {
+    throw new Error(`TAPD get_bug response was truncated (${value.data.length} of ${count} records).`)
+  }
+  const bugs: TapdBug[] = []
+  for (const row of value.data) {
+    const fields = unwrapEntity(row, 'Bug')
+    const id = optionalText(fields.id)
+    const status = optionalText(fields.status)
+    const currentOwner = optionalText(fields.current_owner)
+    if (!id || !status || !currentOwner || !isBugStatus(status)) continue
+    if (!expectedBugIds.has(id)) continue
+    bugs.push({
+      id,
+      status,
+      currentOwner,
+      ...(optionalText(fields.title) ? { title: optionalText(fields.title) } : {}),
+    })
+  }
+  return bugs
+}
+
 function parseIterations(value: unknown): Array<{ id: string; name: string }> {
   const rows = getDataRows(value, 'get_iterations')
   return rows.map((row) => {
@@ -537,6 +804,49 @@ function unwrapEntity(value: Record<string, unknown>, entity: string): Record<st
 function hasOwnerMatch(currentOwner: string, storyOwner?: string): boolean {
   const normalizedOwner = storyOwner?.trim().toLocaleLowerCase()
   return Boolean(normalizedOwner && currentOwner.toLocaleLowerCase().includes(normalizedOwner))
+}
+
+/**
+ * 把一条 TAPD 需求包装为看板父行。
+ * @param story 父需求（或其自身的子需求兜底）
+ * @param children 折叠在其下的子需求
+ * @returns 看板父行
+ */
+function toParentStory(story: TapdStory, children: TapdStory[]): TapdParentStory {
+  return {
+    ...story,
+    children,
+    isParentRow: true,
+    parentTapdUrl: story.tapdUrl,
+  }
+}
+
+/**
+ * 按 parentId 把子需求分组。
+ * @param stories 扁平需求列表（含内部 parentId）
+ * @returns parentId → 子需求数组
+ */
+function groupChildrenByParent(
+  stories: Array<TapdStory & { parentId?: string }>,
+): Map<string, TapdStory[]> {
+  const groups = new Map<string, TapdStory[]>()
+  for (const story of stories) {
+    if (!story.parentId) continue
+    const list = groups.get(story.parentId) ?? []
+    const { parentId: _parentId, ...child } = story
+    list.push(child)
+    groups.set(story.parentId, list)
+  }
+  return groups
+}
+
+/**
+ * 生成一次 get_related_bugs 查询用的「父 + 全部子」ID 串。
+ * @param parent 看板父行
+ * @returns 逗号拼接的 TAPD 需求 ID
+ */
+function toBoardQueryIds(parent: TapdParentStory): string {
+  return [parent.storyId, ...parent.children.map((child) => child.storyId)].join(',')
 }
 
 /**

@@ -16,6 +16,8 @@ const firstStoryId = '1138260062001031810'
 const secondStoryId = '1138260062001031780'
 /** 已发布需求：默认被看板筛选排除 */
 const releasedStoryId = '1138260062001031733'
+/** 子需求：手动添加时应解析为其父需求 firstStoryId */
+const childStoryId = '1138260062001031896'
 const storyUrl = `https://www.tapd.cn/38260062/prong/stories/view/${firstStoryId}`
 
 let workspacesRoot: string
@@ -65,6 +67,8 @@ beforeEach(async () => {
         ],
         urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
       }),
+      resolveParentStoryId: async (storyId: string) =>
+        storyId === childStoryId ? firstStoryId : storyId,
     },
   })
 })
@@ -130,6 +134,25 @@ describe('board API', () => {
       workspaceName: 'feature-x',
       workspacePath: join(workspacesRoot, 'feature-x'),
     })
+  })
+
+  it('resolves a child story link to its parent when manually binding a workspace', async () => {
+    const childUrl = `https://www.tapd.cn/38260062/prong/stories/view/${childStoryId}`
+    const saved = await server.inject({
+      method: 'PUT',
+      url: '/api/v1/workspace-bindings',
+      headers,
+      payload: { tapdStoryId: childUrl, workspaceName: 'feature-x' },
+    })
+
+    expect(saved.statusCode).toBe(200)
+    // 子需求链接被保存为父需求绑定，且链接也指向父需求
+    expect(saved.json()).toEqual([
+      expect.objectContaining({
+        tapdStoryId: firstStoryId,
+        tapdUrl: storyUrl,
+      }),
+    ])
   })
 
   it('rejects unknown workspaces and duplicate workspace bindings', async () => {

@@ -43,6 +43,7 @@ function actionLabel(action: AuditEntry['action']): string {
     'service.remove': '删除服务映射',
     'workspace.initialize.resume': '续跑初始化',
     'build.trigger': '触发构建',
+    'story.create': '新建 Story 骨架',
   }
   return labels[action]
 }
