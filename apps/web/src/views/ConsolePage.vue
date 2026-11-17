@@ -156,6 +156,12 @@ const branch = ref('')
 const baseBranch = ref('')
 const skipInstall = ref(false)
 const skipGraphify = ref(false)
+/** 新建工作区时可选绑定的 TAPD 需求链接（或纯数字 ID）；留空表示不绑定 */
+const workspaceTapdInput = ref('')
+/** 新建工作区时可选的需求名称，TAPD 查询不到时用于展示 */
+const workspaceTapdTitle = ref('')
+/** 本轮工作区创建待写入的绑定；目标工作区名在提交时快照，避免轮询回调期间被新 job 覆盖 */
+let pendingWorkspaceBinding: { tapdStoryId: string; storyTitle: string; workspaceName: string } | null = null
 const previewResult = ref<WorkspacePreview | null>(null)
 const workspaceJob = ref<WorkspaceInitializationJob | null>(null)
 const workspaceError = ref('')
@@ -1992,6 +1998,12 @@ async function startWorkspace(): Promise<void> {
   // 在 POST 发起前就作废旧轮询并置提交中：POST 飞行期间 workspaceJob 尚未赋值，
   // 仅靠 workspaceRunning 无法禁用按钮，必须靠 workspaceSubmitting 防止连点并发创建。
   cancelWorkspacePolling()
+  // 记录本轮要绑定的 TAPD 输入，供 job 成功后写入；仅在填了链接时绑定。
+  // 目标工作区名在此刻快照，避免回调的 await 期间被新一轮 job 覆盖导致写错工作区。
+  const tapdStoryId = workspaceTapdInput.value.trim()
+  pendingWorkspaceBinding = tapdStoryId
+    ? { tapdStoryId, storyTitle: workspaceTapdTitle.value.trim(), workspaceName: workspaceName.value }
+    : null
   workspaceSubmitting.value = true
   try {
     workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>('/api/v1/workspaces/initialize', {
@@ -2023,6 +2035,28 @@ async function startWorkspace(): Promise<void> {
  * @returns Promise<void>，永不 reject；常规失败信息由各函数自身的 error ref 呈现
  */
 async function refreshAfterWorkspaceChange(): Promise<void> {
+  // 工作区已真实存在：若本轮填写了 TAPD 链接，写入「工作区 ↔ TAPD 需求」绑定。
+  // 绑定失败不回滚已创建的工作区，仅提示，用户仍可在看板补绑。
+  const binding = pendingWorkspaceBinding
+  pendingWorkspaceBinding = null
+  if (binding) {
+    try {
+      await apiRequest('/api/v1/workspace-bindings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          tapdStoryId: binding.tapdStoryId,
+          workspaceName: binding.workspaceName,
+          ...(binding.storyTitle ? { storyTitle: binding.storyTitle } : {}),
+        }),
+      })
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : '未知错误'
+      actionToasts.notify(`工作区已创建，但绑定 TAPD 需求失败：${message}`, 'error')
+    }
+  }
+  // 绑定改动只影响看板数据源，始终补拉一次看板让新绑定即时可见。
+  // board.load() 内部已 try/catch，失败仅写 board.error 由界面自证，不阻断其它刷新。
+  await board.load()
   const results = await Promise.allSettled([
     store.refresh(true),
     refreshWorkspaces(),
@@ -2199,6 +2233,9 @@ function openCreateDialog(): void {
   selectedRepositoryNames.value = []
   skipInstall.value = false
   skipGraphify.value = false
+  workspaceTapdInput.value = ''
+  workspaceTapdTitle.value = ''
+  pendingWorkspaceBinding = null
   previewResult.value = null
   workspaceJob.value = null
   workspaceError.value = ''
@@ -3556,6 +3593,16 @@ function formatWorkspaceTime(value?: string): string {
           </el-option>
         </el-select>
       </label>
+      <!-- 可选：创建成功后把工作区绑定到 TAPD 需求；两者均留空则不绑定 -->
+      <div class="workspace-form-tapd">
+        <label>TAPD 需求链接或 ID（可选）
+          <el-input v-model="workspaceTapdInput" placeholder="https://www.tapd.cn/.../view/1138... 或纯数字 ID；留空则不绑定" />
+        </label>
+        <label>需求名称（可选）
+          <el-input v-model="workspaceTapdTitle" placeholder="TAPD 查询不到需求标题时用于展示" />
+        </label>
+        <p class="workspace-form-tapd-hint">填写链接后，工作区创建完成会自动绑定到对应 TAPD 需求；子需求链接会归到其父需求。</p>
+      </div>
       <!-- 跳步选项：el-checkbox 自身即 label，外层用 div 避免 label 嵌套 -->
       <div class="workspace-form-checks">
         <el-checkbox v-model="skipInstall">跳过 npm install</el-checkbox>
