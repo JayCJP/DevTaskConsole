@@ -36,6 +36,7 @@ import {
 } from '@devtask/shared'
 import { z } from 'zod'
 import { useRoute, useRouter } from 'vue-router'
+import type { UploadFile } from 'element-plus'
 import { ApiError, apiRequest } from '../api/client'
 import AuditTrailDrawer from '../components/AuditTrailDrawer.vue'
 import CronEditorDialog from '../components/CronEditorDialog.vue'
@@ -52,6 +53,7 @@ import { useCronExecutions } from '../composables/useCronExecutions'
 import { useActionToasts } from '../composables/useActionToasts'
 import { useJobExtras } from '../composables/useJobExtras'
 import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
+import { useStoryUpload, type UploadedAsset } from '../composables/useStoryUpload'
 import { useConsoleStore } from '../stores/console'
 import { buildMappingRows } from '../utils/application-mapping'
 
@@ -227,6 +229,14 @@ const workspaceLogs = computed(() => workspaceJob.value?.logs ?? previewResult.v
 
 /** 新建弹窗是否仍有初始化任务在跑 */
 const workspaceRunning = computed(() => workspaceJob.value?.status === 'running')
+/**
+ * 创建/续跑请求是否正在提交（POST /initialize 飞行中）。
+ * 这段窗口内 workspaceJob 尚未赋值、workspaceRunning 仍为 false，
+ * 必须单独禁用按钮与关闭操作，否则用户连点会并发创建多个工作区并让轮询互相干扰。
+ */
+const workspaceSubmitting = ref(false)
+/** 新建弹窗整体忙碌态：覆盖提交中与任务运行中，供按钮禁用与 loading 使用 */
+const workspaceBusy = computed(() => workspaceSubmitting.value || workspaceRunning.value)
 
 /** 已选项目数量的展示文案 */
 const selectedRepositoryLabel = computed(() => `已选择 ${selectedRepositoryNames.value.length} 个`)
@@ -279,6 +289,8 @@ const jobName = ref('')
 const renameDraft = ref('')
 const jobPrompt = ref('')
 const jobReply = ref('')
+/** 文件上传：供新建轮次与回复实例两个输入框共用 */
+const { uploading: imageUploading, error: uploadError, uploadImage } = useStoryUpload()
 const jobTranscript = ref('')
 const jobOutput = ref('')
 const jobError = ref('')
@@ -404,6 +416,21 @@ let jobStreamController: AbortController | undefined
 /** 实例页列表轮询定时器 */
 let jobsPollTimer: ReturnType<typeof setInterval> | undefined
 let workspacePollTimer: ReturnType<typeof setTimeout> | undefined
+/** 工作区初始化轮询代际令牌：每次开启新一轮或取消时自增，用于作废旧 job 的在途回调 */
+let workspacePollGeneration = 0
+
+/**
+ * 取消当前工作区初始化轮询，并作废其所有在途回调。
+ * 通过递增代际令牌实现：即便旧 setTimeout 已排队执行，也会因令牌不匹配被丢弃。
+ */
+function cancelWorkspacePolling(): void {
+  workspacePollGeneration += 1
+  if (workspacePollTimer) {
+    clearTimeout(workspacePollTimer)
+    workspacePollTimer = undefined
+  }
+}
+
 const page = computed(() => String(route.meta.page ?? 'inbox'))
 const requirements = computed(() => {
   const rows = store.snapshot?.requirements ?? []
@@ -723,6 +750,49 @@ function useSuggestedReply(text: string): void {
   if (text) jobReply.value = text
 }
 
+/**
+ * 处理输入框旁的上传事件：上传文件并把引用追加到目标输入框。
+ * 图片用 Markdown 图片语法 `![名](路径)`，其它类型用普通链接 `[名](路径)`，
+ * 便于 CodeBuddy agent 依据路径读取刚上传的文件。
+ * @param file 用户选择的文件（el-upload 的 UploadRawFile，兼容 File）
+ * @param target 目标输入框：'prompt' 新建轮次，'reply' 回复实例
+ */
+async function handleStoryFileUpload(file: File, target: 'prompt' | 'reply'): Promise<void> {
+  const storyId = target === 'reply' ? selectedJob.value?.storyId : selectedStoryId.value
+  if (!storyId) {
+    actionToasts.notify('请先选中一个 Story 再上传文件。', 'error')
+    return
+  }
+  let asset: UploadedAsset
+  try {
+    asset = await uploadImage(storyId, file)
+  } catch {
+    actionToasts.notify(uploadError.value || '文件上传失败。', 'error')
+    return
+  }
+  // CodeBuddy 服务以项目根为 cwd，agent 可据此读取 .docs/<storyId>/ 下刚上传的文件。
+  const label = asset.originalName || asset.name
+  const isImage = asset.mimeType.startsWith('image/')
+  const reference = isImage
+    ? `![${label}](${asset.relativePath})`
+    : `[${label}](${asset.relativePath})`
+  const current = target === 'prompt' ? jobPrompt.value : jobReply.value
+  const next = current ? `${current.replace(/\s*$/, '')}\n${reference}` : reference
+  if (target === 'prompt') jobPrompt.value = next
+  else jobReply.value = next
+  actionToasts.notify('文件已上传并插入提示词。', 'success')
+}
+
+/** el-upload 的 prompt 输入框上传回调 */
+function onPromptFileChange(uploadFile: UploadFile): void {
+  if (uploadFile.raw) void handleStoryFileUpload(uploadFile.raw, 'prompt')
+}
+
+/** el-upload 的 reply 输入框上传回调 */
+function onReplyFileChange(uploadFile: UploadFile): void {
+  if (uploadFile.raw) void handleStoryFileUpload(uploadFile.raw, 'reply')
+}
+
 /** 实例页的「工作区 → 第一个项目 → Story」分组 */
 interface InstanceGroup {
   key: string
@@ -771,6 +841,21 @@ const instanceGroups = computed<InstanceGroup[]>(() => workspacePipelines.value.
     : {}),
   stories: pipeline.story ? [pipeline.story.requirement] : [],
 })))
+
+/**
+ * 各实例分组的空态引导文案（纯静态文字，无跳转交互）。
+ * Story 本体由 Harness 在项目中执行 /start 生成 .codebuddy/plans/story-info.json，
+ * 新建工作区默认为空，因此这里给出可操作的静态指引，告知用户如何生成 Story 后回来刷新。
+ * 以 group.key 为键供模板在 stories 为空时直接取用，避免在 template 中拼接多条件判断。
+ */
+const emptyWorkspaceGuides = computed<Record<string, string>>(() => {
+  const guides: Record<string, string> = {}
+  for (const group of instanceGroups.value) {
+    const subject = group.project?.name ? `项目 ${group.project.name} ` : '当前工作区'
+    guides[group.key] = `${subject}下还没有 Story。请在 ${group.path} 目录执行 /start <storyId> 生成 Story，随后回到本页刷新即可看到实例入口。`
+  }
+  return guides
+})
 
 /**
  * 定时页分组：同样以工作区为根，一个工作区只展示第一个项目的 Story 任务。
@@ -1000,7 +1085,7 @@ watch(
 )
 
 onUnmounted(() => {
-  if (workspacePollTimer) clearTimeout(workspacePollTimer)
+  cancelWorkspacePolling()
   if (jobsPollTimer) clearInterval(jobsPollTimer)
   jobStreamController?.abort()
   jobExtras.clearDetail()
@@ -1764,29 +1849,80 @@ async function startWorkspace(): Promise<void> {
   }
   workspaceError.value = ''
   workspaceJob.value = null
+  // 在 POST 发起前就作废旧轮询并置提交中：POST 飞行期间 workspaceJob 尚未赋值，
+  // 仅靠 workspaceRunning 无法禁用按钮，必须靠 workspaceSubmitting 防止连点并发创建。
+  cancelWorkspacePolling()
+  workspaceSubmitting.value = true
   try {
     workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>('/api/v1/workspaces/initialize', {
       method: 'POST',
       body: JSON.stringify(workspaceRequest()),
     }))
-    pollWorkspaceJob(workspaceJob.value.id)
+    // 用自增后的最新令牌发起本轮轮询
+    pollWorkspaceJob(workspaceJob.value.id, workspacePollGeneration)
   } catch (cause) {
     workspaceError.value = cause instanceof Error ? cause.message : 'Unable to start workspace initialization.'
+  } finally {
+    // 提交阶段结束；此后忙碌态由 job 的 running 状态接管
+    workspaceSubmitting.value = false
   }
 }
 
-function pollWorkspaceJob(jobId: string): void {
+/**
+ * 工作区变更（新建 / 续跑初始化成功）后统一刷新所有受影响视图数据。
+ *
+ * 工作区初始化会改变本地扫描结果，进而影响统一快照的 local 段、工作区列表、
+ * 以及发布页使用的应用差异映射，因此三处数据一起更新：
+ * store.refresh(true) 重建快照 local 段 + tapd + connectivity；
+ * refreshWorkspaces() 刷新工作区列表；loadApplicationMappings() 刷新发布页映射。
+ *
+ * 三路并发执行。三者内部已各自 try/catch 并把错误写入对应 error ref，正常情况下
+ * 不会 reject；此处用 Promise.allSettled 作防御性兜底——万一某路意外抛出，既不阻断
+ * 其它两路，也通过 toast 给用户可见反馈，而不是只写控制台。
+ *
+ * @returns Promise<void>，永不 reject；常规失败信息由各函数自身的 error ref 呈现
+ */
+async function refreshAfterWorkspaceChange(): Promise<void> {
+  const results = await Promise.allSettled([
+    store.refresh(true),
+    refreshWorkspaces(),
+    loadApplicationMappings(),
+  ])
+  const failed = results.filter((item): item is PromiseRejectedResult => item.status === 'rejected')
+  if (failed.length) {
+    const reasons = failed.map((item) => item.reason instanceof Error ? item.reason.message : '未知错误')
+    actionToasts.notify(`工作区已创建，但部分数据刷新失败：${reasons.join('；')}`, 'error')
+  }
+}
+
+/**
+ * 轮询工作区初始化任务，直至进入终态。
+ * 通过 generation 令牌保证只有最新一轮轮询的回调能写入状态并触发刷新：
+ * 回调入口与请求返回后各校验一次，避免使用旧响应覆盖新 job 或触发多余刷新。
+ *
+ * @param jobId 初始化任务 ID
+ * @param generation 发起本轮轮询时的代际令牌
+ */
+function pollWorkspaceJob(jobId: string, generation: number): void {
   if (workspacePollTimer) clearTimeout(workspacePollTimer)
   workspacePollTimer = setTimeout(async () => {
+    // 令牌校验：代际不一致说明已被新一轮/关闭/卸载作废，直接丢弃
+    if (generation !== workspacePollGeneration) return
     try {
-      workspaceJob.value = workspaceInitializationJobSchema.parse(
+      const next = workspaceInitializationJobSchema.parse(
         await apiRequest<unknown>(`/api/v1/workspaces/initialize/${jobId}`),
       )
-      if (workspaceJob.value.status === 'running') pollWorkspaceJob(jobId)
-      else if (workspaceJob.value.status === 'succeeded') {
-        // 工作区初始化改了本地扫描结果，发 force 重建 local 段
-        await Promise.all([store.refresh(true), refreshWorkspaces()])
+      // 请求飞行期间可能已作废，二次校验，避免用旧响应覆盖新状态
+      if (generation !== workspacePollGeneration) return
+      workspaceJob.value = next
+      if (next.status === 'running') {
+        // 递归沿用同一令牌
+        pollWorkspaceJob(jobId, generation)
+      } else if (next.status === 'succeeded') {
+        // 工作区初始化改了本地扫描结果，统一刷新快照、工作区列表与发布页映射
+        await refreshAfterWorkspaceChange()
       }
+      // failed / interrupted 等其它终态：仅更新 workspaceJob，不触发刷新（沿用原行为）
     } catch (cause) {
       workspaceError.value = cause instanceof Error ? cause.message : 'Unable to read initialization progress.'
     }
@@ -1810,14 +1946,19 @@ async function resumeWorkspaceJob(): Promise<void> {
   const job = workspaceJob.value
   if (!job) return
   workspaceError.value = ''
+  // 与新建一致：POST 前作废旧轮询并置提交中，防止续跑请求飞行期间重复操作
+  cancelWorkspacePolling()
+  workspaceSubmitting.value = true
   try {
     workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>(
       `/api/v1/workspaces/initialize/${job.id}/resume`,
       { method: 'POST', body: JSON.stringify({ acknowledgeRerun: true }) },
     ))
-    pollWorkspaceJob(job.id)
+    pollWorkspaceJob(job.id, workspacePollGeneration)
   } catch (cause) {
     workspaceError.value = cause instanceof Error ? cause.message : '续跑初始化任务失败。'
+  } finally {
+    workspaceSubmitting.value = false
   }
 }
 
@@ -1910,6 +2051,8 @@ async function createWorkspaceMergeRequest(projects?: string[]): Promise<void> {
 
 /** 重置新建表单并打开新建弹窗。 */
 function openCreateDialog(): void {
+  // 作废旧 job 的在途回调，避免重复打开弹窗时被上一轮轮询覆盖状态或触发多余刷新
+  cancelWorkspacePolling()
   workspaceName.value = ''
   branch.value = ''
   baseBranch.value = ''
@@ -1922,18 +2065,25 @@ function openCreateDialog(): void {
   createDialogOpen.value = true
 }
 
-/** 关闭新建弹窗；初始化任务运行中时禁止关闭，避免丢失进度。 */
+/** 关闭新建弹窗；提交中或初始化任务运行中时禁止关闭，避免丢失进度。 */
 function closeCreateDialog(): void {
-  if (workspaceRunning.value) return
+  if (workspaceBusy.value) return
+  cancelWorkspacePolling()
   createDialogOpen.value = false
 }
 
 /**
- * el-dialog 关闭前的守卫：初始化任务运行中不允许关闭。
+ * el-dialog 关闭前的守卫：提交中或初始化任务运行中不允许关闭。
+ * 忙碌时不再静默忽略，而是给出可见提示，避免 ESC / 遮罩关闭无反应让用户误以为卡死。
  * @param done 允许关闭时调用的回调
  */
 function beforeCreateDialogClose(done: () => void): void {
-  if (!workspaceRunning.value) done()
+  if (workspaceBusy.value) {
+    actionToasts.notify('工作区初始化进行中，请等待完成后再关闭。', 'error')
+    return
+  }
+  cancelWorkspacePolling()
+  done()
 }
 
 /**
@@ -2508,7 +2658,7 @@ function formatWorkspaceTime(value?: string): string {
                 <code v-if="group.project?.branch">{{ group.project?.branch }}</code>
                 <small class="muted">{{ group.stories.length }} 个 Story</small>
               </div>
-              <div v-if="!group.stories.length" class="project-empty">第一个项目还没有 Story，无需启动实例。</div>
+              <div v-if="!group.stories.length" class="project-empty">{{ emptyWorkspaceGuides[group.key] }}</div>
               <template v-for="requirement in group.stories" :key="requirement.storyId">
                 <InstanceStoryCard
                   :story-id="requirement.storyId"
@@ -2620,6 +2770,16 @@ function formatWorkspaceTime(value?: string): string {
                 <span>提示词</span>
                 <el-input v-model="jobPrompt" type="textarea" :rows="5" placeholder="发送给 CodeBuddy 的提示词" />
               </label>
+              <div class="instance-upload">
+                <el-upload
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  :on-change="onPromptFileChange"
+                >
+                  <el-button size="small" :loading="imageUploading">上传文件并插入提示词</el-button>
+                </el-upload>
+                <span class="muted">文件写入 Story 项目的 .docs/&lt;storyId&gt;/ 目录</span>
+              </div>
               <div class="instance-form-actions">
                 <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim() || !currentServiceRunning" @click="createJob">创建轮次</el-button>
               </div>
@@ -2659,6 +2819,16 @@ function formatWorkspaceTime(value?: string): string {
             <pre class="job-output">{{ jobOutput || '等待实时输出…' }}</pre>
             <div class="instance-reply">
               <el-input v-model="jobReply" type="textarea" :rows="3" placeholder="回复实例（不执行 bash）" />
+              <div class="instance-upload">
+                <el-upload
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  :on-change="onReplyFileChange"
+                >
+                  <el-button size="small" :loading="imageUploading">上传文件并插入回复</el-button>
+                </el-upload>
+                <span class="muted">文件写入 Story 项目的 .docs/&lt;storyId&gt;/ 目录</span>
+              </div>
               <div class="instance-form-actions">
                 <el-button type="primary" :loading="jobActionLoading" :disabled="!jobReply.trim()" @click="replyToJob">发送</el-button>
               </div>
@@ -3202,12 +3372,12 @@ function formatWorkspaceTime(value?: string): string {
       <pre>{{ workspaceLogs.join('\n') || '正在等待输出…' }}</pre>
     </section>
     <template #footer>
-      <el-button :disabled="workspaceRunning" @click="closeCreateDialog">关闭</el-button>
-      <el-button v-if="canResumeWorkspaceJob" :disabled="workspaceRunning" @click="resumeWorkspaceJob">
+      <el-button :disabled="workspaceBusy" @click="closeCreateDialog">关闭</el-button>
+      <el-button v-if="canResumeWorkspaceJob" :disabled="workspaceBusy" @click="resumeWorkspaceJob">
         从记录阶段续跑
       </el-button>
-      <el-button :loading="candidatesLoading" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceRunning" @click="previewWorkspace">DryRun 预演</el-button>
-      <el-button type="primary" :loading="workspaceRunning" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceRunning" @click="startWorkspace">确认并创建</el-button>
+      <el-button :loading="candidatesLoading" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceBusy" @click="previewWorkspace">DryRun 预演</el-button>
+      <el-button type="primary" :loading="workspaceBusy" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceBusy" @click="startWorkspace">确认并创建</el-button>
     </template>
   </el-dialog>
 

@@ -1,7 +1,10 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import multipart from '@fastify/multipart'
+import { randomUUID } from 'node:crypto'
+import { createWriteStream, existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
@@ -128,9 +131,20 @@ function createStoryServiceSupervisor(): StoryServiceSupervisor {
 
 const storyIdSchema = z.string().min(1).max(200)
 const jobIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/)
+/**
+ * 用于拼接上传目录的严格 Story ID：只允许字母、数字、点、下划线与连字符。
+ * 拒绝 `..` 与任意路径分隔符，防止写入 `.docs/<storyId>/` 时发生路径穿越。
+ */
+const uploadStoryIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/)
+/** 上传文件的扩展名安全规则：点 + 1~16 位字母数字，覆盖任意类型同时排除路径穿越字符 */
+const uploadExtensionPattern = /^\.[A-Za-z0-9]{1,16}$/
 
 export function buildServer(options: ServerOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true })
+  // 文件上传走 multipart：单文件 10MB、单次最多 5 个，超限由插件直接返回 413。
+  void app.register(multipart, {
+    limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  })
   // 容许「声明 application/json 但 body 为空」的写请求。
   // 部分客户端（含本站早期版本与 curl）会对无参数的 POST/DELETE 也带上 JSON 头，
   // Fastify 默认会返回 400 FST_ERR_CTP_EMPTY_JSON_BODY，导致启动/停止/续期这类无参数操作直接失败。
@@ -463,6 +477,80 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           message: error instanceof Error ? error.message : 'Unable to start the Story CodeBuddy service.',
         },
       })
+    }
+  })
+
+  /**
+   * 上传任意类型文件到 Story 所在项目的 `.docs/<storyId>/` 目录。
+   *
+   * 路径解析：storyId → requirement.workspacePath（相对工作区根）→ service.cwd（项目根，已做 containment 校验）
+   * 再拼 `.docs/<storyId>/<uuid>.<ext>`。文件名用 UUID + 安全扩展名，绝不信任原始文件名，
+   * 防止路径穿越与任意文件写入。文件类型不限，仅要求扩展名为「点 + 字母数字」。
+   *
+   * @param request  multipart 请求，文件字段名为 `file`
+   * @param reply    Fastify 回复
+   * @returns 201 + { name, originalName, mimeType, relativePath, absolutePath }；失败返回对应错误码
+   */
+  app.post('/api/v1/stories/:storyId/uploads', async (request, reply) => {
+    const params = z.object({ storyId: uploadStoryIdSchema }).safeParse(request.params)
+    if (!params.success) return invalidParameters(reply)
+    const storyId = params.data.storyId
+    try {
+      // ensureStoryService 内部已做 snapshot 查询 + workspace containment 校验，
+      // 返回的 cwd 即 Story 所在项目根目录（如 ...\CustomerServiceSystem）。
+      const service = await ensureStoryService(storyId)
+      const projectRoot = service.cwd
+
+      // 拼目标目录并做越界兜底：确保 `.docs/<storyId>` 仍落在项目根之内。
+      const targetDir = resolve(projectRoot, '.docs', storyId)
+      const fromRoot = relative(projectRoot, targetDir)
+      if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+        return reply.code(400).send({
+          error: { code: 'INVALID_UPLOAD_PATH', message: 'Invalid upload path.' },
+        })
+      }
+
+      let part: Awaited<ReturnType<typeof request.file>>
+      try {
+        part = await request.file()
+      } catch (error) {
+        return reply.code(400).send({
+          error: {
+            code: 'UPLOAD_PARSE_FAILED',
+            message: error instanceof Error ? error.message : 'Unable to read uploaded file.',
+          },
+        })
+      }
+      if (!part) return invalidParameters(reply)
+
+      // 文件名清洗：UUID + 安全扩展名（点 + 字母数字），原始文件名不进入落盘路径。
+      // 支持任意文件类型（pdf/docx/zip/ts/...），但拒绝无扩展名或含危险字符的名字。
+      const extension = extname(part.filename).toLowerCase()
+      if (!uploadExtensionPattern.test(extension)) {
+        return reply.code(400).send({
+          error: {
+            code: 'INVALID_UPLOAD_FILENAME',
+            message: 'File must have a simple extension (letters and digits only).',
+          },
+        })
+      }
+      const safeName = `${randomUUID()}${extension}`
+      const destination = join(targetDir, safeName)
+
+      await mkdir(targetDir, { recursive: true })
+      await pipeline(part.file, createWriteStream(destination))
+
+      return reply.code(201).send({
+        name: safeName,
+        // 原始文件名与 MIME 供前端决定提示词里的引用形式（图片用 ![]()，其它用 []()）。
+        originalName: part.filename,
+        mimeType: part.mimetype,
+        // 相对项目根的路径：CodeBuddy 服务 cwd = projectRoot，agent 可直接引用。
+        relativePath: `.docs/${storyId}/${safeName}`,
+        absolutePath: destination,
+      })
+    } catch (error) {
+      return codeBuddyError(request, reply, error)
     }
   })
 

@@ -66,8 +66,11 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   const headers = new Headers(init?.headers)
   // 只有真正带 body 时才声明 JSON：POST/PUT 无 body 却声明 application/json 时，
   // Fastify 会直接返回 400 FST_ERR_CTP_EMPTY_JSON_BODY，写操作会「点一下就失败」。
+  // FormData 例外：必须让浏览器自动生成带 boundary 的 multipart/form-data，
+  // 手动声明 content-type 会丢失 boundary 导致上传解析失败。
   const hasBody = init?.body !== undefined && init.body !== null
-  if (hasBody && !headers.has('content-type')) {
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
+  if (hasBody && !isFormData && !headers.has('content-type')) {
     headers.set('content-type', 'application/json')
   }
   if (token) {

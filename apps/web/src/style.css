@@ -841,6 +841,8 @@
 .instance-field > span { color: var(--muted); font-size: 12.5px; }
 .instance-field .el-input, .instance-field .el-textarea { width: 100%; }
 .instance-form-actions { display: flex; justify-content: flex-end; }
+.instance-upload { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.instance-upload .muted { font-size: 12px; }
 .instance-resume { display: grid; gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .instance-resume h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
 .instance-resume p { margin: 0; }
