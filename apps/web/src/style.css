@@ -421,6 +421,28 @@
 .inbox-title-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .inbox-copy p { margin: 3px 0; color: var(--muted); }
 .inbox-copy small { color: var(--faint); }
+
+/* 收件箱答案：Story 汇总按钮、行尾回答入口与行内展开面板 */
+.inbox-story-summary { margin-left: auto; }
+.count-pill-inline { padding: 1px 6px; margin-left: 6px; border-color: color-mix(in oklch, var(--brand) 45%, transparent); color: var(--brand); }
+.inbox-row-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.answer-dot { display: inline-block; width: 5px; height: 5px; margin-left: 5px; border-radius: 50%; background: var(--brand); vertical-align: middle; }
+.inbox-row-expanded { border-bottom-color: transparent; }
+.inbox-answer { display: grid; gap: 10px; padding: 12px 14px 12px 37px; border: 1px solid var(--line-subtle); border-top: 1px dashed var(--line); border-radius: var(--radius-sm); background: var(--bg-surface); margin: -1px 0 14px; animation: inbox-answer-in 150ms ease-out; }
+.inbox-answer-suggestion { padding: 8px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-xs); background: var(--bg-inset); }
+.inbox-answer-suggestion-head { margin-bottom: 5px; color: var(--accent); font-size: 10px; font-weight: 620; }
+.inbox-answer-suggestion-body { display: grid; gap: 4px; color: var(--text); font-size: 11px; line-height: 1.6; }
+.suggestion-row { display: flex; align-items: baseline; gap: 4px; }
+.suggestion-marker { flex: 0 0 16px; color: var(--accent); font-weight: 620; text-align: center; }
+.suggestion-text { white-space: pre-wrap; word-break: break-word; }
+.inbox-answer .el-textarea__inner { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font-size: 13px; padding: 8px 10px; transition: border-color 150ms ease, box-shadow 150ms ease; }
+.inbox-answer .el-textarea__inner:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand) 22%, transparent); }
+.inbox-answer .el-textarea__inner::placeholder { color: var(--faint); }
+.inbox-answer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.inbox-answer-note { color: var(--faint); font-size: 11px; }
+@keyframes inbox-answer-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .inbox-answer { animation: none; } }
+
 .empty-state { display: grid; min-height: 170px; align-content: center; justify-items: center; gap: 7px; padding: 20px; text-align: center; }
 .empty-state strong { color: var(--text); font-size: 13px; }
 .empty-state p { max-width: 520px; margin: 0; color: var(--muted); }
@@ -730,7 +752,10 @@
   .channel-row span:nth-of-type(2) { flex-basis: 100%; }
   .inbox-row { align-items: flex-start; flex-wrap: wrap; }
   .inbox-copy { flex-basis: calc(100% - 40px); }
-  .inbox-row .el-button { margin-left: 37px; }
+  .inbox-row > .el-button { margin-left: 37px; }
+  .inbox-row-actions { margin-left: 37px; }
+  .inbox-answer { padding: 12px; }
+  .inbox-story-head { flex-wrap: wrap; row-gap: 6px; }
   .inbox-workspace-head { align-items: flex-start; flex-wrap: wrap; }
 }
 

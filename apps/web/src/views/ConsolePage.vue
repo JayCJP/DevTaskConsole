@@ -52,6 +52,7 @@ import { useCronActions } from '../composables/useCronActions'
 import { useCronDispatches, type DispatchOutcome } from '../composables/useCronDispatches'
 import { useCronExecutions } from '../composables/useCronExecutions'
 import { useActionToasts } from '../composables/useActionToasts'
+import { buildInboxAnswerText, splitSuggestion, useInboxAnswers } from '../composables/useInboxAnswers'
 import { useJobExtras } from '../composables/useJobExtras'
 import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
 import { useStoryUpload, type UploadedAsset } from '../composables/useStoryUpload'
@@ -272,6 +273,12 @@ const actionToasts = useActionToasts()
 const actionToastItems = actionToasts.toasts
 /** 关闭一条操作提示 */
 const dismissActionToast = actionToasts.dismiss
+/** 收件箱答案草稿：仅本地存储，用于汇总复制，不回写上游 */
+const inboxAnswers = useInboxAnswers()
+/** 答案映射（模板顶层绑定） */
+const inboxAnswerMap = inboxAnswers.answers
+/** 当前展开答案面板的事项 ID */
+const inboxExpandedId = inboxAnswers.expandedId
 /** 实例详情与列表偏好（置顶/分组） */
 const jobExtras = useJobExtras()
 /** 当前实例详情 */
@@ -555,6 +562,118 @@ const inboxGroups = computed<InboxWorkspaceGroup[]>(() => {
   }
   return groups
 })
+
+/**
+ * 建议稿索引：以 `storyId:questionId` 为键，值为建议稿文本。
+ * 来源与看板「需求待确认项」一致（store.snapshot.openQuestions），只取有 resolution 的条目。
+ * 收件箱 open_question 事项的 id 形如 `question:<storyId>:<questionId>`，据此关联。
+ */
+const questionSuggestions = computed<Map<string, string>>(() => {
+  const map = new Map<string, string>()
+  for (const question of store.snapshot?.openQuestions ?? []) {
+    if (question.resolution?.trim()) {
+      map.set(`${question.storyId}:${question.id}`, question.resolution)
+    }
+  }
+  return map
+})
+
+/**
+ * 读取某条收件箱事项对应的建议稿。
+ * @param item 收件箱事项
+ * @returns 建议稿文本；无对应建议稿时返回空字符串
+ */
+function suggestionOf(item: InboxItem): string {
+  const storyId = item.requirementId ?? ''
+  const separator = item.id.lastIndexOf(':')
+  const questionId = separator >= 0 ? item.id.slice(separator + 1) : ''
+  return questionSuggestions.value.get(`${storyId}:${questionId}`) ?? ''
+}
+
+/** 把建议稿按圈号切成分段，供面板分行展示（纯函数，模板不重复解析） */
+const suggestionSegmentsOf = (item: InboxItem) => splitSuggestion(suggestionOf(item))
+
+/**
+ * 统计一组事项中已填写答案的数量，用于单个 Story 的汇总按钮计数胶囊。
+ * @param items 该 Story 下的收件箱事项
+ * @returns 已填写答案的条数
+ */
+function storyAnswerCount(items: InboxItem[]): number {
+  return items.filter((item) => inboxAnswerMap.value[item.id]?.text.trim()).length
+}
+
+/** 与 kind 标签语义重复的通用原因文案：open question 的「待用户确认」已由 kind 标签表达，不再重复展示 */
+const redundantInboxReason = '待用户确认。'
+
+/**
+ * 读取事项原因；若只是重复 kind 标签的通用文案则返回空串，避免同一行出现两层同义信息。
+ * @param item 收件箱事项
+ * @returns 需要展示的原因文本；无有效原因时返回空字符串
+ */
+function inboxReasonOf(item: InboxItem): string {
+  return item.reason === redundantInboxReason ? '' : item.reason
+}
+
+/**
+ * 设置某条事项的答案，交给 composable 防抖落盘。
+ * @param id 收件箱事项 ID
+ * @param text 输入的答案文本
+ */
+function setInboxAnswer(id: string, text: string): void {
+  inboxAnswers.setAnswer(id, text)
+}
+
+/**
+ * 切换某条事项的答案面板展开/收起。
+ * @param id 收件箱事项 ID
+ */
+function toggleInboxAnswer(id: string): void {
+  inboxAnswers.toggleExpanded(id)
+}
+
+/**
+ * 读取某条事项的当前答案文本，供 textarea 双向绑定。
+ * @param id 收件箱事项 ID
+ * @returns 答案文本；无答案时返回空字符串
+ */
+function inboxAnswerText(id: string): string {
+  return inboxAnswerMap.value[id]?.text ?? ''
+}
+
+/**
+ * 把某个 Story 下已填答案按 Qn:答案 格式汇总并复制到剪贴板。
+ * 每个 Story 独立编号（Q1 起），复制不改变收件箱状态。
+ * 剪贴板 API 不可用时回退到 execCommand。
+ * @param items 该 Story 下的收件箱事项
+ */
+async function copyStoryAnswers(items: InboxItem[]): Promise<void> {
+  const count = storyAnswerCount(items)
+  if (!count) {
+    actionToasts.notify('这个 Story 还没有填写答案。', 'error')
+    return
+  }
+  const text = buildInboxAnswerText(items, inboxAnswerMap.value)
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const helper = document.createElement('textarea')
+      helper.value = text
+      helper.setAttribute('readonly', '')
+      helper.style.position = 'fixed'
+      helper.style.opacity = '0'
+      document.body.appendChild(helper)
+      helper.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(helper)
+      if (!ok) throw new Error('execCommand 返回 false')
+    }
+    actionToasts.notify(`已复制「${items[0]?.requirementId ?? 'Story'}」的 ${count} 条答案。`, 'success')
+  } catch {
+    actionToasts.notify('复制失败，请手动选择文本。', 'error')
+  }
+}
+
 /** 定时任务列表：快照事实 + 本地乐观覆盖（覆盖仅用于写操作期间的即时反馈） */
 const crons = computed<Cron[]>(() => (store.snapshot?.crons ?? []).map((cron) => {
   const override = cronActions.overrides.value[cron.id]
@@ -1235,6 +1354,7 @@ onUnmounted(() => {
   if (jobsPollTimer) clearInterval(jobsPollTimer)
   jobStreamController?.abort()
   jobExtras.clearDetail()
+  inboxAnswers.flushPending()
 })
 
 function openRequirement(requirement: Requirement): void {
@@ -2651,7 +2771,10 @@ function formatWorkspaceTime(value?: string): string {
         <article class="stat-card"><span>运行中实例</span><strong>{{ jobs.filter((job) => job.status === 'busy').length }}</strong><small>CodeBuddy jobs</small></article>
       </div>
       <section class="surface">
-        <div class="section-heading"><div><h2>待你处理</h2><p>只显示阻塞流程或需要判断的事项</p></div><span class="count-pill">{{ inbox.length }} 项</span></div>
+        <div class="section-heading">
+          <div><h2>待你处理</h2><p>只显示阻塞流程或需要判断的事项；每个 Story 独立汇总答复</p></div>
+          <span class="count-pill">{{ inbox.length }} 项</span>
+        </div>
         <div v-if="inboxGroups.length" class="inbox-groups">
           <section v-for="group in inboxGroups" :key="group.key" class="inbox-workspace">
             <header class="inbox-workspace-head">
@@ -2667,13 +2790,56 @@ function formatWorkspaceTime(value?: string): string {
                 <strong>{{ story.title }}</strong>
                 <code>{{ story.storyId }}</code>
                 <span v-if="story.highCount" class="tag tag-danger">高优先级 {{ story.highCount }}</span>
+                <el-tooltip content="只复制本 Story 下已填答案，按 Q1:答案 格式，不回写上游" placement="bottom">
+                  <span class="inbox-story-summary">
+                    <el-button
+                      type="primary"
+                      plain
+                      size="small"
+                      :disabled="!storyAnswerCount(story.items)"
+                      @click="copyStoryAnswers(story.items)"
+                    >汇总答复<span v-if="storyAnswerCount(story.items)" class="count-pill count-pill-inline">{{ storyAnswerCount(story.items) }}</span></el-button>
+                  </span>
+                </el-tooltip>
               </div>
               <div class="inbox-list">
-                <article v-for="item in story.items" :key="item.id" class="inbox-row">
-                  <span class="priority-marker" :class="item.priority">{{ item.priority === 'high' ? '!' : '·' }}</span>
-                  <div class="inbox-copy"><div class="inbox-title-line"><strong>{{ item.title }}</strong><span class="kind-label">{{ item.kind.replaceAll('_', ' ') }}</span></div><p>{{ item.reason }}</p></div>
-                  <el-button type="primary" plain size="small" :disabled="!item.target" @click="item.target && $router.push(item.target)">查看处理</el-button>
-                </article>
+                <template v-for="item in story.items" :key="item.id">
+                  <article class="inbox-row" :class="{ 'inbox-row-expanded': inboxExpandedId === item.id }">
+                    <span class="priority-marker" :class="item.priority">{{ item.priority === 'high' ? '!' : '·' }}</span>
+                    <div class="inbox-copy"><div class="inbox-title-line"><strong>{{ item.title }}</strong><span class="kind-label">{{ item.kind.replaceAll('_', ' ') }}</span></div><p v-if="inboxReasonOf(item)">{{ inboxReasonOf(item) }}</p></div>
+                    <div class="inbox-row-actions">
+                      <el-button
+                        link
+                        type="primary"
+                        size="small"
+                        :aria-expanded="inboxExpandedId === item.id"
+                        @click="toggleInboxAnswer(item.id)"
+                      >答复<span v-if="inboxAnswerMap[item.id]?.text.trim()" class="answer-dot" :aria-label="`已填写 ${inboxAnswerMap[item.id].text.trim().length} 字`" /></el-button>
+                      <el-button type="primary" plain size="small" :disabled="!item.target" @click="item.target && $router.push(item.target)">查看处理</el-button>
+                    </div>
+                  </article>
+                  <div v-if="inboxExpandedId === item.id" class="inbox-answer">
+                    <div v-if="suggestionSegmentsOf(item).length" class="inbox-answer-suggestion">
+                      <div class="inbox-answer-suggestion-head">建议稿</div>
+                      <div class="inbox-answer-suggestion-body">
+                        <div v-for="(segment, index) in suggestionSegmentsOf(item)" :key="index" class="suggestion-row">
+                          <span v-if="segment.marker" class="suggestion-marker">{{ segment.marker }}</span>
+                          <span class="suggestion-text">{{ segment.text }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <el-input
+                      :model-value="inboxAnswerText(item.id)"
+                      type="textarea"
+                      :rows="3"
+                      resize="none"
+                      placeholder="写下你的答复…"
+                      :aria-label="`为「${item.title}」填写答复`"
+                      @update:model-value="setInboxAnswer(item.id, $event)"
+                    />
+                    <div class="inbox-answer-foot"><span class="inbox-answer-note">仅本地记录，用于汇总复制，不会回写上游</span><el-button link size="small" @click="toggleInboxAnswer(item.id)">收起</el-button></div>
+                  </div>
+                </template>
               </div>
             </div>
           </section>
