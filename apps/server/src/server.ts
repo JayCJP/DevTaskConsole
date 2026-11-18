@@ -28,6 +28,7 @@ import {
   workspaceDeleteRequestSchema,
   workspaceInitializationResumeRequestSchema,
   workspaceMergeRequestCreateRequestSchema,
+  type BoardResponse,
   type Snapshot,
 } from '@devtask/shared'
 import { z } from 'zod'
@@ -40,6 +41,7 @@ import {
 } from './aggregator/snapshot.js'
 import { SnapshotCache } from './aggregator/snapshot-cache.js'
 import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
+import { BoardCache, createCachedBoardProvider, type BoardCacheStore } from './aggregator/board-cache.js'
 import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
 import { TapdAdapter } from './integrations/tapd.js'
@@ -89,6 +91,10 @@ export interface ServerOptions {
   snapshotProvider?: (force?: boolean) => Promise<Snapshot>
   /** 快照磁盘缓存；测试可注入内存替身 */
   snapshotCache?: SnapshotCacheStore
+  /** 看板 provider；注入后完全接管（不套文件缓存），测试可注入替身 */
+  boardProvider?: (owner: string, includeReleased: boolean, force?: boolean) => Promise<BoardResponse>
+  /** 看板文件缓存；测试可注入内存替身 */
+  boardCache?: BoardCacheStore
   /** 只读定时任务事实的构建器，测试时可注入替身 */
   cronFactsProvider?: () => Promise<CronFacts>
   devOpsAdapter?: DevOpsAdapter
@@ -197,6 +203,19 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // 定时任务只读事实：并发去重，且完全不触达上游系统
   const cronFactsProvider = createSingleFlight(
     options.cronFactsProvider ?? (() => buildCronFacts(workspacesRoot)),
+  )
+  // 看板 provider：普通请求命中文件缓存直返（零 MCP），force 穿透；并发同 key 单飞去重。
+  // 注入的 provider 直接单飞；默认 provider 先读写文件缓存再单飞，force/non-force 按参数分 key。
+  const boardProvider = createSingleFlight(
+    options.boardProvider ?? createCachedBoardProvider({
+      cache: options.boardCache ?? new BoardCache(),
+      build: (owner, includeReleased) => buildBoard(owner, {
+        tapd,
+        bindings: workspaceBindings,
+        workspaces: () => listWorkspaces(workspacesRoot),
+      }, { includeReleased }),
+      logError: (message) => app.log.error({ code: 'BOARD_CACHE_WRITE_FAILED' }, message),
+    }),
   )
   const webDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
   const ensureStoryService = async (storyId: string): Promise<StoryService> => {
@@ -432,16 +451,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       owner: z.string().trim().min(1).max(100).optional(),
       // 默认 0：排除“已发布”需求；传 1 才显示
       includeReleased: z.enum(['0', '1']).optional(),
+      // refresh=1 时穿透文件缓存，强制回源重建
+      refresh: z.enum(['0', '1']).optional(),
     }).safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
-    const board = await buildBoard(
+    const includeReleased = query.data.includeReleased === '1'
+    const board = await boardProvider(
       query.data.owner ?? defaultBoardOwner,
-      {
-        tapd,
-        bindings: workspaceBindings,
-        workspaces: () => listWorkspaces(workspacesRoot),
-      },
-      { includeReleased: query.data.includeReleased === '1' },
+      includeReleased,
+      query.data.refresh === '1',
     )
     return board
   })

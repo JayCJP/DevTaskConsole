@@ -878,6 +878,26 @@ export const boardResponseSchema = z.object({
  */
 export const releasedStoryStatusLabels = ['已发布']
 
+/** 看板文件缓存格式版本；结构变更时递增，读取时版本不匹配即丢弃重建 */
+export const BOARD_CACHE_VERSION = 1
+
+/**
+ * 看板文件缓存的 zod schema。
+ * 独立校验缓存文件（外层是 version + entries），内部 response 复用 boardResponseSchema，
+ * 避免重列字段导致与接口响应结构漂移。
+ */
+export const boardCacheSchema = z.object({
+  version: z.literal(BOARD_CACHE_VERSION),
+  entries: z.record(z.string(), z.object({
+    /** 数据抓取时间（ISO），用于 TTL 判定与陈旧提示 */
+    fetchedAt: z.string().datetime(),
+    response: boardResponseSchema,
+  })),
+})
+
+/** 看板文件缓存完整结构 */
+export type BoardCacheFile = z.infer<typeof boardCacheSchema>
+
 export const loginRequestSchema = z.object({
   token: z.string().min(1),
 })

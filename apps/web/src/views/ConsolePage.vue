@@ -1319,7 +1319,12 @@ watch([page, () => store.snapshot?.requirements.length], ([value]) => {
   if (value === 'instances') void refreshStoryServices()
   // 发布页按工作区列出项目，并按需拉取每个项目的 DevOps 只读数据
   if (value === 'releases') void prepareReleasePage()
-  // 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取
+}, { immediate: true })
+
+// 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取。
+// 单独监听 page：若放进上面同时依赖 requirements.length 的 watch，首次快照到达时
+// requirements.length 变化会再次触发，导致刷新页面重复请求看板接口。
+watch(page, (value) => {
   if (value === 'board') void board.load()
 }, { immediate: true })
 
@@ -2174,9 +2179,9 @@ async function refreshAfterWorkspaceChange(): Promise<void> {
       actionToasts.notify(`工作区已创建，但绑定 TAPD 需求失败：${message}`, 'error')
     }
   }
-  // 绑定改动只影响看板数据源，始终补拉一次看板让新绑定即时可见。
+  // 绑定改动只影响看板数据源，始终强制穿透文件缓存重新拉取，让新绑定即时可见。
   // board.load() 内部已 try/catch，失败仅写 board.error 由界面自证，不阻断其它刷新。
-  await board.load()
+  await board.load(true)
   const results = await Promise.allSettled([
     store.refresh(true),
     refreshWorkspaces(),
@@ -2864,7 +2869,7 @@ function formatWorkspaceTime(value?: string): string {
               <el-option label="排除已发布（默认）" :value="false" />
               <el-option label="包含已发布" :value="true" />
             </el-select>
-            <el-button :loading="board.loading" @click="board.load()">刷新</el-button>
+            <el-button :loading="board.loading" @click="board.load(true)">刷新</el-button>
             <el-button type="primary" @click="board.openManual()">手动添加</el-button>
           </div>
         </div>
@@ -2885,7 +2890,7 @@ function formatWorkspaceTime(value?: string): string {
             <strong>TAPD 需求查询失败</strong>
             <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br />下方仅显示本地已绑定、尚未同步到 TAPD 的需求。<br /><small class="board-error-detail">{{ board.error }}</small></p>
           </div>
-          <el-button text @click="board.load()">重试</el-button>
+          <el-button text @click="board.load(true)">重试</el-button>
         </div>
         <div v-if="board.stories.length" class="board-list">
           <article v-for="story in board.stories" :key="story.storyId" class="board-parent" :class="{ 'is-expanded': board.isParentExpanded(story.storyId) }">
@@ -2943,7 +2948,7 @@ function formatWorkspaceTime(value?: string): string {
             <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br /><small class="board-error-detail">{{ board.error }}</small></p>
           </div>
           <el-tooltip content="重新查询 TAPD；可能消耗查询配额" placement="left">
-            <span><el-button text @click="board.load()">重试</el-button></span>
+            <span><el-button text @click="board.load(true)">重试</el-button></span>
           </el-tooltip>
         </div>
         <div v-else class="empty-state">

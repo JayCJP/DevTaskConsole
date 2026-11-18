@@ -93,15 +93,17 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
 
   /**
    * 拉取看板数据。
+   * @param force 是否穿透服务端文件缓存强制回源；写操作后用 true 保证刚保存的绑定立即可见
    * @returns Promise<void>，失败信息写入 error
    */
-  async function load(): Promise<void> {
+  async function load(force = false): Promise<void> {
     loading.value = true
     error.value = ''
     try {
       const query = new URLSearchParams({
         owner: owner.value.trim(),
         includeReleased: includeReleased.value ? '1' : '0',
+        ...(force ? { refresh: '1' } : {}),
       })
       const payload: unknown = await apiRequest(`/api/v1/board/stories?${query}`)
       const parsed = boardResponseSchema.parse(payload)
@@ -152,7 +154,8 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
         method: 'PUT',
         body: JSON.stringify(input),
       })
-      await load()
+      // 绑定关系已变更，穿透文件缓存强制回源，避免刚保存的绑定被缓存挡住
+      await load(true)
       return true
     } catch (cause) {
       rowErrors.value = {
@@ -194,7 +197,8 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
     rowErrors.value = { ...rowErrors.value, [storyId]: '' }
     try {
       await apiRequest(`/api/v1/workspace-bindings/${encodeURIComponent(storyId)}`, { method: 'DELETE' })
-      await load()
+      // 解绑改变了绑定关系，穿透文件缓存强制回源
+      await load(true)
     } catch (cause) {
       rowErrors.value = {
         ...rowErrors.value,
@@ -241,7 +245,8 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
         }),
       })
       manualOpen.value = false
-      await load()
+      // 手动新增绑定改变了绑定关系，穿透文件缓存强制回源
+      await load(true)
     } catch (cause) {
       manualError.value = cause instanceof Error ? cause.message : '绑定保存失败。'
     } finally {

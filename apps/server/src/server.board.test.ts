@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildServer } from './server.js'
+import { BoardCache } from './aggregator/board-cache.js'
 import { CronMappingStore } from './aggregator/cron-data.js'
 import { ApplicationMappingStore } from './integrations/application-mappings.js'
 import { StoryServiceSupervisor } from './services/story-service-supervisor.js'
@@ -46,6 +47,8 @@ beforeEach(async () => {
     applicationMappingStore: new ApplicationMappingStore(dataDirectory),
     cronMappingStore: new CronMappingStore(dataDirectory),
     storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+    // 看板文件缓存指向临时目录，避免污染真实数据目录或测试间串味
+    boardCache: new BoardCache(dataDirectory),
     tapdAdapter: {
       listOwnedStories: async (owner: string) => ({
         stories: [
@@ -195,5 +198,94 @@ describe('board API', () => {
 
     expect(removed.statusCode).toBe(200)
     expect(removed.json()).toEqual([])
+  })
+})
+
+describe('board API file cache', () => {
+  /** 构建带调用计数的 TAPD 替身 server，覆盖全局 server 以便 afterEach 统一关闭 */
+  async function buildCountingServer(tapdImpl: {
+    listOwnedStories: (owner: string) => Promise<{
+      stories: Array<{ storyId: string; title: string; owner: string; tapdUrl: string; statusLabel?: string }>
+      urlTemplate: string
+    }>
+    resolveParentStoryId: (storyId: string) => Promise<string>
+  }): Promise<{ calls: () => number }> {
+    let count = 0
+    await server.close()
+    server = buildServer({
+      token,
+      logger: false,
+      workspacesRoot,
+      workspaceBindingStore: new WorkspaceBindingStore(dataDirectory),
+      workspaceInitializer: new WorkspaceInitializer({ dataDirectory }),
+      applicationMappingStore: new ApplicationMappingStore(dataDirectory),
+      cronMappingStore: new CronMappingStore(dataDirectory),
+      storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+      boardCache: new BoardCache(dataDirectory),
+      tapdAdapter: {
+        listOwnedStories: async (owner) => {
+          count += 1
+          return tapdImpl.listOwnedStories(owner)
+        },
+        resolveParentStoryId: tapdImpl.resolveParentStoryId,
+      },
+    })
+    return { calls: () => count }
+  }
+
+  const okTapd = {
+    listOwnedStories: async (owner: string) => ({
+      stories: [{ storyId: firstStoryId, title: '需求 A', owner, tapdUrl: storyUrl, statusLabel: '方案中' }],
+      urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
+    }),
+    resolveParentStoryId: async (storyId: string) => storyId,
+  }
+
+  it('serves the second request from the file cache without hitting TAPD', async () => {
+    const { calls } = await buildCountingServer(okTapd)
+    const url = '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F'
+
+    const first = await server.inject({ method: 'GET', url, headers })
+    expect(first.statusCode).toBe(200)
+    const second = await server.inject({ method: 'GET', url, headers })
+
+    expect(second.json()).toEqual(first.json())
+    expect(calls()).toBe(1)
+  })
+
+  it('bypasses the file cache when refresh=1', async () => {
+    const { calls } = await buildCountingServer(okTapd)
+    const url = '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F'
+
+    await server.inject({ method: 'GET', url, headers })
+    const forced = await server.inject({ method: 'GET', url: `${url}&refresh=1`, headers })
+
+    expect(forced.statusCode).toBe(200)
+    expect(calls()).toBe(2)
+  })
+
+  it('keeps owner/includeReleased entries isolated', async () => {
+    const { calls } = await buildCountingServer(okTapd)
+
+    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F', headers })
+    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F&includeReleased=1', headers })
+    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E5%BC%A0%E4%B8%89', headers })
+
+    expect(calls()).toBe(3)
+  })
+
+  it('does not cache a failed TAPD channel (ok=false)', async () => {
+    const { calls } = await buildCountingServer({
+      listOwnedStories: async () => { throw new Error('TAPD down') },
+      resolveParentStoryId: async (storyId) => storyId,
+    })
+    const url = '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F'
+
+     const first = await server.inject({ method: 'GET', url, headers })
+    expect(first.json().ok).toBe(false)
+    const second = await server.inject({ method: 'GET', url, headers })
+
+    // 失败结果未写缓存，第二次仍会回源重试
+    expect(calls()).toBe(2)
   })
 })
