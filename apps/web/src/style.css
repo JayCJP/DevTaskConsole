@@ -1072,6 +1072,12 @@
 /* 看板错误：中文原因在上，上游原文下沉为可读小字，便于排查但不喧宾夺主 */
 .board-error-detail { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; overflow-wrap: anywhere; }
 
+/* 通道不可用：展示后端原始错误文案，避免兜底文案说「按下方原文排查」却看不到原文 */
+.channel-error-raw { display: block; margin-top: 4px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; overflow-wrap: anywhere; }
+
+/* CodeBuddy 未安装时的安装引导链接 */
+.channel-install-link { display: inline-block; margin-top: 4px; color: var(--accent, #409eff); font-size: 12px; text-decoration: underline; }
+
 /* 三项统计在窄屏保持三列，每列仍可读；通道用途说明改为换行 */
 @media (max-width: 640px) {
   .channel-purpose { display: block; margin-left: 0; }

@@ -715,22 +715,30 @@ const channelCatalog = [
  */
 function describeChannelError(raw: string): { reason: string; action: string } {
   const text = raw.toLowerCase()
+  // 本项目 MCP 客户端 / TAPD 适配器自身生成的错误文案不来自上游 HTTP，
+  // 不匹配 4xx/5xx，过去会落到「未识别的错误」兜底。需与后端实际抛出的文案保持一致。
+  if (/missing required read-only tools|required read-only tools/.test(text)) {
+    return { reason: 'MCP 服务缺少本控制台要求的只读工具', action: '确认 mcp-server-tapd 版本与 requiredReadTools 清单一致后重新检测' }
+  }
+  if (/mcp connection failed|mcp 启动失败|mcp.*is not configured|mcp.*connect|handshake|spawn.*failed/.test(text)) {
+    return { reason: 'MCP 服务连接或握手失败（可能是限流、进程启动失败或配置错误）', action: '确认本机 MCP 服务可用后重新检测' }
+  }
+  if (/tapd is not configured|not configured|no config|未配置/.test(text)) {
+    return { reason: '尚未配置该通道', action: '在「连接与配置」补齐后再检测' }
+  }
   if (/429|rate limit|quota|too many/.test(text)) {
     return { reason: '上游限流或配额用尽', action: '等待几分钟后到「连接与配置」重新检测' }
   }
   if (/401|403|unauthori[sz]ed|expired|session/.test(text)) {
     return { reason: '令牌或登录会话失效', action: '在「连接与配置」更新凭证后重新检测' }
   }
-  if (/timeout|etimedout|timed out|econnrefused/.test(text)) {
+  if (/timeout|etimedout|\btimed out\b|econnrefused/.test(text)) {
     return { reason: '网络超时或服务未启动', action: '确认本机网络与该服务可用后重试' }
-  }
-  if (/not configured|no config|missing|未配置/.test(text)) {
-    return { reason: '尚未配置该通道', action: '在「连接与配置」补齐后再检测' }
   }
   if (/request failed|failed to fetch|network error|\b5\d\d\b|internal server/.test(text)) {
     return { reason: '上游服务返回了失败响应，可能是令牌过期、配额用尽或该服务暂时不可用', action: '先到「连接与配置」重新检测，确认是哪一条通道失败' }
   }
-  return { reason: '上游返回了未识别的错误', action: '到「连接与配置」重新检测，并按下方原文排查' }
+  return { reason: '上游返回了未识别的错误', action: '请查看下方原始错误信息并据此排查' }
 }
 
 /**
@@ -767,6 +775,21 @@ const channelRows = computed(() => {
     .map(([key, channel]) => ({ key, label: key, purpose: '', channel }))
   return [...known, ...extra]
 })
+
+/**
+ * 解析 CodeBuddy 通道的展示信息。
+ * 后端把 CLI 版本或安装提示统一放在 channel.error 字段中承载：
+ * - 已安装：形如 `codebuddy 2.185.0`，直接作为版本文案展示；
+ * - 未安装：含安装链接，提取为可点击链接。
+ * @param raw 通道 error 字段原文
+ * @returns 展示文本与安装链接（无链接时为空串）
+ */
+function codebuddyChannelView(raw: string): { text: string; installUrl: string } {
+  const urlMatch = raw.match(/https?:\/\/\S+/)
+  const installUrl = urlMatch ? urlMatch[0] : ''
+  const text = installUrl ? raw.replace(installUrl, '').trim() : raw
+  return { text, installUrl }
+}
 
 /** 任一已知通道不可用或尚未检测 */
 const channelUnavailable = computed(() =>
@@ -3586,9 +3609,19 @@ function formatWorkspaceTime(value?: string): string {
             <strong>{{ row.label }}</strong>
             <span>
               <template v-if="!row.channel">未检测 · 快照中暂无该通道结果</template>
+              <template v-else-if="row.key === 'codebuddy'">
+                <template v-if="row.channel.ok">已安装 · {{ codebuddyChannelView(row.channel.error || '').text }}</template>
+                <template v-else>
+                  <div>{{ codebuddyChannelView(row.channel.error || '').text }}</div>
+                  <a v-if="codebuddyChannelView(row.channel.error || '').installUrl"
+                     :href="codebuddyChannelView(row.channel.error || '').installUrl"
+                     target="_blank" rel="noopener noreferrer" class="channel-install-link">前往安装</a>
+                </template>
+              </template>
               <template v-else-if="row.channel.ok">连接正常<small class="channel-purpose">{{ row.purpose }}</small></template>
               <template v-else>
-                不可用 —— {{ describeChannelError(row.channel.error || '').reason }}。{{ describeChannelError(row.channel.error || '').action }}。
+                <div>不可用 —— {{ describeChannelError(row.channel.error || '').reason }}。{{ describeChannelError(row.channel.error || '').action }}。</div>
+                <small v-if="row.channel.error" class="channel-error-raw">原始信息：{{ row.channel.error }}</small>
               </template>
             </span>
             <small>{{ row.channel?.fetchedAt ? new Date(row.channel.fetchedAt).toLocaleString() : '尚未检测' }}{{ row.channel?.stale ? ' · 缓存' : '' }}</small>

@@ -1,7 +1,9 @@
+import { exec } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import {
   jobSchema,
   type ChannelState,
@@ -32,6 +34,11 @@ const gitLab = new GitLabAdapter()
 const devOps = new DevOpsAdapter()
 const storyServiceSupervisor = new StoryServiceSupervisor()
 const codeBuddyApi = new CodeBuddyApi()
+// 走 shell 执行以正确解析 PATH 中的 CLI（Windows 下 npm 全局命令多为无扩展名入口或 .cmd，
+// execFile 直接 spawn 会 ENOENT）；命令与参数均为硬编码，无命令注入风险。
+const execAsync = promisify(exec)
+/** CodeBuddy CLI 安装引导地址，未安装时随通道状态返回给前端展示 */
+const CODEBUDDY_INSTALL_URL = 'https://www.codebuddy.cn/docs/cli/quickstart'
 /** runtime 段单次请求超时：实例不可达时把首屏等待封顶在 3s，不影响其它调用方的 30s 默认值 */
 const RUNTIME_TIMEOUT_MS = 3_000
 /** ScheduledTaskClient 内部调用不透传单次超时，用短超时实例保证 cron 链路同样封顶 */
@@ -151,15 +158,34 @@ async function loadTapdSegment(
     .filter((item): item is Requirement & { tapdStoryId: string } =>
       typeof item.tapdStoryId === 'string' && item.tapdStoryId.trim().length > 0)
     .map((item) => item.tapdStoryId))]
+  // 通道健康只取决于 TAPD MCP 是否连接成功：
+  // 只要 checkConnection() 通过，就视为「链接正常」，与后续能否取到数据无关。
+  // 取数失败仅记日志，不再把通道标红——连接通但某次聚合偶发失败不等于链接异常。
+  let configured: boolean
   try {
-    const configured = await tapd.checkConnection()
-    if (!configured) {
-      return {
+    configured = await tapd.checkConnection()
+  } catch (error) {
+    return {
+      fetchedAt,
+      channel: {
         fetchedAt,
-        channel: { fetchedAt: null, ok: false, stale: false, error: 'TAPD is not configured.' },
-        enrichment: {},
-      }
+        ok: false,
+        stale: false,
+        error: error instanceof Error ? error.message : 'TAPD MCP connection failed.',
+      },
+      enrichment: {},
     }
+  }
+  if (!configured) {
+    return {
+      fetchedAt,
+      channel: { fetchedAt: null, ok: false, stale: false, error: 'TAPD is not configured.' },
+      enrichment: {},
+    }
+  }
+
+  // MCP 已连接：无论聚合是否成功，通道都标记为 ok。
+  try {
     const data = await tapd.aggregate(requirements, { force })
     const raw = tapd.exportRawEnrichment(storyIds)
     const segmentAt = data.cachedAt ?? fetchedAt
@@ -170,14 +196,12 @@ async function loadTapdSegment(
       enrichment: Object.fromEntries(raw),
     }
   } catch (error) {
+    // 取数失败不影响链接状态，仅记录服务端日志便于排查上游偶发问题
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`[snapshot] TAPD MCP connected but aggregate failed: ${reason}`)
     return {
       fetchedAt,
-      channel: {
-        fetchedAt,
-        ok: false,
-        stale: false,
-        error: error instanceof Error ? error.message : 'TAPD data request failed.',
-      },
+      channel: { fetchedAt, ok: true, stale: false },
       enrichment: {},
     }
   }
@@ -632,7 +656,36 @@ function sameWorkspace(left: string, right: string): boolean {
 }
 
 /**
+ * 检测本机 CodeBuddy CLI 是否已安装，并用 `codebuddy --version` 取版本号。
+ *
+ * 通道健康只取决于 CLI 是否安装：能取到版本即视为已安装（ok=true），
+ * 取不到则视为未安装（ok=false），与 Story 服务/jobs 是否可用无关。
+ * 版本或安装提示统一放在 `error` 字段中承载，避免扩展 ChannelState 结构。
+ *
+ * @param fetchedAt 快照时间
+ * @returns codebuddy 通道状态
+ */
+async function detectCodeBuddyChannel(fetchedAt: string): Promise<ChannelState> {
+  try {
+    const { stdout } = await execAsync('codebuddy --version', { timeout: RUNTIME_TIMEOUT_MS })
+    const version = stdout.trim().split('\n')[0]?.trim()
+    if (version) {
+      return { fetchedAt, ok: true, stale: false, error: `codebuddy ${version}` }
+    }
+  } catch {
+    // 命令不存在或执行失败，按未安装处理
+  }
+  return {
+    fetchedAt,
+    ok: false,
+    stale: false,
+    error: `未安装 CodeBuddy CLI，请访问 ${CODEBUDDY_INSTALL_URL} 安装`,
+  }
+}
+
+/**
  * 从运行中的 Story 服务并发拉取 jobs；单服务失败只记原因，不影响其它服务。
+ * 通道状态由本机 CodeBuddy CLI 是否安装决定，与 jobs 拉取结果解耦。
  * @param fetchedAt 快照时间
  * @param workspacesRoot 工作区根目录
  * @param requirements 本地需求
@@ -643,13 +696,12 @@ async function loadCodeBuddySnapshot(
   workspacesRoot: string,
   requirements: Snapshot['requirements'],
 ): Promise<{ channel: ChannelState; jobs: Job[] }> {
+  // 通道状态只看 CLI 是否安装，与后续 jobs 拉取是否成功无关
+  const channel = await detectCodeBuddyChannel(fetchedAt)
   try {
     const services = await storyServiceSupervisor.list()
     if (!services.length) {
-      return {
-        channel: { fetchedAt: null, ok: false, stale: false, error: 'No Story services have been started yet.' },
-        jobs: [],
-      }
+      return { channel, jobs: [] }
     }
     // 并发拉取所有服务，单服务耗时不再累加；短超时实例把最坏等待封顶在 3s
     const results = await Promise.all(services.map(async (service) => {
@@ -683,26 +735,16 @@ async function loadCodeBuddySnapshot(
       }
     }))
     const jobs = results.flatMap((result) => result.jobs)
+    // jobs 拉取的失败原因仅记录日志，不再作为「CLI 是否安装」的判定依据
     const errors = results.flatMap((result) => result.error ? [result.error] : [])
-    return {
-      channel: {
-        fetchedAt,
-        ok: errors.length === 0,
-        stale: false,
-        ...(errors.length ? { error: errors.join(' ') } : {}),
-      },
-      jobs,
+    if (errors.length) {
+      console.error(`[snapshot] CodeBuddy jobs listing partial failures: ${errors.join(' ')}`)
     }
+    return { channel, jobs }
   } catch (error) {
-    return {
-      channel: {
-        fetchedAt,
-        ok: false,
-        stale: false,
-        error: error instanceof Error ? error.message : 'CodeBuddy service registry could not be read.',
-      },
-      jobs: [],
-    }
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`[snapshot] CodeBuddy jobs listing failed: ${reason}`)
+    return { channel, jobs: [] }
   }
 }
 

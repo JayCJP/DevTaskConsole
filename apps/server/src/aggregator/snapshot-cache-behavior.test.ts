@@ -6,6 +6,7 @@ import type { Requirement } from '@devtask/shared'
 
 // 所有被测依赖的替身必须 hoist 到 vi.mock 工厂之前声明
 const mocks = vi.hoisted(() => ({
+  codebuddyVersion: '2.185.0' as string | null,
   readHarness: vi.fn(),
   tapdCheck: vi.fn(),
   tapdAggregate: vi.fn(),
@@ -20,6 +21,21 @@ const mocks = vi.hoisted(() => ({
   cronResolve: vi.fn(),
   cronList: vi.fn(),
 }))
+
+// node:child_process 用 callback 风格 mock，供 snapshot.ts 中 promisify(exec) 使用
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    exec: (_cmd: string, _options: unknown, cb: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+      if (mocks.codebuddyVersion === null) {
+        cb(new Error('command not found'), { stdout: '', stderr: '' })
+        return
+      }
+      cb(null, { stdout: `${mocks.codebuddyVersion}\n`, stderr: '' })
+    },
+  }
+})
 
 // 用 importOriginal 保留纯函数与其它导出，只替换单例背后的适配器实现
 vi.mock('./local-harness.js', async (importOriginal) => {
@@ -102,6 +118,7 @@ function requirement(storyId: string, workspacePath: string): Requirement {
 }
 
 beforeEach(async () => {
+  mocks.codebuddyVersion = '2.185.0'
   workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-snapshot-behavior-'))
   dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-snapshot-behavior-data-'))
   process.env.DEVTASK_DATA_DIR = dataDirectory
@@ -126,6 +143,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   await rm(workspacesRoot, { recursive: true, force: true })
   await rm(dataDirectory, { recursive: true, force: true })
   delete process.env.DEVTASK_DATA_DIR
@@ -168,6 +186,44 @@ describe('buildSnapshotResult 缓存行为（方案 §7 要点 2/10/11）', () =
     // 手动刷新无条件重拉
     await buildSnapshotResult(workspacesRoot, { force: true })
     expect(mocks.gitlabCheck).toHaveBeenCalledTimes(baseline + 2)
+  })
+
+  it('CodeBuddy CLI 已安装时，通道 ok 且 error 字段承载版本号', async () => {
+    mocks.codebuddyVersion = '2.185.0'
+
+    const result = await buildSnapshotResult(workspacesRoot, { force: true })
+
+    expect(result.snapshot.channels.codebuddy.ok).toBe(true)
+    expect(result.snapshot.channels.codebuddy.error).toContain('2.185.0')
+  })
+
+  it('CodeBuddy CLI 未安装时，通道不 ok 且 error 字段含安装链接', async () => {
+    mocks.codebuddyVersion = null
+
+    const result = await buildSnapshotResult(workspacesRoot, { force: true })
+
+    expect(result.snapshot.channels.codebuddy.ok).toBe(false)
+    expect(result.snapshot.channels.codebuddy.error).toContain('https://www.codebuddy.cn/docs/cli/quickstart')
+  })
+
+  it('TAPD MCP 连接成功但取数失败时，通道仍标记为 ok（连接状态与取数解耦）', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const withTapdStory = { storyId: 'S-TAPD', title: '带 TAPD 绑定的需求', workspacePath: 'w', tapdStoryId: '123456' }
+    mocks.readHarness.mockResolvedValue({
+      requirements: [withTapdStory], harnessBugs: [], openQuestions: [], harnessActive: [], errors: [],
+    })
+    mocks.tapdCheck.mockResolvedValue(true)
+    mocks.tapdAggregate.mockRejectedValue(new Error('TAPD did not return requested Stories: 123456.'))
+
+    const result = await buildSnapshotResult(workspacesRoot, { force: true })
+
+    expect(mocks.tapdCheck).toHaveBeenCalled()
+    expect(mocks.tapdAggregate).toHaveBeenCalled()
+    // 核心断言：连接成功即视为链接正常，取数失败不再把通道标红
+    expect(result.snapshot.channels.tapd.ok).toBe(true)
+    expect(result.snapshot.channels.tapd.error).toBeUndefined()
+    // 取数失败时没有增强数据
+    expect(result.snapshot.requirements[0]).toMatchObject(withTapdStory)
   })
 
   it('runtime 并发拉取多个服务，并把单次超时设为 3s', async () => {
