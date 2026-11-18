@@ -1,7 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import fastifyStatic from '@fastify/static'
 import multipart from '@fastify/multipart'
-import { randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -514,8 +513,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
    * 上传任意类型文件到 Story 所在项目的 `.docs/<storyId>/` 目录。
    *
    * 路径解析：storyId → requirement.workspacePath（相对工作区根）→ service.cwd（项目根，已做 containment 校验）
-   * 再拼 `.docs/<storyId>/<uuid>.<ext>`。文件名用 UUID + 安全扩展名，绝不信任原始文件名，
-   * 防止路径穿越与任意文件写入。文件类型不限，仅要求扩展名为「点 + 字母数字」。
+   * 再拼 `.docs/<storyId>/<原始文件名>`。落盘名直接采用上传的源文件名（含中文/空格原样保留），
+   * 同名文件直接覆盖。Fastify multipart 解析时已剥除文件名里的路径分隔符，故这里不再做额外清洗。
+   * 文件类型不限，仅要求扩展名为「点 + 字母数字」。
    *
    * @param request  multipart 请求，文件字段名为 `file`
    * @param reply    Fastify 回复
@@ -553,8 +553,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       }
       if (!part) return invalidParameters(reply)
 
-      // 文件名清洗：UUID + 安全扩展名（点 + 字母数字），原始文件名不进入落盘路径。
-      // 支持任意文件类型（pdf/docx/zip/ts/...），但拒绝无扩展名或含危险字符的名字。
+      // 保留源文件名：Fastify multipart 解析时已剥除文件名里的路径分隔符，
+      // 这里直接采用 part.filename 原样落盘（含中文/空格），同名文件后续直接覆盖。
+      // 仅校验扩展名为「点 + 字母数字」，拒绝无扩展名的文件。
       const extension = extname(part.filename).toLowerCase()
       if (!uploadExtensionPattern.test(extension)) {
         return reply.code(400).send({
@@ -564,19 +565,19 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           },
         })
       }
-      const safeName = `${randomUUID()}${extension}`
-      const destination = join(targetDir, safeName)
+      const fileName = part.filename
+      const destination = join(targetDir, fileName)
 
       await mkdir(targetDir, { recursive: true })
       await pipeline(part.file, createWriteStream(destination))
 
       return reply.code(201).send({
-        name: safeName,
+        name: fileName,
         // 原始文件名与 MIME 供前端决定提示词里的引用形式（图片用 ![]()，其它用 []()）。
         originalName: part.filename,
         mimeType: part.mimetype,
         // 相对项目根的路径：CodeBuddy 服务 cwd = projectRoot，agent 可直接引用。
-        relativePath: `.docs/${storyId}/${safeName}`,
+        relativePath: `.docs/${storyId}/${fileName}`,
         absolutePath: destination,
       })
     } catch (error) {

@@ -94,14 +94,14 @@ describe('story file uploads', () => {
       relativePath: string
       absolutePath: string
     }
-    expect(body.name).toMatch(/\.png$/)
+    expect(body.name).toBe('photo.png')
     expect(body.originalName).toBe('photo.png')
     expect(body.mimeType).toBe('image/png')
-    expect(body.relativePath).toMatch(/^\.docs\/STORY-1\/[0-9a-f-]+\.png$/)
+    expect(body.relativePath).toBe('.docs/STORY-1/photo.png')
     expect(body.absolutePath).toContain(join('.docs', 'STORY-1'))
 
     const files = await readdir(join(projectRoot!, '.docs', 'STORY-1'))
-    expect(files).toHaveLength(1)
+    expect(files).toEqual(['photo.png'])
     const saved = await readFile(join(projectRoot!, '.docs', 'STORY-1', files[0]!))
     expect(saved.equals(bytes)).toBe(true)
   })
@@ -120,18 +120,18 @@ describe('story file uploads', () => {
 
     expect(response.statusCode).toBe(201)
     const body = response.json() as { name: string; relativePath: string; mimeType: string }
-    expect(body.name).toMatch(/\.txt$/)
+    expect(body.name).toBe('notes.txt')
     expect(body.mimeType).toBe('text/plain')
-    expect(body.relativePath).toMatch(/^\.docs\/STORY-1\/[0-9a-f-]+\.txt$/)
+    expect(body.relativePath).toBe('.docs/STORY-1/notes.txt')
     const files = await readdir(join(projectRoot!, '.docs', 'STORY-1'))
-    expect(files).toHaveLength(1)
+    expect(files).toEqual(['notes.txt'])
     expect((await readFile(join(projectRoot!, '.docs', 'STORY-1', files[0]!))).toString()).toBe('hello doc')
   })
 
-  it('清洗危险的原始文件名：落盘只用 UUID 与安全扩展名', async () => {
+  it('剥掉原始文件名中的路径部分，保留其余源文件名（含空格）', async () => {
     const app = await buildUploadApp()
     const form = new FormData()
-    // 原始名含路径分隔符与中文，绝不能进入落盘路径
+    // 原始名含路径分隔符；Fastify multipart 会剥掉路径，文件名其余部分原样保留
     form.append('file', new Blob(['x'], { type: 'application/octet-stream' }), '../../evil name.tar.gz')
 
     const response = await app.inject({
@@ -143,14 +143,50 @@ describe('story file uploads', () => {
 
     expect(response.statusCode).toBe(201)
     const body = response.json() as { name: string; originalName: string; absolutePath: string }
-    // 扩展名取最后一段 .gz；落盘名是 UUID，不含入侵字符
-    expect(body.name).toMatch(/^[0-9a-f-]+\.gz$/)
+    // 路径部分被剥掉，空格与点号原样保留
+    expect(body.name).toBe('evil name.tar.gz')
     expect(body.name).not.toContain('..')
-    // Fastify multipart 会剥掉原始名里的路径分隔符；无论是否剥离，落盘都不含危险字符
-    expect(body.absolutePath).not.toContain('evil name')
     expect(body.absolutePath).not.toContain('..')
     const files = await readdir(join(projectRoot!, '.docs', 'STORY-1'))
     expect(files).toEqual([body.name])
+  })
+
+  it('完整保留中文文件名', async () => {
+    const app = await buildUploadApp()
+    const form = new FormData()
+    form.append('file', new Blob(['x'], { type: 'text/plain' }), '2026 年度计划.txt')
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/stories/STORY-1/uploads',
+      headers,
+      payload: form,
+    })
+
+    expect(response.statusCode).toBe(201)
+    const body = response.json() as { name: string }
+    expect(body.name).toBe('2026 年度计划.txt')
+  })
+
+  it('同名文件上传时直接覆盖', async () => {
+    const app = await buildUploadApp()
+    const first = new FormData()
+    first.append('file', new Blob(['first'], { type: 'text/plain' }), 'notes.txt')
+    await app.inject({ method: 'POST', url: '/api/v1/stories/STORY-1/uploads', headers, payload: first })
+
+    const second = new FormData()
+    second.append('file', new Blob(['second'], { type: 'text/plain' }), 'notes.txt')
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/stories/STORY-1/uploads',
+      headers,
+      payload: second,
+    })
+
+    expect(response.statusCode).toBe(201)
+    const files = await readdir(join(projectRoot!, '.docs', 'STORY-1'))
+    expect(files).toEqual(['notes.txt'])
+    expect((await readFile(join(projectRoot!, '.docs', 'STORY-1', 'notes.txt'))).toString()).toBe('second')
   })
 
   it('拒绝没有安全扩展名的文件名', async () => {

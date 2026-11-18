@@ -7,13 +7,13 @@ import { apiRequest } from '../api/client'
  * 因此可直接写进提示词供 agent 读取。
  */
 export interface UploadedAsset {
-  /** 服务端生成的唯一文件名（UUID + 扩展名） */
+  /** 落盘文件名（直接采用上传的源文件名，如 `2026 计划.pdf`） */
   name: string
   /** 用户选择的原始文件名，用于提示词中展示 */
   originalName: string
   /** 文件的 MIME 类型，用于区分图片与普通文件 */
   mimeType: string
-  /** 相对项目根目录的路径，如 `.docs/<storyId>/<uuid>.pdf` */
+  /** 相对项目根目录的路径，如 `.docs/<storyId>/report.pdf` */
   relativePath: string
   /** 落盘绝对路径，仅用于展示/排查 */
   absolutePath: string
