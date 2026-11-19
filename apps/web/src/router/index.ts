@@ -4,7 +4,6 @@ import ConsoleShell from '../views/ConsoleShell.vue'
 export const navItems = [
   { path: '/inbox', title: '收件箱', shortcut: 'g i', icon: 'inbox' },
   { path: '/board', title: '看板', shortcut: 'g d', icon: 'board' },
-  { path: '/pipeline', title: '流水线', shortcut: 'g p', icon: 'pipeline' },
   { path: '/instances', title: '实例', shortcut: 'g c', icon: 'instances' },
   { path: '/crons', title: '定时', shortcut: 'g t', icon: 'crons' },
   { path: '/releases', title: '发布', shortcut: 'g r', icon: 'releases' },
@@ -15,7 +14,6 @@ export const navItems = [
 const views: Record<string, () => Promise<unknown>> = {
   inbox: () => import('../views/InboxView.vue'),
   board: () => import('../views/BoardView.vue'),
-  pipeline: () => import('../views/PipelineView.vue'),
   instances: () => import('../views/InstancesView.vue'),
   crons: () => import('../views/CronsView.vue'),
   releases: () => import('../views/ReleasesView.vue'),

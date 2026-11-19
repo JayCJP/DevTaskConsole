@@ -87,7 +87,11 @@ export function useConsole() {
   const selectedQuestions = computed(
     () =>
       store.snapshot?.openQuestions.filter(
-        (question) => question.storyId === selectedRequirement.value?.storyId,
+        (question) =>
+          question.storyId === selectedRequirement.value?.storyId &&
+          // 需求详情抽屉只展示未确认的待确认项；已确认/非正式确认不再展示
+          question.state !== 'confirmed' &&
+          question.state !== 'confirmed_informal',
       ) ?? [],
   )
   const tapdAvailable = computed(() => store.snapshot?.channels.tapd?.ok ?? false)
@@ -117,12 +121,12 @@ export function useConsole() {
 
   /**
    * 刷新当前路由页面的数据——「来自哪里就刷新哪里」。
-   * 各页数据源不同：pipeline/inbox 只需 local 段；其它页复用各自的独立接口；tools 需重检测连通性。
+   * 各页数据源不同：inbox 只需 local 段；其它页复用各自的独立接口；tools 需重检测连通性。
    * @returns Promise<void>
    */
   async function refreshCurrentPage(): Promise<void> {
     const current = page.value
-    if (current === 'inbox' || current === 'pipeline') {
+    if (current === 'inbox') {
       // 两页核心数据均由 local 段（工作区扫描/harness）生成，runtime 段每次请求实时拉
       await refreshSegments(['local'])
       return
@@ -806,10 +810,6 @@ export function useConsole() {
   /** 工作区流水线视图：一个工作区一条流水线，最多一个 Story */
   const workspacePipelines = computed<WorkspacePipeline[]>(
     () => store.snapshot?.workspacePipelines ?? [],
-  )
-  /** 流水线页计数：已经识别到 Story 的工作区数量 */
-  const pipelineStoryCount = computed(
-    () => workspacePipelines.value.filter((pipeline) => pipeline.story).length,
   )
   /** 已被工作区流水线认领的定时任务 ID，用于兜底展示未归属任务 */
   const assignedCronIds = computed(
@@ -3258,7 +3258,6 @@ export function useConsole() {
     jobs,
     storyServiceRequirements,
     workspacePipelines,
-    pipelineStoryCount,
     assignedCronIds,
     unassignedCrons,
     activeWorkflows,

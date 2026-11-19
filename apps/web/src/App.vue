@@ -10,7 +10,6 @@ import {
   Promotion,
   Search,
   Setting,
-  Share,
   Sunny,
   Timer,
 } from '@element-plus/icons-vue'
@@ -31,7 +30,6 @@ const store = useConsoleStore()
 const icons = {
   inbox: MessageBox,
   board: Grid,
-  pipeline: Share,
   instances: Monitor,
   crons: Timer,
   releases: Promotion,

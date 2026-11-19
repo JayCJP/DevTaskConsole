@@ -1691,8 +1691,17 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 13px 2px;
+  padding: 13px 10px;
+  margin: 0 -10px;
   border-top: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background-color 150ms ease;
+}
+.workspace-row:hover {
+  background: var(--bg-hover);
+}
+.workspace-row:hover .workspace-main strong {
+  color: var(--accent);
 }
 .workspace-main {
   display: grid;
