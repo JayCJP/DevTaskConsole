@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import ConsolePage from '../views/ConsolePage.vue'
+import ConsoleShell from '../views/ConsoleShell.vue'
 
 export const navItems = [
   { path: '/inbox', title: '收件箱', shortcut: 'g i', icon: 'inbox' },
@@ -11,14 +11,32 @@ export const navItems = [
   { path: '/workspaces', title: '工作区', shortcut: 'g w', icon: 'workspaces' },
 ] as const
 
+/** 各页面视图的懒加载映射，按 navItems.icon 取值 */
+const views: Record<string, () => Promise<unknown>> = {
+  inbox: () => import('../views/InboxView.vue'),
+  board: () => import('../views/BoardView.vue'),
+  pipeline: () => import('../views/PipelineView.vue'),
+  instances: () => import('../views/InstancesView.vue'),
+  crons: () => import('../views/CronsView.vue'),
+  releases: () => import('../views/ReleasesView.vue'),
+  workspaces: () => import('../views/WorkspacesView.vue'),
+  tools: () => import('../views/ToolsView.vue'),
+}
+
 const routes = [
   { path: '/', redirect: '/inbox' },
-  ...navItems.map((item) => ({
-    path: item.path,
-    component: ConsolePage,
-    meta: { title: item.title, page: item.icon },
-  })),
-  { path: '/tools', component: ConsolePage, meta: { title: '连接与配置', page: 'tools' } },
+  {
+    path: '/',
+    component: ConsoleShell,
+    children: [
+      ...navItems.map((item) => ({
+        path: item.path.slice(1),
+        component: views[item.icon],
+        meta: { title: item.title, page: item.icon },
+      })),
+      { path: 'tools', component: views.tools, meta: { title: '连接与配置', page: 'tools' } },
+    ],
+  },
 ]
 
 const router = createRouter({

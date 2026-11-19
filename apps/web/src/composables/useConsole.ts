@@ -1,4 +1,8 @@
-<script setup lang="ts">
+/**
+ * 控制台核心状态与行为（组合式函数）。
+ * 由 ConsoleShell 在路由父级调用一次并通过 provide 共享，避免单组件巨石化。
+ * 保留自 ConsolePage.vue 的全部逻辑，未改动任何业务语义。
+ */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   applicationMappingSchema,
@@ -39,13 +43,6 @@ import { z } from 'zod'
 import { useRoute, useRouter } from 'vue-router'
 import type { UploadFile } from 'element-plus'
 import { ApiError, apiRequest } from '../api/client'
-import AuditTrailDrawer from '../components/AuditTrailDrawer.vue'
-import CronEditorDialog from '../components/CronEditorDialog.vue'
-import CronExecutionList from '../components/CronExecutionList.vue'
-import CronTaskRow from '../components/CronTaskRow.vue'
-import PipelineFlow from '../components/PipelineFlow.vue'
-import InstanceStoryCard from '../components/InstanceStoryCard.vue'
-import JobDetailPanel from '../components/JobDetailPanel.vue'
 import { useAuditTrail } from '../composables/useAuditTrail'
 import { useBoardStories } from '../composables/useBoardStories'
 import { useCronActions } from '../composables/useCronActions'
@@ -58,6 +55,8 @@ import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useSe
 import { useStoryUpload, type UploadedAsset } from '../composables/useStoryUpload'
 import { useConsoleStore } from '../stores/console'
 import { buildMappingRows } from '../utils/application-mapping'
+
+export function useConsole() {
 
 const route = useRoute()
 const router = useRouter()
@@ -2767,1255 +2766,321 @@ async function prepareReleasePage(): Promise<void> {
 function formatWorkspaceTime(value?: string): string {
   return value ? new Date(value).toLocaleString() : '未知'
 }
-</script>
-
-<template>
-  <section class="page-content">
-    <div class="page-heading-row">
-      <div>
-        <h1>{{ pageHeading }}</h1>
-        <!-- 只在收件箱与发布页保留副标题：其余页面的说明由各分区标题自带，H1 不再叠加同义句 -->
-        <p v-if="page === 'inbox'" class="page-subtitle">先处理真正需要你决策的事项。</p>
-        <p v-else-if="page === 'releases'" class="page-subtitle">按工作区构建项目 · 状态来自 DevOps 与本机快照，不伪装成实时</p>
-      </div>
-      <div class="heading-actions">
-        <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
-        <el-tooltip :content="store.loading ? '正在刷新快照' : '刷新会重新聚合四个上游系统，可能消耗 TAPD 查询配额'" placement="bottom">
-          <span><el-button :loading="store.loading" @click="refreshSnapshot(true)">刷新</el-button></span>
-        </el-tooltip>
-      </div>
-    </div>
-
-    <div v-if="store.error" class="notice notice-warning" role="status">
-      <span class="notice-symbol">!</span>
-      <div><strong>数据暂不可用</strong><p>{{ store.error }}</p><p>此页只聚合展示上游系统状态，不会替代它们执行操作；修复上方原因后可重试。</p></div>
-      <el-button text @click="refreshSnapshot(true)">重试</el-button>
-    </div>
-
-    <template v-if="page === 'inbox'">
-      <div class="stat-grid">
-        <article class="stat-card"><span>待决策</span><strong>{{ inbox.length }}</strong><small>{{ inbox.length ? '需要人工处理' : '当前无待决策项' }}</small></article>
-        <article class="stat-card"><span>高优先级</span><strong>{{ inbox.filter((item) => item.priority === 'high').length }}</strong><small>{{ inbox.some((item) => item.priority === 'high') ? '先处理风险项' : '暂无风险项' }}</small></article>
-        <article class="stat-card"><span>运行中实例</span><strong>{{ jobs.filter((job) => job.status === 'busy').length }}</strong><small>CodeBuddy jobs</small></article>
-      </div>
-      <section class="surface">
-        <div class="section-heading">
-          <div><h2>待你处理</h2><p>只显示阻塞流程或需要判断的事项；每个 Story 独立汇总答复</p></div>
-          <span class="count-pill">{{ inbox.length }} 项</span>
-        </div>
-        <div v-if="inboxGroups.length" class="inbox-groups">
-          <section v-for="group in inboxGroups" :key="group.key" class="inbox-workspace">
-            <header class="inbox-workspace-head">
-              <span class="inbox-workspace-name">
-                <strong>{{ group.name }}</strong>
-                <code v-if="group.pathHint">{{ group.pathHint }}</code>
-                <span v-if="!group.synced" class="tag tag-warning">未同步到工作区</span>
-              </span>
-              <span class="count-pill">{{ group.itemCount }} 项 · 高优先级 {{ group.highCount }}</span>
-            </header>
-            <div v-for="story in group.stories" :key="story.key" class="inbox-story">
-              <div class="inbox-story-head">
-                <strong>{{ story.title }}</strong>
-                <code>{{ story.storyId }}</code>
-                <span v-if="story.highCount" class="tag tag-danger">高优先级 {{ story.highCount }}</span>
-                <el-tooltip content="只复制本 Story 下已填答案，按 Q1:答案 格式，不回写上游" placement="bottom">
-                  <span class="inbox-story-summary">
-                    <el-button
-                      type="primary"
-                      plain
-                      size="small"
-                      :disabled="!storyAnswerCount(story.items)"
-                      @click="copyStoryAnswers(story.items)"
-                    >汇总答复<span v-if="storyAnswerCount(story.items)" class="count-pill count-pill-inline">{{ storyAnswerCount(story.items) }}</span></el-button>
-                  </span>
-                </el-tooltip>
-              </div>
-              <div class="inbox-list">
-                <template v-for="item in story.items" :key="item.id">
-                  <article class="inbox-row" :class="{ 'inbox-row-expanded': inboxExpandedId === item.id }">
-                    <span class="priority-marker" :class="item.priority">{{ item.priority === 'high' ? '!' : '·' }}</span>
-                    <div class="inbox-copy"><div class="inbox-title-line"><strong>{{ item.title }}</strong><span class="kind-label">{{ item.kind.replaceAll('_', ' ') }}</span></div><p v-if="inboxReasonOf(item)">{{ inboxReasonOf(item) }}</p></div>
-                    <div class="inbox-row-actions">
-                      <el-button
-                        link
-                        type="primary"
-                        size="small"
-                        :aria-expanded="inboxExpandedId === item.id"
-                        @click="toggleInboxAnswer(item.id)"
-                      >答复<span v-if="inboxAnswerMap[item.id]?.text.trim()" class="answer-dot" :aria-label="`已填写 ${inboxAnswerMap[item.id].text.trim().length} 字`" /></el-button>
-                      <el-button type="primary" plain size="small" :disabled="!item.target" @click="item.target && $router.push(item.target)">查看处理</el-button>
-                    </div>
-                  </article>
-                  <div v-if="inboxExpandedId === item.id" class="inbox-answer">
-                    <div v-if="suggestionSegmentsOf(item).length" class="inbox-answer-suggestion">
-                      <div class="inbox-answer-suggestion-head">建议稿</div>
-                      <div class="inbox-answer-suggestion-body">
-                        <div v-for="(segment, index) in suggestionSegmentsOf(item)" :key="index" class="suggestion-row">
-                          <span v-if="segment.marker" class="suggestion-marker">{{ segment.marker }}</span>
-                          <span class="suggestion-text">{{ segment.text }}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <el-input
-                      :model-value="inboxAnswerText(item.id)"
-                      type="textarea"
-                      :rows="3"
-                      resize="none"
-                      placeholder="写下你的答复…"
-                      :aria-label="`为「${item.title}」填写答复`"
-                      @update:model-value="setInboxAnswer(item.id, $event)"
-                    />
-                    <div class="inbox-answer-foot"><span class="inbox-answer-note">仅本地记录，用于汇总复制，不会回写上游</span><el-button link size="small" @click="toggleInboxAnswer(item.id)">收起</el-button></div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </section>
-        </div>
-        <div v-else-if="!store.loaded" class="empty-compact">正在加载快照…</div>
-        <div v-else class="empty-state"><span class="empty-icon">✓</span><strong>{{ store.error ? '连接数据源后显示待决策事项' : '现在没有需要你决策的事' }}</strong><p>{{ store.error ? '请先完成连接自检，或检查后端数据聚合器。' : '新出现的阻塞项、待确认项和失败构建会集中显示在这里。' }}</p></div>
-      </section>
-    </template>
-
-    <template v-else-if="page === 'board'">
-      <section class="surface">
-        <div class="section-heading">
-          <div><h2>需求总览</h2><p>数据元以 TAPD 需求为准；每个需求可关联一个本地工作区</p></div>
-          <div class="board-controls">
-            <el-input v-model="board.owner" class="board-owner-input" placeholder="TAPD 处理人" clearable @keyup.enter="board.load()" aria-label="按 TAPD 处理人筛选" />
-            <el-select
-              :model-value="board.includeReleased"
-              class="board-filter"
-              placeholder="状态筛选"
-              @change="board.setIncludeReleased"
-            >
-              <el-option label="排除已发布（默认）" :value="false" />
-              <el-option label="包含已发布" :value="true" />
-            </el-select>
-            <el-button :loading="board.loading" @click="board.load(true)">刷新</el-button>
-            <el-button type="primary" @click="board.openManual()">手动添加</el-button>
-          </div>
-        </div>
-        <div class="board-meta">
-          <span v-if="board.fetchedAt">TAPD 拉取于 {{ new Date(board.fetchedAt).toLocaleString() }}</span>
-          <span>{{ board.stories.length }} 个需求</span>
-          <span v-if="!board.includeReleased && board.hiddenReleased" class="board-meta-hidden">
-            已隐藏 {{ board.hiddenReleased }} 条已发布
-            <el-button link type="primary" size="small" @click="board.setIncludeReleased(true)">查看</el-button>
-          </span>
-          <span class="board-meta-status">
-            <span class="tag" :class="boardStatusTag.tone">{{ boardStatusTag.label }}</span>
-          </span>
-        </div>
-        <div v-if="board.error" class="notice notice-danger" role="alert">
-          <span class="notice-symbol">!</span>
-          <div>
-            <strong>TAPD 需求查询失败</strong>
-            <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br />下方仅显示本地已绑定、尚未同步到 TAPD 的需求。<br /><small class="board-error-detail">{{ board.error }}</small></p>
-          </div>
-          <el-button text @click="board.load(true)">重试</el-button>
-        </div>
-        <div v-if="board.stories.length" class="board-list">
-          <article v-for="story in board.stories" :key="story.storyId" class="board-parent" :class="{ 'is-expanded': board.isParentExpanded(story.storyId) }">
-            <div class="board-row board-parent-row">
-              <div class="board-main">
-                <button type="button" class="board-expand-button" :aria-expanded="board.isParentExpanded(story.storyId)" :aria-label="board.isParentExpanded(story.storyId) ? '收起子需求' : '展开子需求'" @click="board.toggleParent(story.storyId)">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-                </button>
-                <a :href="story.parentTapdUrl ?? story.tapdUrl" target="_blank" rel="noreferrer">{{ story.title }}</a>
-                <small>
-                  <code>{{ story.storyId }}</code>
-                  <span v-if="story.statusLabel || story.status" :title="story.status">状态 {{ story.statusLabel ?? story.status }}</span>
-                  <span v-if="story.iterationName">{{ story.iterationName }}</span>
-                  <span v-if="story.owner">{{ story.owner }}</span>
-                  <span v-if="board.childrenOf(story).length" class="board-child-count">{{ board.childrenOf(story).length }} 个子需求</span>
-                  <span v-if="story.bugNew || story.bugReopened" class="board-bug-count">本人缺陷 {{ (story.bugNew ?? 0) + (story.bugReopened ?? 0) }}</span>
-                </small>
-              </div>
-              <div class="board-workspace">
-                <el-select v-model="board.workspaceDraft[story.storyId]" clearable filterable placeholder="选择本地工作区" @change="board.bindSelected(story)">
-                  <el-option v-for="workspace in board.workspaceOptionsFor(story)" :key="workspace.name" :label="workspace.name" :value="workspace.name" />
-                </el-select>
-                <code v-if="story.workspacePath">{{ story.workspacePath }}</code>
-                <small v-else-if="story.workspaceName" class="mapping-error">目录未找到：{{ story.workspaceName }}</small>
-                <small v-if="!story.inTapdList" class="tag tag-warning">本地手动添加</small>
-              </div>
-              <div class="board-actions">
-                <el-button size="small" :loading="board.unbindingStoryId === story.storyId" :disabled="!story.workspaceName" @click="board.unbindWorkspace(story.storyId)">解绑</el-button>
-              </div>
-              <p v-if="board.rowErrors[story.storyId]" class="mapping-error" role="alert">{{ board.rowErrors[story.storyId] }}</p>
-            </div>
-            <div v-show="board.isParentExpanded(story.storyId)" class="board-children">
-              <div v-for="child in board.childrenOf(story)" :key="child.storyId" class="board-row board-child-row">
-                <div class="board-main">
-                  <a :href="child.parentTapdUrl ?? child.tapdUrl" target="_blank" rel="noreferrer">{{ child.title }}</a>
-                  <small>
-                    <code>{{ child.storyId }}</code>
-                    <span v-if="child.statusLabel || child.status" :title="child.status">状态 {{ child.statusLabel ?? child.status }}</span>
-                    <span v-if="child.owner">{{ child.owner }}</span>
-                  </small>
-                </div>
-                <div class="board-workspace">
-                  <small class="muted">工作区绑定在父需求上</small>
-                </div>
-              </div>
-              <div v-if="!board.childrenOf(story).length" class="board-children-empty">该父需求下没有未发布的子需求。</div>
-            </div>
-          </article>
-        </div>
-        <div v-else-if="board.loading" class="empty-compact">正在查询 TAPD 需求…</div>
-        <div v-else-if="board.error" class="notice notice-danger" role="alert">
-          <span class="notice-symbol">!</span>
-          <div>
-            <strong>TAPD 需求查询失败</strong>
-            <p>{{ boardErrorHint.reason }}。{{ boardErrorHint.action }}。<br /><small class="board-error-detail">{{ board.error }}</small></p>
-          </div>
-          <el-tooltip content="重新查询 TAPD；可能消耗查询配额" placement="left">
-            <span><el-button text @click="board.load(true)">重试</el-button></span>
-          </el-tooltip>
-        </div>
-        <div v-else class="empty-state">
-          <strong>当前处理人「{{ board.owner }}」名下没有未发布需求</strong>
-          <p>可检查姓名是否为 TAPD 中的写法，或用「手动添加」直接绑定需求链接。</p>
-        </div>
-      </section>
-
-      <el-dialog v-model="board.manualOpen" title="手动添加需求" width="min(560px, 94vw)" :close-on-click-modal="false" @close="board.closeManual()">
-        <div class="board-manual-form">
-          <label>TAPD 需求链接或 ID<el-input v-model="board.manualDraft.tapdStoryId" placeholder="https://www.tapd.cn/.../view/1138... 或纯数字 ID；子需求链接会自动绑定到其父需求" /></label>
-          <label>需求名称（可选，TAPD 查询不到时展示）<el-input v-model="board.manualDraft.storyTitle" /></label>
-          <label>关联本地工作区<el-select v-model="board.manualDraft.workspaceName" filterable placeholder="选择 *.code-workspace 识别出的工作区">
-            <el-option v-for="workspace in board.workspaces" :key="workspace.name" :label="workspace.name" :value="workspace.name" />
-          </el-select></label>
-        </div>
-        <p v-if="board.manualError" class="mapping-error" role="alert">{{ board.manualError }}</p>
-        <template #footer>
-          <el-button @click="board.closeManual()">取消</el-button>
-          <el-button type="primary" :loading="board.manualSaving" @click="board.submitManual()">保存绑定</el-button>
-        </template>
-      </el-dialog>
-    </template>
-
-    <template v-else-if="page === 'pipeline'">
-      <section class="surface">
-        <div class="section-heading"><div><h2>端到端链路</h2><p>一个工作区一条流水线：Story 只从第一个项目的 .codebuddy/plans 识别</p></div><span class="count-pill">{{ workspacePipelines.length }} 个工作区 · {{ pipelineStoryCount }} 个 Story</span></div>
-        <div v-for="workflow in activeWorkflows" :key="`${workflow.workspacePath}:${workflow.storyId}`" class="notice notice-warning">
-          <span class="notice-symbol">!</span>
-          <div><strong>Harness 活跃流程：{{ workflow.title }}</strong><p>{{ workflow.storyId }} · {{ workflow.mode || '模式未知' }} · Phase {{ workflow.phase ?? '未知' }} · {{ workflow.status || '状态未知' }} · {{ workflow.workspacePath }}</p></div>
-        </div>
-
-        <PipelineFlow
-          :pipelines="workspacePipelines"
-          @open-story="openRequirement"
-          @go-crons="goCrons"
-        />
-
-        <div v-if="!workspacePipelines.length && !snapshotLoaded" class="empty-compact">正在加载快照…</div>
-        <div v-else-if="!workspacePipelines.length" class="empty-state"><strong>还没有工作区</strong><p>先在「工作区」页新建工作区；Story 需要放在第一个项目的 .codebuddy/plans 下。</p></div>
-      </section>
-    </template>
-
-    <template v-else-if="page === 'instances'">
-      <div v-if="activeServiceEvents.length" class="service-event-bar" role="status">
-        <div
-          v-for="event in activeServiceEvents"
-          :key="event.id"
-          class="service-event"
-          :class="{ 'is-error': event.level === 'error', 'is-warning': event.level === 'warning' }"
-        >
-          <span class="status-dot" :class="hasServiceFailure ? 'is-error' : 'is-active'" />
-          <span><strong>{{ event.storyId }}</strong> · {{ event.message }}</span>
-          <small class="muted">{{ new Date(event.createdAt).toLocaleTimeString() }}</small>
-          <el-button link size="small" @click="dismissServiceEvent(event.id)">关闭</el-button>
-        </div>
-      </div>
-      <div class="split-layout">
-        <section class="surface split-list">
-          <div class="section-heading"><div><h2>CodeBuddy 实例</h2><p>主会话进入 Story 总览；定时 Job 子任务进入执行详情</p></div><span class="count-pill">{{ jobs.length }}</span></div>
-          <div class="instance-filter">
-            <el-select v-model="jobStateFilter" size="small" aria-label="筛选子任务状态">
-              <el-option label="全部子任务" value="all" />
-              <el-option label="进行中" value="active" />
-              <el-option label="已结束" value="done" />
-              <el-option label="异常" value="failed" />
-            </el-select>
-            <span class="muted">每 20 秒自动刷新</span>
-          </div>
-          <div v-for="group in instanceGroups" :key="group.key" class="workspace-block">
-            <div class="workspace-block-head">
-              <div class="workspace-main"><strong>{{ group.name }}</strong><small><code>{{ group.path }}</code></small></div>
-              <el-button v-if="!group.stories.length" class="workspace-create-story" type="primary" size="small" plain @click="selectEmptyWorkspace(group)">新建 Story</el-button>
-            </div>
-            <article class="project-block">
-              <div class="project-head">
-                <strong>{{ group.project?.name ?? '未声明项目' }}</strong>
-                <code v-if="group.project?.branch">{{ group.project?.branch }}</code>
-                <small class="muted">{{ group.stories.length }} 个 Story</small>
-              </div>
-              <div v-if="!group.stories.length" class="project-empty">
-                <span>{{ emptyWorkspaceGuides[group.key] }}</span>
-              </div>
-              <template v-for="requirement in group.stories" :key="requirement.storyId">
-                <InstanceStoryCard
-                  :story-id="requirement.storyId"
-                  :title="requirement.title"
-                  :workspace-path="requirement.workspacePath"
-                  :service="storyServices[requirement.storyId]"
-                  :job-count="jobsByStory(requirement.storyId).length"
-                  :active="isMainSessionSelected(requirement.storyId)"
-                  :contains-active="hasSelectedJob(requirement.storyId)"
-                  :error="serviceErrorOf(requirement.storyId)"
-                  @focus="focusStory(requirement.storyId)"
-                />
-                <div
-                  v-if="jobsByStory(requirement.storyId).length"
-                  class="instance-job-list"
-                  :aria-label="`${requirement.title} 的定时 Job 子任务`"
-                >
-                  <button
-                    v-for="job in jobsByStory(requirement.storyId)"
-                    :key="`${job.storyId}:${job.id}`"
-                    class="simple-list-row instance-job-row"
-                    :class="{ 'is-selected': isJobSelected(job) }"
-                    type="button"
-                    :aria-pressed="isJobSelected(job)"
-                    :aria-label="`打开定时 Job 子任务：${job.name}`"
-                    @click="openJob(job)"
-                  >
-                    <span class="status-dot" :class="jobDotClass(job)" />
-                    <span class="instance-job-text">
-                      <strong>{{ job.name }}</strong>
-                      <small>定时 Job · {{ job.id }}</small>
-                    </span>
-                    <code class="instance-job-state">{{ jobStateLabel(job) }}</code>
-                  </button>
-                </div>
-              </template>
-            </article>
-          </div>
-          <div v-if="!instanceGroups.length && !snapshotLoaded" class="empty-compact">正在加载快照…</div>
-          <div v-else-if="!instanceGroups.length" class="empty-state"><strong>还没有工作区</strong><p>先在「工作区」页新建工作区，项目下的 Story 才能启动实例。</p></div>
-          <p v-if="storyServiceError" class="mapping-error" role="alert">{{ storyServiceError }}</p>
-        </section>
-        <section class="surface instance-workspace">
-          <!-- 当前上下文：多个服务同时运行时，右侧始终标明「在看哪个 Story / 哪台服务」 -->
-          <div v-if="currentStory" class="instance-context" aria-label="当前 Story 上下文">
-            <span class="status-dot" :class="currentServiceDot" :aria-label="`服务状态：${currentServiceLabel}`" />
-            <div class="instance-context-main">
-              <p class="eyebrow">CURRENT STORY</p>
-              <strong>{{ currentStory.title }}</strong>
-              <small><code>{{ currentStory.storyId }}</code> · {{ currentStory.workspacePath || '未关联工作区' }}</small>
-            </div>
-            <span class="tag" :class="currentServiceClass">{{ currentServiceLabel }}</span>
-            <code class="service-port">{{ currentPortLabel }}</code>
-            <a
-              v-if="currentServiceUrl"
-              class="instance-open"
-              :href="currentServiceUrl"
-              target="_blank"
-              rel="noreferrer"
-              title="在新窗口打开该 Story 的 CodeBuddy 实例页面"
-            >
-              打开服务页 ↗
-            </a>
-          </div>
-          <!-- 服务与实例操作统一放在右侧：左侧列表只负责「选中哪个 Story」，避免卡片被按钮挤满 -->
-          <div v-if="currentStory" class="instance-toolbar">
-            <el-button
-              v-if="currentService?.status !== 'running'"
-              type="primary"
-              :loading="startingStoryService === currentStory.storyId"
-              @click="startStoryService(currentStory)"
-            >
-              启动 / 接管
-            </el-button>
-            <template v-else>
-              <el-button type="primary" @click="prepareJob(currentStory, 'run')">需求开发</el-button>
-              <el-button type="warning" plain @click="prepareJob(currentStory, 'fixbugs')">Bug 修复</el-button>
-              <el-button @click="loadResumableSessions(currentStory)">恢复会话</el-button>
-              <el-button plain :loading="startingStoryService === currentStory.storyId" @click="stopStoryService(currentStory.storyId)">
-                停止服务
-              </el-button>
-            </template>
-            <el-button
-              type="danger"
-              plain
-              :disabled="currentService?.status !== 'stopped'"
-              @click="removeStoryService(currentStory.storyId)"
-            >
-              删除映射
-            </el-button>
-          </div>
-          <p v-if="currentStory && serviceErrorOf(currentStory.storyId)" class="mapping-error" role="alert">
-            {{ serviceErrorOf(currentStory.storyId) }}
-          </p>
-          <template v-if="selectedStoryId && !selectedJob">
-            <p class="eyebrow">NEW STORY ROUND</p><h2>新建执行轮次</h2>
-            <p class="muted">
-              服务已按 Story 复用，这里创建的是该服务内的一个执行轮次（独立 Job/session），不会再启动一台服务。
-            </p>
-            <p v-if="!currentServiceRunning" class="muted">
-              该 Story 的服务尚未运行，请先点上方「启动 / 接管」，再创建轮次。
-            </p>
-            <div class="instance-form">
-              <label class="instance-field">
-                <span>实例名称</span>
-                <el-input v-model="jobName" placeholder="例如：需求开发 · 第 1 轮" />
-              </label>
-              <label class="instance-field">
-                <span>提示词</span>
-                <el-input v-model="jobPrompt" type="textarea" :rows="5" placeholder="发送给 CodeBuddy 的提示词" />
-              </label>
-              <div class="instance-upload">
-                <el-upload
-                  :auto-upload="false"
-                  :show-file-list="false"
-                  :on-change="onPromptFileChange"
-                >
-                  <el-button size="small" :loading="imageUploading">上传文件并插入提示词</el-button>
-                </el-upload>
-                <span class="muted">文件写入 Story 项目的 .docs/&lt;storyId&gt;/ 目录</span>
-              </div>
-              <div class="instance-form-actions">
-                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobPrompt.trim() || !jobName.trim() || !currentServiceRunning" @click="createJob">创建轮次</el-button>
-              </div>
-            </div>
-            <div class="instance-resume">
-              <h3>恢复已有会话</h3>
-              <p class="muted">继续该 Story 的历史会话，而不是新开一轮。</p>
-              <div class="job-rename"><el-select v-model="selectedResumableSession" :loading="resumableLoading" placeholder="选择可恢复会话">
-                <el-option v-for="session in resumableSessions" :key="session.sessionId" :label="session.name || session.sessionId" :value="session.sessionId" />
-              </el-select><el-button :loading="jobActionLoading" :disabled="!selectedResumableSession || !currentServiceRunning" @click="resumeSession">恢复</el-button></div>
-            </div>
-          </template>
-          <template v-else-if="selectedJob">
-            <p class="eyebrow">SESSION OUTPUT</p>
-            <div class="section-heading">
-              <div>
-                <h2>{{ selectedJob.name }}</h2>
-                <p>
-                  <span class="tag" :class="currentJobClass">{{ currentJobLabel }}</span>
-                  {{ selectedJob.state }} · {{ selectedJob.id }} · {{ currentJobSession }}
-                </p>
-              </div>
-              <div class="job-actions"><el-button size="small" :loading="jobActionLoading" @click="controlJob('stop')">暂停</el-button><el-button size="small" :loading="jobActionLoading" @click="controlJob('respawn')">重启</el-button><el-button size="small" type="danger" :loading="jobActionLoading" @click="controlJob('delete')">删除</el-button></div>
-            </div>
-            <div class="job-rename"><el-input v-model="renameDraft" size="small" placeholder="实例名称" /><el-button size="small" :loading="jobActionLoading" @click="renameJob">重命名</el-button></div>
-            <JobDetailPanel
-              :detail="jobDetail"
-              :loading="jobDetailLoading"
-              :error="jobDetailError"
-              :pinned="selectedJobPinned"
-              :pin-saving="jobPinSaving"
-              @toggle-pin="toggleSelectedJobPin"
-              @use-suggestion="useSuggestedReply"
-            />
-            <p v-if="jobPrefsError" class="mapping-error" role="alert">{{ jobPrefsError }}</p>
-            <pre class="job-transcript">{{ jobTranscript || '暂无历史对话' }}</pre>
-            <pre class="job-output">{{ jobOutput || '等待实时输出…' }}</pre>
-            <div class="instance-reply">
-              <el-input v-model="jobReply" type="textarea" :rows="3" placeholder="回复实例（不执行 bash）" />
-              <div class="instance-upload">
-                <el-upload
-                  :auto-upload="false"
-                  :show-file-list="false"
-                  :on-change="onReplyFileChange"
-                >
-                  <el-button size="small" :loading="imageUploading">上传文件并插入回复</el-button>
-                </el-upload>
-                <span class="muted">文件写入 Story 项目的 .docs/&lt;storyId&gt;/ 目录</span>
-              </div>
-              <div class="instance-form-actions">
-                <el-button type="primary" :loading="jobActionLoading" :disabled="!jobReply.trim()" @click="replyToJob">发送</el-button>
-              </div>
-            </div>
-          </template>
-          <template v-else-if="selectedEmptyGroupKey">
-            <p class="eyebrow">NEW STORY</p>
-            <h2>新建 Story 骨架</h2>
-            <p class="muted">
-              在「{{ storyTargetWorkspace.name }}」的第一个项目下创建最小 Story。创建后即可启动 CodeBuddy 实例，在对话中执行
-              /start {{ storyDraft.storyId || '<storyId>' }} 由 Harness 补全需求。
-            </p>
-            <div class="instance-field story-tapd-binding">
-              <span>已关联 TAPD 需求</span>
-              <template v-if="storyTapdBinding.state === 'pending'">
-                <span class="muted">正在查询工作区的 TAPD 关联…</span>
-              </template>
-              <template v-else-if="storyTapdBinding.state === 'bound'">
-                <span class="tapd-bound-hint">已关联需求 #{{ storyTapdBinding.storyIdInTapd }}（{{ storyTapdBinding.title }}）</span>
-              </template>
-              <template v-else>
-                <span class="muted">该工作区暂未关联 TAPD 需求，将创建不关联 TAPD 的骨架。</span>
-              </template>
-            </div>
-            <div class="instance-form">
-              <label class="instance-field">
-                <span>Story ID</span>
-                <el-input v-model="storyDraft.storyId" placeholder="如 customer-service-onboarding" />
-              </label>
-              <label class="instance-field">
-                <span>Story 标题</span>
-                <el-input v-model="storyDraft.title" placeholder="一句话描述这个 Story 要做什么" />
-              </label>
-            </div>
-            <p v-if="storyCreateError" class="mapping-error" role="alert">{{ storyCreateError }}</p>
-            <div class="instance-form-actions">
-              <el-button @click="cancelStoryCreate()">取消</el-button>
-              <el-button type="primary" :loading="storyCreating" :disabled="storyTapdBinding.state === 'pending'" @click="submitStoryCreate()">创建 Story</el-button>
-            </div>
-          </template>
-          <template v-else>
-            <p class="eyebrow">SESSION OUTPUT</p><h2>选择一个实例</h2><p class="muted">从左侧点选某个 Story 下的实例即可查看它的对话与实时输出；同一 Story 共用一台服务与端口，每轮 run/fixbugs 是独立 Job/session。</p><div class="terminal-placeholder">等待实例选择<span>_</span></div>
-          </template>
-          <p v-if="jobError" class="mapping-error" role="alert">{{ jobError }}</p>
-        </section>
-      </div>
-    </template>
-
-    <template v-else-if="page === 'crons'">
-      <section class="surface cron-surface">
-        <div class="section-heading">
-          <div><h2>任务调度</h2><p>按工作区查看任务；实例自动绑定，执行记录在卡片内查看。</p></div>
-          <el-button @click="openAuditTrail">操作审计</el-button>
-        </div>
-        <div class="cron-overview" aria-label="定时任务概览">
-          <div><span>全部任务</span><strong>{{ crons.length }}</strong></div>
-          <div><span class="status-dot is-active" /><span>运行中</span><strong>{{ activeCronCount }}</strong></div>
-          <div><span class="status-dot cron-paused-dot" /><span>已暂停</span><strong>{{ pausedCronCount }}</strong></div>
-          <div :class="{ 'has-attention': attentionCronCount > 0 }"><span>待完善配置</span><strong>{{ attentionCronCount }}</strong></div>
-        </div>
-        <div class="cron-toolbar">
-          <el-input v-model="cronQuery" class="cron-search" placeholder="搜索任务、Story 或 cron 表达式" clearable />
-          <el-select v-model="cronStatusFilter" class="cron-status-filter" aria-label="筛选任务状态">
-            <el-option label="全部状态" value="all" />
-            <el-option label="运行中" value="enabled" />
-            <el-option label="已暂停" value="paused" />
-            <el-option label="待完善配置" value="attention" />
-          </el-select>
-          <span v-if="cronHasActiveFilters" class="cron-filter-result">{{ filteredCronCount }} / {{ crons.length }} 个任务</span>
-          <el-button v-if="cronHasActiveFilters" link type="primary" @click="resetCronFilters">清除筛选</el-button>
-        </div>
-        <p v-if="cronError" class="mapping-error" role="alert">{{ cronError }}</p>
-        <div v-for="group in visibleCronGroups" :key="group.key" class="workspace-block cron-workspace-block">
-          <div class="workspace-block-head">
-            <div class="workspace-main"><strong>{{ group.name }}</strong><small><code>{{ group.path }}</code></small></div>
-          </div>
-          <article class="project-block">
-            <div class="project-head">
-              <strong>{{ group.project?.name ?? '未声明项目' }}</strong>
-              <code v-if="group.project?.branch">{{ group.project?.branch }}</code>
-              <small class="muted">{{ group.stories.length }} 个 Story · {{ group.looseCrons.length }} 个未关联任务</small>
-            </div>
-            <div v-if="!group.stories.length && !group.looseCrons.length" class="project-empty">第一个项目暂无定时任务。</div>
-            <CronTaskRow
-              v-for="cron in group.looseCrons"
-              :key="`loose:${cron.id}`"
-              :cron="cron"
-                            :busy="cronBusyTaskId === cron.id"
-              :expanded="expandedCronId === cron.id"
-              :open-round="openDispatchOf(cron.id)"
-                            @toggle="toggleCron(cron, $event)"
-              @edit="openCronEditor(cron)"
-              @executions="toggleCronExecutions(cron)"
-              @renew="renewCron(cron)"
-              @dispatch="dispatchCron(cron)"
-              @archive="archiveCronRound(cron, $event)"
-              @remove="removeCron(cron)"
-            >
-              <template #executions>
-                <CronExecutionList
-                  v-if="expandedCronId === cron.id"
-                  :executions="cronExecutionRows"
-                  :loading="cronExecutionsLoading"
-                  :error="cronExecutionsError"
-                  :source="cronExecutionsSource"
-                  :warning="cronExecutionsWarning"
-                  :has-more="cronExecutionsHasMore"
-                  @filter="loadCronExecutions(cron.id, $event)"
-                  @more="loadMoreCronExecutions()"
-                  @copy="copyText"
-                />
-              </template>
-            </CronTaskRow>
-            <template v-for="story in group.stories" :key="story.requirement.storyId">
-              <div class="cron-story-head">
-                <strong>{{ story.requirement.title }}</strong>
-                <code>{{ story.requirement.storyId }}</code>
-                <el-button size="small" type="primary" plain @click="openCronCreator(story.requirement.storyId)">
-                  新建任务
-                </el-button>
-              </div>
-              <p v-if="!story.crons.length" class="cron-story-empty">暂无定时任务，点击「新建任务」创建第一条调度。</p>
-              <CronTaskRow
-                v-for="cron in story.crons"
-                :key="cron.id"
-                :cron="cron"
-                                :busy="cronBusyTaskId === cron.id"
-                :expanded="expandedCronId === cron.id"
-                :open-round="openDispatchOf(cron.id)"
-                                @toggle="toggleCron(cron, $event)"
-                @edit="openCronEditor(cron)"
-                @executions="toggleCronExecutions(cron)"
-                @renew="renewCron(cron)"
-                @dispatch="dispatchCron(cron)"
-                @archive="archiveCronRound(cron, $event)"
-                @remove="removeCron(cron)"
-              >
-                <template #executions>
-                  <CronExecutionList
-                    v-if="expandedCronId === cron.id"
-                    :executions="cronExecutionRows"
-                    :loading="cronExecutionsLoading"
-                    :error="cronExecutionsError"
-                    :source="cronExecutionsSource"
-                    :warning="cronExecutionsWarning"
-                    :has-more="cronExecutionsHasMore"
-                    @filter="loadCronExecutions(cron.id, $event)"
-                    @more="loadMoreCronExecutions()"
-                    @copy="copyText"
-                  />
-                </template>
-              </CronTaskRow>
-            </template>
-          </article>
-          <template v-if="group.unassignedCrons.length">
-            <div class="cron-story-head"><strong>未归属任务</strong></div>
-            <CronTaskRow
-              v-for="cron in group.unassignedCrons"
-              :key="cron.id"
-              :cron="cron"
-                            :busy="cronBusyTaskId === cron.id"
-              :expanded="expandedCronId === cron.id"
-              :open-round="openDispatchOf(cron.id)"
-                            @toggle="toggleCron(cron, $event)"
-              @edit="openCronEditor(cron)"
-              @executions="toggleCronExecutions(cron)"
-              @renew="renewCron(cron)"
-              @dispatch="dispatchCron(cron)"
-              @archive="archiveCronRound(cron, $event)"
-              @remove="removeCron(cron)"
-            >
-              <template #executions>
-                <CronExecutionList
-                  v-if="expandedCronId === cron.id"
-                  :executions="cronExecutionRows"
-                  :loading="cronExecutionsLoading"
-                  :error="cronExecutionsError"
-                  :source="cronExecutionsSource"
-                  :warning="cronExecutionsWarning"
-                  :has-more="cronExecutionsHasMore"
-                  @filter="loadCronExecutions(cron.id, $event)"
-                  @more="loadMoreCronExecutions()"
-                  @copy="copyText"
-                />
-              </template>
-            </CronTaskRow>
-          </template>
-        </div>
-        <div v-if="cronGroupsEmpty && !visibleCronGroups.length" class="empty-state"><strong>暂无定时任务</strong><p>检查需求工作区中的 .codebuddy/scheduled_tasks.json，或在 Story 行点击「新建任务」通过 API 创建。</p></div>
-        <div v-else-if="!filteredCronCount" class="empty-state"><strong>没有符合条件的任务</strong><p>试试其他关键词或状态。</p><el-button size="small" @click="resetCronFilters">清除筛选</el-button></div>
-      </section>
-    </template>
-
-    <template v-else-if="page === 'releases'">
-      <!-- 护栏横幅：门控 / 通道不可用，状态同时用色与文字表达 -->
-      <div v-if="buildBlockReason" class="release-guard" :class="releaseGatePhase !== undefined ? 'is-danger' : 'is-warning'" role="alert">
-        <svg class="release-guard-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 1.7 16.4a1 1 0 0 0 .87 1.5h15a1 1 0 0 0 .87-1.5L10 2.5Zm0 4.2a1 1 0 0 1 1 1v4.1a1 1 0 1 1-2 0V7.7a1 1 0 0 1 1-1Zm0 8.3a1.15 1.15 0 1 1 0-2.3 1.15 1.15 0 0 1 0 2.3Z" fill="currentColor"/></svg>
-        <div>
-          <strong>{{ releaseGatePhase !== undefined ? 'Harness 发布窗口已锁定' : 'DevOps 通道不可用' }}</strong>
-          <p>{{ buildBlockReason }}</p>
-        </div>
-      </div>
-
-      <!-- 发射控制条：环境分段器 + 固定分支/build_other 展示 + 操作按钮 -->
-      <section class="surface release-control">
-        <div class="release-control-row">
-          <div class="release-env-picker">
-            <span class="release-label">构建 / MR 环境</span>
-            <div class="env-segments" role="group" aria-label="构建环境">
-              <button
-                v-for="env in buildEnvironments"
-                :key="env"
-                type="button"
-                class="env-segment"
-                :class="{ 'is-active': selectedBuildEnv === env, 'is-prod': env === 'prod' }"
-                :aria-pressed="selectedBuildEnv === env"
-                @click="selectBuildEnv(env)"
-              >
-                <span>{{ env }}</span>
-              </button>
-            </div>
-            <div class="release-env-facts">
-              <span>构建分支 <code>{{ branchOfEnv(selectedBuildEnv) }}</code></span>
-              <span>build_other <code>{{ buildOtherOf(selectedBuildEnv) }}</code></span>
-              <span>MR 目标 <code>{{ envSpecOf(selectedBuildEnv).mrTargetBranch }}</code></span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 工作区分组的项目清单 -->
-      <section class="surface">
-        <div class="section-heading">
-          <div><h2>工作区项目</h2><p>构建分支与 build_other 由顶部所选环境统一决定；MR 源分支取项目当前检出分支。</p></div>
-          <span class="count-pill">{{ workspaces.length }} 个工作区</span>
-        </div>
-        <p v-if="releaseMrError" class="release-data-error" role="status">{{ releaseMrError }}</p>
-        <div v-if="workspacesLoading" class="empty-compact">正在加载工作区…</div>
-        <div v-else-if="!workspaces.length" class="empty-state"><strong>还没有工作区</strong><p>请先在「工作区」页创建工作区；发布页按工作区列出可构建的项目。</p></div>
-        <div v-else class="release-workspace-list">
-          <article v-for="workspace in workspaces" :key="workspace.name" class="release-workspace">
-            <div class="release-workspace-head">
-              <div class="release-workspace-title">
-                <strong>{{ workspace.name }}</strong>
-                <span class="count-pill">{{ workspace.projects.length }} 个项目</span>
-                <span v-if="workspace.missingProjects.length" class="tag tag-danger">{{ workspace.missingProjects.length }} 个目录缺失</span>
-              </div>
-              <div class="release-workspace-actions">
-                <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
-                  <span>
-                    <el-button
-                      size="small"
-                      type="primary"
-                      plain
-                      :disabled="!buildAllowed || buildingApps.length > 0"
-                      @click="requestWorkspaceBuild(workspace.name)"
-                    >构建此工作区全部</el-button>
-                  </span>
-                </el-tooltip>
-                <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
-                  <span>
-                    <el-button
-                      size="small"
-                      plain
-                      :disabled="!buildAllowed || releaseMrCreating.length > 0"
-                      :loading="releaseMrCreating.some((key) => key.startsWith(workspace.name + '/'))"
-                      @click="createReleaseMr(workspace.name)"
-                    >批量创建 MR</el-button>
-                  </span>
-                </el-tooltip>
-              </div>
-            </div>
-            <div class="release-project-table">
-              <div class="release-project-head">
-                <span>项目</span><span>DevOps 应用</span><span>检出分支（MR 源）</span><span>操作</span>
-              </div>
-              <div v-for="project in workspace.projects" :key="project.name" class="release-project-row">
-                <div class="release-project-name">
-                  <strong>{{ project.name }}</strong>
-                </div>
-                <div class="release-project-app">
-                  <code>{{ devopsAppOf(project.name) }}</code>
-                  <small>{{ devopsGroupOf(project.name) }}</small>
-                </div>
-                <code class="release-project-branch">{{ project.branch || '未知' }}</code>
-                <div class="release-project-actions">
-                  <el-tooltip :disabled="buildAllowed" :content="buildBlockReason" placement="bottom">
-                    <span>
-                      <el-button
-                        size="small"
-                        :loading="isAppBuilding(devopsAppOf(project.name))"
-                        :disabled="!buildAllowed || buildingApps.length > 0"
-                        @click="requestSingleBuild(workspace.name, project.name)"
-                      >构建</el-button>
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip :disabled="buildAllowed && !!project.branch" :content="!project.branch ? '未读取到检出分支，无法创建 MR' : buildBlockReason" placement="bottom">
-                    <span>
-                      <el-button
-                        size="small"
-                        plain
-                        :loading="releaseMrCreating.includes(mrKey(workspace.name, project.name))"
-                        :disabled="!buildAllowed || !project.branch || releaseMrCreating.length > 0"
-                        @click="createReleaseMr(workspace.name, [project.name])"
-                      >创建 MR</el-button>
-                    </span>
-                  </el-tooltip>
-                </div>
-              </div>
-            </div>
-          </article>
-        </div>
-      </section>
-    </template>
-
-    <template v-else-if="page === 'workspaces'">
-      <section class="surface">
-        <div class="section-heading">
-          <div><h2>工作区列表</h2><p>工作区来自工作区根目录；可查看每个工作区包含的项目，或删除工作区</p></div>
-          <div class="workspace-actions">
-            <el-button :loading="workspacesLoading" @click="refreshWorkspaces()">刷新</el-button>
-            <el-button type="primary" @click="openCreateDialog">新建工作区</el-button>
-          </div>
-        </div>
-        <p v-if="workspacesError" class="mapping-error" role="alert">{{ workspacesError }}</p>
-        <div v-if="workspaces.length" class="workspace-list">
-          <article v-for="workspace in workspaces" :key="workspace.name" class="workspace-row">
-            <div class="workspace-main">
-              <strong>{{ workspace.name }}</strong>
-              <small><code>{{ workspace.path }}</code></small>
-            </div>
-            <span class="count-pill">{{ workspace.projects.length }} 个项目</span>
-            <span v-if="!workspace.workspaceFile" class="tag tag-warning">缺少 .code-workspace</span>
-            <span v-if="workspace.missingProjects.length" class="tag tag-danger">{{ workspace.missingProjects.length }} 个目录缺失</span>
-            <span class="muted">{{ formatWorkspaceTime(workspace.updatedAt) }}</span>
-            <div class="workspace-row-actions">
-              <el-button size="small" @click="openWorkspaceDetail(workspace)">详情</el-button>
-              <el-button size="small" type="danger" plain @click="openDeleteDialog(workspace)">删除</el-button>
-            </div>
-          </article>
-        </div>
-        <div v-else-if="workspacesLoading" class="empty-compact">正在加载工作区…</div>
-        <div v-else class="empty-state"><strong>还没有工作区</strong><p>点击「新建工作区」，选择多个项目后会自动创建 git worktree 与 .code-workspace 文件。</p></div>
-      </section>
-
-      <section class="surface">
-        <div class="section-heading">
-          <div><h2>源系统映射</h2><p>一份默认规则覆盖所有同名仓库；下方只列出人工确认的差异映射，GitLab 搜索结果不会自动采用。</p></div>
-          <div class="mapping-head-actions">
-            <el-button :loading="candidatesLoading" @click="refreshRepositoryCandidates()">刷新</el-button>
-            <el-button type="primary" @click="openMappingDialog()">新增映射</el-button>
-          </div>
-        </div>
-        <div v-if="candidatesError" class="notice notice-warning" role="status"><span class="notice-symbol">!</span><div><strong>无法扫描仓库</strong><p>{{ candidatesError }}</p></div></div>
-        <p v-if="mappingsError" class="notice notice-warning" role="alert">{{ mappingsError }}</p>
-        <div class="mapping-table">
-          <div class="mapping-table-head">
-            <span>Git 仓库</span><span>GitLab 项目</span><span>DevOps 应用</span><span>DevOps 分组</span><span>操作</span>
-          </div>
-          <div v-for="row in mappingRows" :key="row.key" class="mapping-table-row" :class="{ 'is-default': row.isDefault }">
-            <strong>{{ row.repoName }}</strong>
-            <span v-for="cell in row.cells" :key="cell.key" class="mapping-cell" :class="{ 'is-changed': cell.changed }">{{ cell.value }}</span>
-            <div class="mapping-row-actions">
-              <span v-if="row.isDefault" class="tag tag-success">默认规则</span>
-              <template v-else>
-                <el-button link size="small" @click="openMappingDialog(row.repoName)">编辑</el-button>
-                <el-button link size="small" type="danger" :loading="mappingRemoving === row.repoName" @click="removeApplicationMapping(row.repoName)">恢复默认</el-button>
-              </template>
-            </div>
-          </div>
-        </div>
-        <p v-if="mappingRows.length === 1" class="mapping-footnote">当前没有差异映射，所有仓库沿用上方默认规则。</p>
-        <p v-if="showNoRepositoryHint" class="mapping-footnote">未发现 Git 仓库，仍可手动输入仓库名新增映射。</p>
-      </section>
-    </template>
-
-    <template v-else-if="page === 'tools'">
-      <div class="tool-grid">
-        <section class="surface"><div class="section-heading"><div><h2>通道状态</h2><p>读取统一快照中的数据源健康状态</p></div><el-button :loading="snapshotLoading" @click="refreshSnapshot(true)">重新检测</el-button></div>
-          <div v-for="row in channelRows" :key="row.key" class="channel-row" :title="row.channel?.error || ''">
-            <span class="status-dot" :class="!row.channel ? '' : row.channel.ok ? 'is-active' : 'is-error'" />
-            <strong>{{ row.label }}</strong>
-            <span>
-              <template v-if="!row.channel">未检测 · 快照中暂无该通道结果</template>
-              <template v-else-if="row.key === 'codebuddy'">
-                <template v-if="row.channel.ok">已安装 · {{ codebuddyChannelView(row.channel.error || '').text }}</template>
-                <template v-else>
-                  <div>{{ codebuddyChannelView(row.channel.error || '').text }}</div>
-                  <a v-if="codebuddyChannelView(row.channel.error || '').installUrl"
-                     :href="codebuddyChannelView(row.channel.error || '').installUrl"
-                     target="_blank" rel="noopener noreferrer" class="channel-install-link">前往安装</a>
-                </template>
-              </template>
-              <template v-else-if="row.channel.ok">连接正常<small class="channel-purpose">{{ row.purpose }}</small></template>
-              <template v-else>
-                <div>不可用 —— {{ describeChannelError(row.channel.error || '').reason }}。{{ describeChannelError(row.channel.error || '').action }}。</div>
-                <small v-if="row.channel.error" class="channel-error-raw">原始信息：{{ row.channel.error }}</small>
-              </template>
-            </span>
-            <small>{{ row.channel?.fetchedAt ? new Date(row.channel.fetchedAt).toLocaleString() : '尚未检测' }}{{ row.channel?.stale ? ' · 缓存' : '' }}</small>
-          </div>
-          <p v-if="channelUnavailable" class="mapping-footnote">以上任一通道不可用都会影响对应页面的数据；控制台不会用旧数据冒充新数据。</p>
-        </section>
-        <section class="surface"><p class="eyebrow">LOCAL SECURITY</p><h2>本机信任边界</h2><p class="muted">控制台 API 由本地访问令牌保护。CodeBuddy 服务使用 <code>--auth none</code> 时，本机其他进程仍可能访问其高权限 API；Loopback 和请求标记不构成上游认证。</p></section>
-      </div>
-    </template>
-  </section>
-
-  <el-drawer
-    v-model="detailOpen"
-    title="需求详情"
-    size="min(560px, 94vw)"
-    :close-on-click-modal="true"
-    :close-on-press-escape="true"
-    @close="selectedRequirement = null"
-  >
-    <template v-if="selectedRequirement">
-      <p class="eyebrow">{{ selectedRequirement.storyId }}</p><h2>{{ selectedRequirement.title }}</h2>
-      <div class="detail-grid"><span>阶段</span><strong>{{ selectedRequirement.phase === undefined ? '未知' : `Phase ${selectedRequirement.phase}` }}</strong><span>处理人</span><strong>{{ selectedRequirement.owner || '未分配' }}</strong><span>工作区</span><code>{{ selectedRequirement.workspacePath || '未关联' }}</code><span>Bug</span><strong>new {{ selectedRequirement.bugNew ?? 0 }} · reopened {{ selectedRequirement.bugReopened ?? 0 }}</strong></div>
-      <section class="bug-detail-list">
-        <h3>关联缺陷</h3>
-        <article v-for="bug in selectedBugs" :key="bug.id" class="bug-detail">
-          <div class="inbox-title-line"><strong>{{ bug.title || `Bug ${bug.id}` }}</strong><span class="tag" :class="bug.status === 'reopened' ? 'tag-danger' : 'tag-warning'">{{ bug.status }}{{ bug.status === 'reopened' ? ' · 需读评论' : '' }}</span></div>
-          <p>{{ bug.currentOwner }}<span v-if="bug.module"> · {{ bug.module }}</span><span v-if="bug.created"> · {{ bug.created }}</span></p>
-          <p v-if="bug.description">{{ bug.description }}</p>
-        </article>
-        <p v-if="!selectedBugs.length" class="muted">{{ tapdAvailable ? '没有符合当前处理人口径的新建或重开缺陷。' : 'TAPD 数据不可用；请先检查连接状态。' }}</p>
-      </section>
-      <section v-if="selectedHarnessBugs.length" class="bug-detail-list">
-        <h3>Harness 修复记录</h3>
-        <article v-for="bug in selectedHarnessBugs" :key="bug.bugId" class="bug-detail">
-          <div class="inbox-title-line"><strong>{{ bug.title }}</strong><span class="tag" :class="bug.status === 'reopened' ? 'tag-danger' : ''">{{ bug.bugId }} · {{ bug.status }}{{ bug.category ? ` · ${bug.category}` : '' }}</span></div>
-          <p v-if="bug.commentDigest">{{ bug.commentDigest }}</p>
-          <p v-if="bug.writeback">回写 {{ bug.writeback.commentKind }} · {{ bug.writeback.commentedAt }}</p>
-        </article>
-      </section>
-      <section v-if="selectedQuestions.length" class="bug-detail-list">
-        <h3>需求待确认项</h3>
-        <article v-for="question in selectedQuestions" :key="question.id" class="bug-detail">
-          <div class="inbox-title-line"><strong>{{ question.id }} · {{ question.question }}</strong><span class="tag" :class="question.state === 'pending_confirmation' || question.state === 'no_proposal' ? 'tag-warning' : ''">{{ question.state }}</span></div>
-          <p v-if="question.resolution">建议稿：{{ question.resolution }}</p>
-          <p v-if="question.state === 'pending_confirmation' || question.state === 'no_proposal'">本站只展示，不会代替用户写入确认或推进 Harness。</p>
-        </article>
-      </section>
-      <p class="muted">此处只展示各数据源状态；流程推进与状态写入由对应源系统负责。</p>
-    </template>
-    <template #footer>
-      <el-button @click="selectedRequirement = null">关闭</el-button>
-    </template>
-  </el-drawer>
-
-
-  <!-- 工作区详情抽屉：展示该工作区包含哪些项目 -->
-  <el-drawer
-    v-model="workspaceDetailOpen"
-    title="工作区详情"
-    size="min(640px, 94vw)"
-    @close="selectedWorkspace = null"
-  >
-    <template v-if="selectedWorkspace">
-      <p class="eyebrow">WORKSPACE</p>
-      <h2>{{ selectedWorkspace.name }}</h2>
-      <div class="detail-grid">
-        <span>目录</span><code>{{ selectedWorkspace.path }}</code>
-        <span>工作区文件</span><code>{{ selectedWorkspace.workspaceFile || '缺少 .code-workspace' }}</code>
-        <span>更新时间</span><strong>{{ formatWorkspaceTime(selectedWorkspace.updatedAt) }}</strong>
-        <span>项目数</span><strong>{{ selectedWorkspace.projects.length }}</strong>
-      </div>
-      <!-- 合并请求：目标分支可选，支持单项目创建与一键批量创建 -->
-      <section class="workspace-mr">
-        <div class="workspace-mr-head">
-          <div>
-            <h3>创建合并请求</h3>
-            <p class="muted">源分支取项目当前检出的分支，只创建 MR，不推送代码、不删除分支。</p>
-          </div>
-          <div class="workspace-mr-controls">
-            <el-select v-model="mrTargetBranch" size="small" :disabled="mrBusy" aria-label="合并目标分支">
-              <el-option
-                v-for="branchName in mergeRequestTargetBranches"
-                :key="branchName"
-                :label="branchName"
-                :value="branchName"
-              />
-            </el-select>
-            <el-button
-              type="primary"
-              size="small"
-              :loading="mrBatchRunning"
-              :disabled="!selectedWorkspace.projects.length || mrBusy"
-              @click="createWorkspaceMergeRequest()"
-            >
-              一键创建 {{ selectedWorkspace.projects.length }} 个项目
-            </el-button>
-          </div>
-        </div>
-        <p v-if="workspaceMergeRequestError" class="mapping-error" role="status">{{ workspaceMergeRequestError }}</p>
-        <ul v-if="workspaceMergeRequestResult" class="workspace-mr-result">
-          <li v-for="item in workspaceMergeRequestResult.items" :key="item.project">
-            <span class="tag" :class="mergeRequestStatusClass(item.status)">{{ mergeRequestStatusLabel(item.status) }}</span>
-            <strong>{{ item.project }}</strong>
-            <span class="muted">{{ item.sourceBranch || '未知分支' }} → {{ item.targetBranch }}</span>
-            <a v-if="item.webUrl" :href="item.webUrl" target="_blank" rel="noreferrer">
-              {{ item.mergeRequestIid ? `!${item.mergeRequestIid}` : '打开 MR' }}
-            </a>
-            <span v-else-if="item.message" class="muted">{{ item.message }}</span>
-          </li>
-        </ul>
-      </section>
-      <section class="bug-detail-list">
-        <h3>包含的项目</h3>
-        <article v-for="project in selectedWorkspace.projects" :key="project.path" class="bug-detail">
-          <div class="inbox-title-line">
-            <strong>{{ project.name }}</strong>
-            <span class="tag" :class="project.worktree ? 'tag-success' : 'tag-warning'">{{ project.worktree ? 'worktree' : '独立目录' }}</span>
-          </div>
-          <p><code>{{ project.path }}</code></p>
-          <div class="workspace-project-foot">
-            <span class="muted">当前分支：{{ project.branch || '未知' }}</span>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :loading="mrCreatingProjects.includes(project.name)"
-              :disabled="mrBusy || !project.branch"
-              @click="createWorkspaceMergeRequest([project.name])"
-            >
-              创建 MR
-            </el-button>
-          </div>
-        </article>
-        <p v-if="!selectedWorkspace.projects.length" class="muted">该工作区目录下没有 git 项目。</p>
-      </section>
-      <section v-if="selectedWorkspace.missingProjects.length" class="bug-detail-list">
-        <h3>工作区文件声明但目录缺失</h3>
-        <p class="muted">{{ selectedWorkspace.missingProjects.join('、') }}</p>
-      </section>
-    </template>
-    <template #footer>
-      <el-button @click="selectedWorkspace = null">关闭</el-button>
-    </template>
-  </el-drawer>
-
-  <!-- 新建工作区：项目通过可搜索的多选下拉选择 -->
-  <el-dialog
-    v-model="createDialogOpen"
-    title="新建工作区"
-    width="min(760px, 94vw)"
-    :close-on-click-modal="false"
-    :before-close="beforeCreateDialogClose"
-  >
-    <div class="workspace-form">
-      <label>工作区名<el-input v-model="workspaceName" placeholder="ASCII 字母、数字、点、下划线或连字符" /></label>
-      <label>分支名<el-input v-model="branch" placeholder="默认 feat/&lt;工作区名&gt;" /></label>
-      <label>基线分支<el-input v-model="baseBranch" placeholder="默认 master" /></label>
-      <label class="workspace-form-wide">
-        <span>项目（可搜索、可多选）· {{ selectedRepositoryLabel }}</span>
-        <el-select
-          v-model="selectedRepositoryNames"
-          multiple
-          filterable
-          clearable
-          collapse-tags
-          collapse-tags-tooltip
-          :loading="candidatesLoading"
-          placeholder="搜索并选择要加入工作区的项目"
-        >
-          <el-option v-for="candidate in repositoryCandidates" :key="candidate.path" :label="candidate.name" :value="candidate.name">
-            <span>{{ candidate.name }}</span>
-            <small class="option-hint">{{ candidate.path }}</small>
-          </el-option>
-        </el-select>
-      </label>
-      <!-- 可选：创建成功后把工作区绑定到 TAPD 需求；两者均留空则不绑定 -->
-      <div class="workspace-form-tapd">
-        <label>TAPD 需求链接或 ID（可选）
-          <el-input v-model="workspaceTapdInput" placeholder="https://www.tapd.cn/.../view/1138... 或纯数字 ID；留空则不绑定" />
-        </label>
-        <label>需求名称（可选）
-          <el-input v-model="workspaceTapdTitle" placeholder="TAPD 查询不到需求标题时用于展示" />
-        </label>
-        <p class="workspace-form-tapd-hint">填写链接后，工作区创建完成会自动绑定到对应 TAPD 需求；子需求链接会归到其父需求。</p>
-      </div>
-      <!-- 跳步选项：el-checkbox 自身即 label，外层用 div 避免 label 嵌套 -->
-      <div class="workspace-form-checks">
-        <el-checkbox v-model="skipInstall">跳过 npm install</el-checkbox>
-        <el-checkbox v-model="skipGraphify">跳过 graphify</el-checkbox>
-      </div>
-    </div>
-    <div class="notice"><span class="notice-symbol">i</span><div><strong>只创建选中的项目</strong><p>正式创建会基于基线分支新建需求分支，把每个项目以 git worktree 检出到工作区目录，并写入 &lt;工作区名&gt;.code-workspace；不会 git pull、提交或删除远程分支。</p></div></div>
-    <div v-if="workspaceError" class="notice notice-warning" role="status"><span class="notice-symbol">!</span><div><strong>工作区任务异常</strong><p>{{ workspaceError }}</p></div></div>
-    <section v-if="workspaceLogs.length || workspaceJob" class="workspace-output">
-      <div class="section-heading">
-        <div><h3>{{ workspaceJob ? `初始化：${workspaceJob.status} · ${workspaceJob.stage}` : 'DryRun 结果' }}</h3><p>DryRun 不执行文件或 Git 写入；正式执行的日志会持续刷新。</p></div>
-        <span v-if="workspaceJob?.exitCode !== null && workspaceJob?.exitCode !== undefined" class="tag" :class="workspaceJob.exitCode === 0 ? 'tag-success' : 'tag-danger'">exit {{ workspaceJob.exitCode }}</span>
-      </div>
-      <pre>{{ workspaceLogs.join('\n') || '正在等待输出…' }}</pre>
-    </section>
-    <template #footer>
-      <el-button :disabled="workspaceBusy" @click="closeCreateDialog">关闭</el-button>
-      <el-button v-if="canResumeWorkspaceJob" :disabled="workspaceBusy" @click="resumeWorkspaceJob">
-        从记录阶段续跑
-      </el-button>
-      <el-button :loading="candidatesLoading" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceBusy" @click="previewWorkspace">DryRun 预演</el-button>
-      <el-button type="primary" :loading="workspaceBusy" :disabled="!workspaceName || !selectedRepositoryNames.length || workspaceBusy" @click="startWorkspace">确认并创建</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 源系统映射：新增 / 编辑差异映射；与默认一致的仓库不需要录入 -->
-  <el-dialog
-    v-model="mappingDialogOpen"
-    :title="mappingDialogTitle"
-    width="min(600px, 94vw)"
-    :close-on-click-modal="false"
-    @close="closeMappingDialog"
-  >
-    <div class="mapping-form">
-      <label class="mapping-control">
-        <span>Git 仓库名</span>
-        <el-select
-          v-model="mappingForm.repoName"
-          filterable
-          allow-create
-          default-first-option
-          :disabled="mappingEditingRepo !== null"
-          placeholder="选择仓库，或输入名称后回车"
-        >
-          <el-option v-for="name in mappingRepoOptions" :key="name" :label="name" :value="name" />
-        </el-select>
-      </label>
-      <label class="mapping-control">
-        <span>GitLab 项目（输入关键字搜索，留空沿用默认）</span>
-        <el-select
-          v-model="mappingForm.gitlabProjectId"
-          filterable
-          clearable
-          remote
-          reserve-keyword
-          :remote-method="loadMappingProjectOptions"
-          :loading="mappingProjectsLoading"
-          placeholder="留空 = 按仓库名精确匹配"
-        >
-          <el-option v-for="project in mappingProjectOptions" :key="project.id" :label="project.pathWithNamespace" :value="project.id" />
-        </el-select>
-      </label>
-      <label class="mapping-control">
-        <span>DevOps 应用</span>
-        <el-input v-model="mappingForm.devopsApp" :placeholder="`${mappingForm.repoName || '仓库名'}（留空沿用同名默认）`" />
-      </label>
-      <label class="mapping-control">
-        <span>DevOps 分组</span>
-        <el-input v-model="mappingForm.devopsGroup" :placeholder="defaultDevOpsGroup" />
-      </label>
-    </div>
-    <p class="mapping-hint">默认规则：git 仓库名 = DevOps 应用名、分组 = {{ defaultDevOpsGroup }}、GitLab 按仓库名精确匹配。只有与默认不一致的字段才会保存，搜索结果仅作候选，不会自动采用。</p>
-    <p v-if="mappingFormError" class="mapping-error" role="alert">{{ mappingFormError }}</p>
-    <template #footer>
-      <el-button @click="closeMappingDialog()">取消</el-button>
-      <el-button type="primary" :loading="mappingSaving" :disabled="!canSubmitMappingForm" @click="submitMappingForm()">保存映射</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 删除工作区：必须输入“确认删除” -->
-  <el-dialog v-model="deleteDialogOpen" title="删除工作区" width="min(600px, 94vw)" :close-on-click-modal="false" @close="closeDeleteDialog">
-    <template v-if="workspacePendingDelete">
-      <el-alert
-        type="warning"
-        :closable="false"
-        show-icon
-        title="删除后不可恢复"
-        description="将执行 git worktree remove 并删除工作区目录；不会删除本地分支，也不会删除远程分支。"
-      />
-      <div class="detail-grid">
-        <span>工作区</span><strong>{{ workspacePendingDelete.name }}</strong>
-        <span>目录</span><code>{{ workspacePendingDelete.path }}</code>
-        <span>项目</span><strong>{{ workspacePendingDelete.projects.map((project) => project.name).join('、') || '无' }}</strong>
-      </div>
-      <label class="delete-confirm-field">
-        <span>请输入「{{ deleteConfirmationPhrase }}」以确认删除</span>
-        <el-input v-model="deleteConfirmText" :placeholder="deleteConfirmationPhrase" />
-      </label>
-      <p v-if="deleteError" class="mapping-error" role="alert">{{ deleteError }}</p>
-      <section v-if="deleteResult" class="workspace-output">
-        <div class="section-heading"><div><h3>删除结果</h3><p>已移除 {{ deleteResult.removedWorktrees.length }} 个 worktree 登记，删除 {{ deleteResult.removedDirectories.length }} 个目录。</p></div></div>
-        <pre>{{ deleteResult.logs.join('\n') }}</pre>
-        <p v-if="deleteResult.warnings.length" class="mapping-error">{{ deleteResult.warnings.join('；') }}</p>
-      </section>
-    </template>
-    <template #footer>
-      <el-button :disabled="deleting" @click="closeDeleteDialog">{{ deleteResult ? '关闭' : '取消' }}</el-button>
-      <el-button type="danger" :loading="deleting" :disabled="!canConfirmDelete || deleting || Boolean(deleteResult)" @click="confirmDeleteWorkspace">确认删除</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 构建二次确认：逐项列出应用/分支/build_other，写清副作用后才允许提交 -->
-  <el-dialog
-    v-model="buildConfirmOpen"
-    :title="`确认构建 · ${selectedBuildEnv}`"
-    width="min(680px, 94vw)"
-    :close-on-click-modal="false"
-    :close-on-press-escape="buildingApps.length === 0"
-  >
-    <p class="release-confirm-intro">将对下列 {{ buildConfirmItems.length }} 个应用触发 <code>{{ selectedBuildEnv }}</code> 构建：分支 <code>{{ branchOfEnv(selectedBuildEnv) }}</code>，build_other <code>{{ buildOtherOf(selectedBuildEnv) }}</code>。构建为不可逆写操作，提交后会等待 DevOps 真实回执。</p>
-    <div class="release-confirm-list">
-      <div v-for="item in buildConfirmItems" :key="`${item.workspace}/${item.app}`" class="release-confirm-row">
-        <div class="release-confirm-target">
-          <strong>{{ item.app }}</strong>
-          <small>{{ item.workspace }} / {{ item.project }} · {{ item.group }}</small>
-        </div>
-        <span v-if="buildOutcomes.find((outcome) => outcome.app === item.app)?.ok" class="tag tag-success">已提交</span>
-        <span v-else-if="buildOutcomes.find((outcome) => outcome.app === item.app)?.ok === false" class="tag tag-danger">失败</span>
-        <span v-else-if="isAppBuilding(item.app)" class="tag tag-warning">提交中</span>
-        <span v-else class="tag">待提交</span>
-      </div>
-    </div>
-    <p v-for="outcome in buildOutcomes.filter((item) => !item.ok)" :key="outcome.app" class="release-confirm-error" role="alert">{{ outcome.app }}：{{ outcome.message }}</p>
-    <template #footer>
-      <el-button :disabled="buildingApps.length > 0" @click="buildConfirmOpen = false">{{ buildOutcomes.length ? '关闭' : '取消' }}</el-button>
-      <el-button type="primary" :loading="buildingApps.length > 0" :disabled="!canSubmitBuild" @click="submitBuilds">确认构建</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 创建 MR 结果：列出 MR 链接，支持新窗口打开 -->
-  <el-dialog
-    v-model="releaseMrDialogOpen"
-    title="合并请求已处理"
-    width="min(560px, 94vw)"
-  >
-    <p class="release-mr-intro">下列项目的合并请求已处理完成，点击链接在新窗口打开。</p>
-    <div class="release-mr-list">
-      <div v-for="item in releaseMrDialogItems" :key="item.project" class="release-mr-row">
-        <div class="release-mr-target">
-          <strong>{{ item.project }}</strong>
-          <small>{{ item.sourceBranch || '未知分支' }} → {{ item.targetBranch }}</small>
-        </div>
-        <span class="tag" :class="releaseMrStatusClass(item.status)">{{ releaseMrStatusLabel(item.status) }}</span>
-        <a
-          v-if="item.webUrl"
-          :href="item.webUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="release-mr-link"
-        >打开 MR ↗</a>
-        <span v-else class="release-unknown">无链接</span>
-      </div>
-    </div>
-    <template #footer>
-      <el-button type="primary" @click="releaseMrDialogOpen = false">关闭</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 定时任务编辑弹层：预设、实时校验与下次运行预览 -->
-  <CronEditorDialog
-    v-model="cronEditorOpen"
-    :cron="editingCron"
-    :requirement="editorRequirement"
-    :plans-dir="editorPlansDir"
-    :service-ready="editorServiceReady"
-    :saving="cronSaving"
-    :error="cronEditorError"
-    @save="submitCronEditor"
-  />
-
-  <!-- 操作审计抽屉：白名单动作可撤销 -->
-  <AuditTrailDrawer
-    v-model="auditOpen"
-    :entries="auditEntries"
-    :loading="auditLoading"
-    :error="auditError"
-    :undoing-id="auditUndoingId"
-    @refresh="refreshAuditTrail()"
-    @undo="undoAuditEntry($event)"
-  />
-
-  <!-- 撤销提示条：不打断流程，超时自动消失 -->
-  <div v-if="cronNotices.length || actionToastItems.length" class="undo-toasts" role="status">
-    <div
-      v-for="toast in actionToastItems"
-      :key="toast.id"
-      class="undo-toast"
-      :class="toast.kind === 'error' ? 'is-error' : 'is-success'"
-      :aria-label="toast.kind === 'error' ? '操作失败' : '操作成功'"
-    >
-      <span>{{ toast.message }}</span>
-      <el-button link size="small" @click="dismissActionToast(toast.id)">关闭</el-button>
-    </div>
-    <div v-for="notice in cronNotices" :key="notice.id" class="undo-toast">
-      <span>{{ notice.message }}</span>
-      <el-button v-if="notice.auditId" link type="primary" size="small" @click="undoCronAction(notice.auditId)">
-        撤销
-      </el-button>
-      <el-button link size="small" @click="dismissCronNotice(notice.id)">关闭</el-button>
-    </div>
-  </div>
-</template>
+  return {
+    route,
+    defaultDevOpsGroup,
+    deleteConfirmationPhrase,
+    mergeRequestTargetBranches,
+    imageUploading,
+    buildEnvironments,
+    router,
+    store,
+    board,
+    selectedRequirement,
+    selectedBugs,
+    selectedHarnessBugs,
+    selectedQuestions,
+    tapdAvailable,
+    snapshotLoaded,
+    snapshotLoading,
+    refreshSnapshot,
+    detailOpen,
+    search,
+    repositoryCandidates,
+    selectedRepositoryNames,
+    applicationMappings,
+    mappingDialogOpen,
+    mappingEditingRepo,
+    mappingForm,
+    mappingProjectOptions,
+    mappingProjectsLoading,
+    mappingFormError,
+    mappingSaving,
+    mappingRemoving,
+    candidatesLoading,
+    candidatesError,
+    mappingsError,
+    mappingRows,
+    mappingRepoOptions,
+    mappingDialogTitle,
+    mappingFormChanged,
+    canSubmitMappingForm,
+    showNoRepositoryHint,
+    workspaceName,
+    branch,
+    baseBranch,
+    skipInstall,
+    skipGraphify,
+    workspaceTapdInput,
+    workspaceTapdTitle,
+    pendingWorkspaceBinding,
+    previewResult,
+    workspaceJob,
+    workspaceError,
+    workspaces,
+    workspacesLoading,
+    workspacesError,
+    selectedWorkspace,
+    createDialogOpen,
+    deleteDialogOpen,
+    workspacePendingDelete,
+    deleteConfirmText,
+    deleting,
+    deleteError,
+    deleteResult,
+    mrTargetBranch,
+    mrCreatingProjects,
+    mrBatchRunning,
+    workspaceMergeRequestResult,
+    workspaceMergeRequestError,
+    mrBusy,
+    mergeRequestStatusLabel,
+    mergeRequestStatusClass,
+    workspaceDetailOpen,
+    canConfirmDelete,
+    workspaceLogs,
+    workspaceRunning,
+    workspaceSubmitting,
+    workspaceBusy,
+    selectedRepositoryLabel,
+    lifecycle,
+    storyServices,
+    startingStoryService,
+    storyServiceError,
+    activeServiceEvents,
+    hasServiceFailure,
+    dismissServiceEvent,
+    serviceErrorOf,
+    actionToasts,
+    actionToastItems,
+    dismissActionToast,
+    inboxAnswers,
+    inboxAnswerMap,
+    inboxExpandedId,
+    jobExtras,
+    jobDetail,
+    jobDetailLoading,
+    jobDetailError,
+    jobPinSaving,
+    jobPrefsError,
+    jobStateFilter,
+    storyJobs,
+    selectedJob,
+    selectedStoryId,
+    resumableSessions,
+    selectedResumableSession,
+    resumableLoading,
+    jobName,
+    renameDraft,
+    jobPrompt,
+    jobReply,
+    jobTranscript,
+    jobOutput,
+    jobError,
+    jobActionLoading,
+    cronError,
+    cronQuery,
+    cronStatusFilter,
+    cronDispatches,
+    cronActions,
+    cronExecutions,
+    expandedCronId,
+    cronEditorOpen,
+    editingCron,
+    editorStoryId,
+    cronSaving,
+    cronEditorError,
+    auditOpen,
+    auditTrail,
+    cronExecutionRows,
+    cronExecutionsLoading,
+    cronExecutionsError,
+    cronExecutionsSource,
+    cronExecutionsWarning,
+    cronExecutionsHasMore,
+    cronNotices,
+    cronBusyTaskId,
+    auditEntries,
+    auditLoading,
+    auditError,
+    auditUndoingId,
+    loadCronExecutions,
+    loadMoreCronExecutions,
+    refreshAuditTrail,
+    undoAuditEntry,
+    undoCronAction,
+    dismissCronNotice,
+    jobStreamController,
+    jobsPollTimer,
+    workspacePollTimer,
+    workspacePollGeneration,
+    cancelWorkspacePolling,
+    page,
+    requirements,
+    inbox,
+    inboxGroups,
+    questionSuggestions,
+    suggestionOf,
+    suggestionSegmentsOf,
+    storyAnswerCount,
+    redundantInboxReason,
+    inboxReasonOf,
+    setInboxAnswer,
+    toggleInboxAnswer,
+    inboxAnswerText,
+    copyStoryAnswers,
+    crons,
+    jobs,
+    storyServiceRequirements,
+    workspacePipelines,
+    pipelineStoryCount,
+    assignedCronIds,
+    unassignedCrons,
+    activeWorkflows,
+    describeChannelError,
+    boardErrorHint,
+    boardStatusTag,
+    channelRows,
+    codebuddyChannelView,
+    channelUnavailable,
+    jobsByStory,
+    isMainSessionSelected,
+    hasSelectedJob,
+    isJobSelected,
+    jobDotClass,
+    jobStateLabel,
+    jobMatchesFilter,
+    selectedJobPinned,
+    toggleSelectedJobPin,
+    useSuggestedReply,
+    handleStoryFileUpload,
+    onPromptFileChange,
+    onReplyFileChange,
+    instanceGroups,
+    emptyWorkspaceGuides,
+    storyDraft,
+    storyCreateError,
+    storyCreating,
+    selectedEmptyGroupKey,
+    storyTargetWorkspace,
+    storyTapdBinding,
+    storyBindingGeneration,
+    selectEmptyWorkspace,
+    cancelStoryCreate,
+    submitStoryCreate,
+    cronGroups,
+    currentStory,
+    currentService,
+    currentServiceDot,
+    currentServiceLabel,
+    currentServiceClass,
+    currentPortLabel,
+    currentServiceUrl,
+    currentServiceRunning,
+    currentJobClass,
+    currentJobLabel,
+    currentJobSession,
+    cronGroupsEmpty,
+    activeCronCount,
+    pausedCronCount,
+    cronNeedsAttention,
+    attentionCronCount,
+    matchesCronFilters,
+    visibleCronGroups,
+    filteredCronCount,
+    cronHasActiveFilters,
+    resetCronFilters,
+    pageHeading,
+    openRequirement,
+    goCrons,
+    toggleCron,
+    openCronEditor,
+    openCronCreator,
+    editorRequirement,
+    editorPlansDir,
+    editorServiceReady,
+    submitCronEditor,
+    toggleCronExecutions,
+    renewCron,
+    dispatchCron,
+    openDispatchOf,
+    archiveCronRound,
+    removeCron,
+    copyText,
+    openAuditTrail,
+    focusStory,
+    startStoryService,
+    stopStoryService,
+    removeStoryService,
+    refreshStoryServices,
+    loadStoryJobs,
+    prepareJob,
+    loadResumableSessions,
+    resumeSession,
+    createdJobOf,
+    createJob,
+    openJob,
+    streamJobOutput,
+    isTerminalJob,
+    waitForStreamRetry,
+    replyNoticeOf,
+    replyToJob,
+    renameJob,
+    controlJob,
+    refreshRepositoryCandidates,
+    loadApplicationMappings,
+    openMappingDialog,
+    closeMappingDialog,
+    loadMappingProjectOptions,
+    submitMappingForm,
+    removeApplicationMapping,
+    workspaceRequest,
+    previewWorkspace,
+    startWorkspace,
+    refreshAfterWorkspaceChange,
+    pollWorkspaceJob,
+    canResumeWorkspaceJob,
+    resumeWorkspaceJob,
+    refreshWorkspaces,
+    openWorkspaceDetail,
+    createWorkspaceMergeRequest,
+    openCreateDialog,
+    closeCreateDialog,
+    beforeCreateDialogClose,
+    openDeleteDialog,
+    closeDeleteDialog,
+    confirmDeleteWorkspace,
+    selectedBuildEnv,
+    devopsOk,
+    releaseGatePhase,
+    buildAllowed,
+    buildBlockReason,
+    envSpecOf,
+    buildOtherOf,
+    branchOfEnv,
+    buildConfirmOpen,
+    buildConfirmItems,
+    buildingApps,
+    buildOutcomes,
+    devopsAppOf,
+    devopsGroupOf,
+    selectBuildEnv,
+    openBuildConfirm,
+    requestSingleBuild,
+    collectBuildItems,
+    requestWorkspaceBuild,
+    canSubmitBuild,
+    submitBuilds,
+    isAppBuilding,
+    releaseMrCreating,
+    releaseMrError,
+    releaseMrDialogOpen,
+    releaseMrDialogItems,
+    mrKey,
+    createReleaseMr,
+    releaseMrStatusLabel,
+    releaseMrStatusClass,
+    prepareReleasePage,
+    formatWorkspaceTime,
+  }
+}
