@@ -48,9 +48,10 @@
 
 ## 核心特性
 
-- **一屏总览** —— 收件箱、看板、流水线等七个主导航页，覆盖从需求到发布的完整链路。
+- **一屏总览** —— 收件箱、看板、实例、定时、发布五个主导航页，覆盖从需求到发布的完整链路。
 - **状态自证** —— 加载、失败、缓存与未知状态局部可见，宁可显示「未知」也不假装正常。
-- **执行为主** —— 实例启停、MR 创建、工作区初始化等操作均可点按完成。
+- **执行为主** —— 实例启停、工作区初始化、MR 创建、构建触发等操作均可点按完成。
+- **分路由视图** —— 前端由共享壳层 `ConsoleShell.vue` 承载状态，各页面拆为独立 View 并按路由懒加载。
 - **信源唯一** —— TAPD / Harness / GitLab / DevOps 始终是唯一信源，站点只镜像、不双写。
 - **本地安全** —— 单机 `127.0.0.1` 服务 + 本机访问令牌登录，连接器凭据仅服务端读取。
 - **边界优先** —— 发布写操作默认禁用，Git 写操作不自动执行，门控区间显式提示。
@@ -59,10 +60,10 @@
 
 ### 环境要求
 
-| 依赖 | 版本 |
-| --- | --- |
-| Node.js | `>= 22` |
-| pnpm | `11.x` |
+| 依赖                   | 版本             |
+| ---------------------- | ---------------- |
+| Node.js                | `>= 22`          |
+| pnpm                   | `11.x`           |
 | PowerShell 7（`pwsh`） | 工作区初始化所需 |
 
 ### 安装与启动
@@ -80,17 +81,17 @@ Web 应用运行在 Vite 上，`/api` 请求会被代理到 `127.0.0.1:7788` 的
 
 ## 界面预览
 
-> 控制台包含七个主导航页：收件箱（默认首屏）、看板、流水线、实例、定时、发布、工作区；连接自检与配置位于主导航之外的工具页。
+> 控制台包含五个主导航页：收件箱（默认首屏）、看板、实例、定时、发布；连接自检与配置位于主导航之外的工具页。
 
-| 页面 | 作用 |
-| --- | --- |
-| 📥 收件箱 | 默认首屏，聚合当前需要你处理的任务 |
-| 📋 看板 | 按父需求聚合展示 Story 状态 |
-| 🔀 流水线 | 展示工作区的开发 / 修复流程进展 |
-| 🖥️ 实例 | 启动或接管 Story 的本地 CodeBuddy HTTP 服务 |
-| ⏰ 定时 | 管理 Bug 定时查询与修复任务映射 |
-| 🚀 发布 | 展示发布信息（写操作尚未开放） |
-| 📁 工作区 | 基于 git worktree 初始化多仓库工作区 |
+| 页面      | 作用                                                   |
+| --------- | ------------------------------------------------------ |
+| 📥 收件箱 | 默认首屏，聚合当前需要你处理的任务                     |
+| 📋 看板   | 按父需求聚合展示 Story 状态及分阶段进展                |
+| 🖥️ 实例   | 启动或接管 Story 的本地 CodeBuddy HTTP 服务            |
+| ⏰ 定时   | 管理 Bug 定时查询与修复任务映射                        |
+| 🚀 发布   | 工作区管理、构建触发与 MR 创建（写操作受环境门控约束） |
+
+> 原「流水线」页与独立「工作区」页已移除：工作区管理、工作区初始化与 MR 操作并入发布页；开发 / 修复流程进展在收件箱与看板中呈现。
 
 ## 架构设计
 
@@ -126,15 +127,15 @@ DevTaskConsole/
 
 HarnessFlow 是为 AI 编程助手（Claude Code / CodeBuddy Code）接入的一条端到端自动化研发流水线。它用一条 `/start` 命令驱动完整的 7 Phase 工作流：
 
-| Phase | 阶段 | 负责 Agent | 关键产出物 |
-| --- | --- | --- | --- |
-| 0 | 需求分析 | 需求分析师 | `requirement-analysis.md`、`acceptance-criteria.json` |
-| 1 | 任务规划 | 任务规划师 | `task-dag.md` / `task-dag.json`（可并行任务 DAG） |
-| 2 | 代码开发 | 前端开发工程师 | 代码变更（dev-pass 限时写保护） |
-| 3 | 代码审查 | 代码审查师 | `code-review.json`（AC 逐条核对） |
-| 4 | Git 提交 + MR | 发布助手 | 提交开发分支 + 创建 MR（→ dev） |
-| 5 | 知识库更新 | 发布助手 | 增量知识库文档（kb-update） |
-| 6 | 云端部署 | 发布助手 | dev 分支构建 + 部署 |
+| Phase | 阶段          | 负责 Agent     | 关键产出物                                            |
+| ----- | ------------- | -------------- | ----------------------------------------------------- |
+| 0     | 需求分析      | 需求分析师     | `requirement-analysis.md`、`acceptance-criteria.json` |
+| 1     | 任务规划      | 任务规划师     | `task-dag.md` / `task-dag.json`（可并行任务 DAG）     |
+| 2     | 代码开发      | 前端开发工程师 | 代码变更（dev-pass 限时写保护）                       |
+| 3     | 代码审查      | 代码审查师     | `code-review.json`（AC 逐条核对）                     |
+| 4     | Git 提交 + MR | 发布助手       | 提交开发分支 + 创建 MR（→ dev）                       |
+| 5     | 知识库更新    | 发布助手       | 增量知识库文档（kb-update）                           |
+| 6     | 云端部署      | 发布助手       | dev 分支构建 + 部署                                   |
 
 它的核心设计是**契约驱动 + 硬门控 + 权限控制**：`dispatch.js` 是只读调度器（只读状态、判门控、说下一步，零写权限），`advance-phase.js` 是相位跃迁唯一执行者；AI 不手改 `e2e-state.json` / `dev-pass.json`，只机械执行调度指令。此外还提供 Bug 定时巡检（`tapd-bug-cron`）、知识库全生命周期管理、Figma 设计稿协作等能力。
 
@@ -142,7 +143,7 @@ HarnessFlow 是为 AI 编程助手（Claude Code / CodeBuddy Code）接入的一
 
 HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在命令行与文件里——状态藏在 `.codebuddy/plans/<Story>/e2e-state.json` 中，推进靠人敲 `/start`、`/kb-query` 这类命令，多个 Story 并行时很难一眼看清全局。DevTask Console 正是为补齐这块而存在：
 
-1. **让隐状态可见** —— 把 Harness 的状态机（`e2e-state.json`、`dev-pass.json`、Job 轮次、owner session）从文件搬进浏览器，以流水线、看板、收件箱的形式呈现。这与 HarnessFlow「状态自证」的设计一脉相承：宁可显示「未知」，也不假装正常。
+1. **让隐状态可见** —— 把 Harness 的状态机（`e2e-state.json`、`dev-pass.json`、Job 轮次、owner session）从文件搬进浏览器，以看板、收件箱、发布页的形式呈现。这与 HarnessFlow「状态自证」的设计一脉相承：宁可显示「未知」，也不假装正常。
 
 2. **让流程可操作** —— 把 `/start run`、`/start fixbugs`、创建 MR、触发构建部署等命令变成按钮。HarnessFlow 负责「怎么安全地做」，控制台负责「让人一键触发」。
 
@@ -158,12 +159,12 @@ HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在�
 
 ### 路径配置
 
-| 变量 | 说明 | 默认值 |
-| --- | --- | --- |
-| `DEVTASK_WORKSPACES_ROOT` | 工作区根目录 | `D:\test-blanch` |
-| `DEVTASK_SOURCE_ROOT` | 只读 Git 仓库候选根目录 | Windows 默认 `D:\workfile` |
-| `DEVTASK_MCP_CONFIG` | MCP 连接配置文件路径 | `%USERPROFILE%\.codebuddy\mcp.json` |
-| `DEVTASK_DATA_DIR` | 应用数据存放目录 | `%LOCALAPPDATA%\DevTaskConsole` |
+| 变量                      | 说明                    | 默认值                              |
+| ------------------------- | ----------------------- | ----------------------------------- |
+| `DEVTASK_WORKSPACES_ROOT` | 工作区根目录            | `D:\test-blanch`                    |
+| `DEVTASK_SOURCE_ROOT`     | 只读 Git 仓库候选根目录 | Windows 默认 `D:\workfile`          |
+| `DEVTASK_MCP_CONFIG`      | MCP 连接配置文件路径    | `%USERPROFILE%\.codebuddy\mcp.json` |
+| `DEVTASK_DATA_DIR`        | 应用数据存放目录        | `%LOCALAPPDATA%\DevTaskConsole`     |
 
 ### 连接配置
 
@@ -171,9 +172,9 @@ HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在�
 
 ## 功能模块
 
-### 工作区初始化
+### 工作区初始化与发布
 
-工作区页面只列出来自 `DEVTASK_SOURCE_ROOT` 的仓库，需显式选择。初始化前会调用本地 `~\.codebuddy\skills\create-workspace\scripts\create-workspace.ps1` 执行 `-DryRun`。确认后会创建 git worktree 与 `.code-workspace` 文件，并执行所选的 `npm install` 与 graphify 阶段。
+工作区能力集中在发布页：只列出来自 `DEVTASK_SOURCE_ROOT` 的仓库，需显式选择。初始化前会调用本地 `~\.codebuddy\skills\create-workspace\scripts\create-workspace.ps1` 执行 `-DryRun`。确认后会创建 git worktree 与 `.code-workspace` 文件，并执行所选的 `npm install` 与 graphify 阶段。发布页同时提供工作区删除、按环境触发构建与批量创建 MR。
 
 - 不会执行 pull、commit、push，也不会删除 worktree。
 - 任务状态与有界日志持久化在 `workspace-initialization-jobs.json`。
@@ -208,29 +209,34 @@ HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在�
 ## 验证与构建
 
 ```powershell
-pnpm typecheck   # 类型检查
-pnpm test        # 运行测试
-pnpm build       # 构建所有包
-pnpm start       # 构建后启动生产服务
+pnpm dev          # 并行启动 Web 与 Server 开发服务
+pnpm typecheck    # 类型检查
+pnpm test         # 运行测试
+pnpm lint         # ESLint 检查
+pnpm format       # Prettier 格式化
+pnpm check        # lint + format:check + typecheck 一次性校验
+pnpm build        # 构建所有包
+pnpm start        # 构建后启动生产服务
 ```
+
+提交时 Husky 的 pre-commit 钩子会自动执行 ESLint 与 Prettier 双重检查。
 
 ## 路线图
 
-- [ ] 发布页写操作开放（当前仅为占位展示）
 - [ ] Harness 终态归档与自动重启（依赖上游 skill 增强）
 - [ ] 定时任务编辑 / 暂停 / 删除与执行历史（待上游 CodeBuddy 定时任务 API 与执行记录结构确认）
 - [ ] 服务级停止 / 删除与端口释放
 
 ## 项目结构
 
-| 路径 | 说明 |
-| --- | --- |
-| `apps/web` | Vue 3 前端，`ConsolePage.vue` 为主控制台页面 |
-| `apps/server` | Fastify 服务端，含聚合、集成、服务与工作区模块 |
-| `packages/shared` | 前后端共享的类型定义 |
-| `PRODUCT.md` | 产品定位、用户、能力与约束 |
-| `DESIGN.md` | 界面设计与视觉规范 |
-| `docs/` | 需求规格、开发进度等文档 |
+| 路径              | 说明                                                             |
+| ----------------- | ---------------------------------------------------------------- |
+| `apps/web`        | Vue 3 前端，`ConsoleShell.vue` 为共享壳层，各页面为独立路由 View |
+| `apps/server`     | Fastify 服务端，含聚合、集成、服务与工作区模块                   |
+| `packages/shared` | 前后端共享的类型定义                                             |
+| `PRODUCT.md`      | 产品定位、用户、能力与约束                                       |
+| `DESIGN.md`       | 界面设计与视觉规范                                               |
+| `docs/`           | 需求规格、开发进度等文档                                         |
 
 ---
 
