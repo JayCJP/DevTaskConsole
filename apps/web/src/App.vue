@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  FolderOpened,
   Grid,
   MessageBox,
   Monitor,
@@ -33,7 +32,6 @@ const icons = {
   instances: Monitor,
   crons: Timer,
   releases: Promotion,
-  workspaces: FolderOpened,
 }
 const token = ref('')
 const authenticated = ref(false)

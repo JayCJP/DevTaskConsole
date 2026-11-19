@@ -7,7 +7,6 @@ export const navItems = [
   { path: '/instances', title: '实例', shortcut: 'g c', icon: 'instances' },
   { path: '/crons', title: '定时', shortcut: 'g t', icon: 'crons' },
   { path: '/releases', title: '发布', shortcut: 'g r', icon: 'releases' },
-  { path: '/workspaces', title: '工作区', shortcut: 'g w', icon: 'workspaces' },
 ] as const
 
 /** 各页面视图的懒加载映射，按 navItems.icon 取值 */
@@ -17,7 +16,6 @@ const views: Record<string, () => Promise<unknown>> = {
   instances: () => import('../views/InstancesView.vue'),
   crons: () => import('../views/CronsView.vue'),
   releases: () => import('../views/ReleasesView.vue'),
-  workspaces: () => import('../views/WorkspacesView.vue'),
   tools: () => import('../views/ToolsView.vue'),
 }
 

@@ -705,7 +705,6 @@
   display: grid;
   gap: 2px;
   padding-left: 10px;
-  border-left: 2px solid var(--line);
 }
 .inbox-story-head {
   display: flex;
@@ -1115,6 +1114,10 @@
 }
 .board-parent:first-child {
   border-top-color: var(--line);
+}
+/* 父容器内首行与 .board-parent 顶边重叠，去掉重复的线避免显得粗 */
+.board-parent > .board-row:first-child {
+  border-top: 0;
 }
 .board-parent-row {
   align-items: center;
@@ -3409,6 +3412,13 @@
   border: 1px solid var(--line-subtle);
   border-radius: var(--radius-md);
   background: var(--surface);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+.release-workspace:hover {
+  border-color: var(--line);
+  background: var(--bg-hover);
 }
 .release-workspace-head {
   display: flex;
@@ -3416,7 +3426,6 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--line-subtle);
 }
 .release-workspace-title {
   display: flex;
