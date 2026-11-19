@@ -37,6 +37,7 @@ import {
   getWorkspacesRoot,
   type CronFacts,
   type SnapshotCacheStore,
+  type SnapshotSegment,
 } from './aggregator/snapshot.js'
 import { SnapshotCache } from './aggregator/snapshot-cache.js'
 import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
@@ -86,8 +87,8 @@ import { restoreCronOwners } from './services/cron-recovery.js'
 export interface ServerOptions {
   token: string
   logger?: boolean
-  /** 快照构建器；`force` 为 true 时强制重建缓存段并刷新连通性。注入后完全接管，不套磁盘缓存 */
-  snapshotProvider?: (force?: boolean) => Promise<Snapshot>
+  /** 快照构建器；`force` 重建全部缓存段，`segments` 可按段定向失效。注入后完全接管，不套磁盘缓存 */
+  snapshotProvider?: (force?: boolean, segments?: SnapshotSegment[]) => Promise<Snapshot>
   /** 快照磁盘缓存；测试可注入内存替身 */
   snapshotCache?: SnapshotCacheStore
   /** 看板 provider；注入后完全接管（不套文件缓存），测试可注入替身 */
@@ -1105,10 +1106,24 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/snapshot', async (request, reply) => {
-    // refresh=1：用户手动刷新，跳过 TAPD 增强字段缓存，确保看到的是最新上游数据
-    const query = z.object({ refresh: z.enum(['0', '1', 'true', 'false']).optional() }).safeParse(request.query)
+    // refresh=1：用户手动刷新，重建全部缓存段并刷新连通性。
+    // segments=local[,tapd]：按段定向失效，仅重建指定段、其余复用缓存；
+    // pipeline/inbox 的数据只依赖 local+runtime，刷新它们时传 segments=local 即可避开 TAPD 远端请求。
+    const query = z.object({
+      refresh: z.enum(['0', '1', 'true', 'false']).optional(),
+      segments: z.string().trim().optional(),
+    }).safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
-    const snapshot = await snapshotProvider(query.data.refresh === '1' || query.data.refresh === 'true')
+    // segments 白名单校验：仅接受 local/tapd，去重后传入 provider
+    const segments = query.data.segments
+      ? [...new Set(query.data.segments.split(',').map((s) => s.trim()))]
+      : undefined
+    if (segments && segments.some((s) => s !== 'local' && s !== 'tapd')) return invalidParameters(reply)
+    const force = query.data.refresh === '1' || query.data.refresh === 'true'
+    // 仅在按段刷新时传第二参数，保持普通刷新调用形态不变（兼容注入的 provider 测试替身）
+    const snapshot = segments
+      ? await snapshotProvider(force, segments as SnapshotSegment[])
+      : await snapshotProvider(force)
     const parsed = snapshotSchema.safeParse(snapshot)
     if (!parsed.success) {
       request.log.error({ issues: parsed.error.issues }, 'Snapshot validation failed')

@@ -87,10 +87,23 @@ interface RuntimeSegment {
   crons: Snapshot['crons']
 }
 
+/**
+ * 需要强制重建的快照段。
+ * - local：本地 worktree/workspace 扫描、harnessActive、requirements、openQuestions
+ * - tapd：TAPD 增强字段与缺陷（远端慢请求，易触发限流）
+ * pipeline / inbox 页的数据只依赖 local + runtime，刷新时应只传 local，避免触达 TAPD/连通性。
+ */
+export type SnapshotSegment = 'local' | 'tapd'
+
 /** 快照构建参数 */
 export interface SnapshotBuildOptions {
   /** 手动刷新：强制重建 local + tapd 两段并刷新连通性内存缓存 */
   force?: boolean
+  /**
+   * 按段强制重建（不改变 force 对 connectivity 的语义）。
+   * 传入 local 时只重扫本地段而复用 cachedTapd；传入 tapd 时只重拉 TAPD 而复用 cachedLocal。
+   */
+  segments?: SnapshotSegment[]
   /** 命中的本地段缓存；注入后跳过磁盘扫描 */
   cachedLocal?: LocalSegment
   /** 命中的 TAPD 段缓存；注入后跳过整个 TAPD 请求（含 checkConnection） */
@@ -326,10 +339,14 @@ export async function buildSnapshotResult(
 ): Promise<SnapshotBuildResult> {
   const snapshotAt = new Date().toISOString()
   const force = options.force === true
+  // 按段强制：force 仍重建全部；segments 可对单段定向失效，其余段复用缓存。
+  // pipeline / inbox 只需 local 段新鲜，传 segments=['local'] 即可避开 TAPD 远端请求。
+  const forceLocal = force || options.segments?.includes('local') === true
+  const forceTapd = force || options.segments?.includes('tapd') === true
 
   let local: LocalSegment
   let localRebuilt = false
-  if (!force && options.cachedLocal) {
+  if (!forceLocal && options.cachedLocal) {
     // 缓存命中：如实标记 stale，fetchedAt 保留原抓取时间
     local = markStale(options.cachedLocal, true)
   } else {
@@ -339,10 +356,10 @@ export async function buildSnapshotResult(
 
   let tapd: TapdSegment
   let tapdRebuilt = false
-  if (!force && options.cachedTapd) {
+  if (!forceTapd && options.cachedTapd) {
     tapd = markStale(options.cachedTapd, true)
   } else {
-    const fresh = await loadTapdSegment(snapshotAt, local.requirements, force)
+    const fresh = await loadTapdSegment(snapshotAt, local.requirements, forceTapd)
     if (!fresh.channel.ok && options.cachedTapd) {
       // force 重建失败但旧缓存可用：保留旧 TAPD 段，只更新 local 段（评审 Q12）
       tapd = markStale(options.cachedTapd, true)
@@ -353,7 +370,9 @@ export async function buildSnapshotResult(
   }
 
   const [runtime, connectivity] = await Promise.all([
+    // runtime 段每次请求实时拉（不缓存），保证 pipeline/inbox 的 jobs/crons 计数新鲜
     loadRuntimeSegment(snapshotAt, workspacesRoot, local.requirements, local.workspaces),
+    // connectivity 仅在 force 时刷新内存缓存；按段刷新不触达远端连通性检查
     loadConnectivitySegment(snapshotAt, force),
   ])
 
@@ -392,20 +411,21 @@ export interface SnapshotCacheStore {
  * @param options.cache 缓存存储（默认由调用方注入 SnapshotCache）
  * @param options.build 快照构建器，测试可注入替身
  * @param options.logError 写盘失败时的日志回调
- * @returns 带缓存的 provider，接收 force 参数
+ * @returns 带缓存的 provider，接收 force 与 segments 参数
  */
 export function createCachedSnapshotProvider(options: {
   workspacesRoot: string
   cache: SnapshotCacheStore
   build?: (root: string, buildOptions: SnapshotBuildOptions) => Promise<SnapshotBuildResult>
   logError?: (message: string) => void
-}): (force?: boolean) => Promise<Snapshot> {
+}): (force?: boolean, segments?: SnapshotSegment[]) => Promise<Snapshot> {
   const build = options.build ?? buildSnapshotResult
-  return async (force = false) => {
+  return async (force = false, segments?: SnapshotSegment[]) => {
     // force 时也读缓存：TAPD 强拉失败要保留旧段（Q12）
     const cached = options.cache.read(options.workspacesRoot)
     const result = await build(options.workspacesRoot, {
       force,
+      segments,
       cachedLocal: cached?.segments.local,
       cachedTapd: cached?.segments.tapd,
     })

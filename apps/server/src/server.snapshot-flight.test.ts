@@ -100,4 +100,36 @@ describe('snapshot single flight', () => {
 
     expect(provider).toHaveBeenCalledTimes(2)
   })
+
+  it('passes segment filters through so pipeline/inbox can refresh without TAPD', async () => {
+    // segments=local 表示只重扫本地段、复用 TAPD 缓存，供 pipeline/inbox 页使用
+    const provider = vi.fn(async (_force?: boolean, _segments?: string[]) => emptySnapshot)
+    server = buildServer({
+      token,
+      logger: false,
+      snapshotProvider: provider,
+      workspaceInitializer: new WorkspaceInitializer({ dataDirectory }),
+      storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+    })
+
+    await server.inject({ method: 'GET', url: '/api/v1/snapshot?segments=local', headers })
+
+    expect(provider).toHaveBeenCalledWith(false, ['local'])
+  })
+
+  it('rejects unknown segment names', async () => {
+    const provider = vi.fn(async () => emptySnapshot)
+    server = buildServer({
+      token,
+      logger: false,
+      snapshotProvider: provider,
+      workspaceInitializer: new WorkspaceInitializer({ dataDirectory }),
+      storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+    })
+
+    const response = await server.inject({ method: 'GET', url: '/api/v1/snapshot?segments=tapd,unknown', headers })
+
+    expect(response.statusCode).toBe(400)
+    expect(provider).not.toHaveBeenCalled()
+  })
 })

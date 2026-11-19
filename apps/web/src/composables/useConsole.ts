@@ -81,6 +81,53 @@ const snapshotLoading = computed(() => store.loading)
 async function refreshSnapshot(force = false): Promise<void> {
   await store.refresh(force)
 }
+
+/**
+ * 按段刷新快照：只重建指定段，其余段复用服务端缓存。
+ * pipeline / inbox 的数据来自 local 段与 runtime 段，传 ['local'] 即可刷新它们而避开 TAPD/连通性。
+ * @param segments 需要重建的段，如 ['local']
+ * @returns Promise<void>
+ */
+async function refreshSegments(segments: Array<'local' | 'tapd'>): Promise<void> {
+  await store.refreshSegments(segments)
+}
+
+/**
+ * 刷新当前路由页面的数据——「来自哪里就刷新哪里」。
+ * 各页数据源不同：pipeline/inbox 只需 local 段；其它页复用各自的独立接口；tools 需重检测连通性。
+ * @returns Promise<void>
+ */
+async function refreshCurrentPage(): Promise<void> {
+  const current = page.value
+  if (current === 'inbox' || current === 'pipeline') {
+    // 两页核心数据均由 local 段（工作区扫描/harness）生成，runtime 段每次请求实时拉
+    await refreshSegments(['local'])
+    return
+  }
+  if (current === 'board') {
+    await board.load(true)
+    return
+  }
+  if (current === 'workspaces') {
+    await Promise.all([refreshWorkspaces(), refreshRepositoryCandidates()])
+    return
+  }
+  if (current === 'instances') {
+    await refreshStoryServices()
+    return
+  }
+  if (current === 'crons') {
+    await cronDispatches.refresh()
+    return
+  }
+  if (current === 'releases') {
+    await prepareReleasePage()
+    return
+  }
+  if (current === 'tools') {
+    await refreshSnapshot(true)
+  }
+}
 const gitLabProjectSchema = z.object({ id: z.number().int().positive(), pathWithNamespace: z.string() })
 
 const detailOpen = computed({
@@ -2784,6 +2831,8 @@ function formatWorkspaceTime(value?: string): string {
     snapshotLoaded,
     snapshotLoading,
     refreshSnapshot,
+    refreshSegments,
+    refreshCurrentPage,
     detailOpen,
     search,
     repositoryCandidates,

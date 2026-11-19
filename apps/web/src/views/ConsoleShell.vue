@@ -18,7 +18,7 @@ const {
   page,
   pageHeading,
   store,
-  refreshSnapshot,
+  refreshCurrentPage,
   snapshotLoading,
   selectedRequirement,
   detailOpen,
@@ -52,8 +52,8 @@ const {
       </div>
       <div class="heading-actions">
         <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
-        <el-tooltip :content="store.loading ? '正在刷新快照' : '刷新会重新聚合四个上游系统，可能消耗 TAPD 查询配额'" placement="bottom">
-          <span><el-button :loading="snapshotLoading" @click="refreshSnapshot(true)">刷新</el-button></span>
+        <el-tooltip :content="store.loading ? '正在刷新' : '只刷新当前页面的数据（流水线/收件箱只重扫本地工作区，不触发 TAPD 查询）'" placement="bottom">
+          <span><el-button :loading="snapshotLoading" @click="refreshCurrentPage()">刷新</el-button></span>
         </el-tooltip>
       </div>
     </div>
@@ -61,7 +61,7 @@ const {
     <div v-if="store.error" class="notice notice-warning" role="status">
       <span class="notice-symbol">!</span>
       <div><strong>数据暂不可用</strong><p>{{ store.error }}</p><p>此页只聚合展示上游系统状态，不会替代它们执行操作；修复上方原因后可重试。</p></div>
-      <el-button text @click="refreshSnapshot(true)">重试</el-button>
+      <el-button text @click="refreshCurrentPage()">重试</el-button>
     </div>
 
     <!-- 各页面内容由独立视图渲染 -->
