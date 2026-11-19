@@ -14,6 +14,17 @@
     "build": "pnpm --recursive --if-present build",
     "start": "pnpm --filter @devtask/server start",
     "typecheck": "pnpm --recursive --if-present typecheck",
-    "test": "pnpm --recursive --if-present test"
+    "test": "pnpm --recursive --if-present test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,vue,js,mjs,cjs,json,md,css,html}": "prettier --write"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.1",
+    "prettier": "^3.10.1"
   }
 }

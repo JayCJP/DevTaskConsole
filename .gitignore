@@ -9,3 +9,4 @@ coverage/
 graphify-out
 .codebuddy/
 .git-msg.tmp
+.husky/_/
