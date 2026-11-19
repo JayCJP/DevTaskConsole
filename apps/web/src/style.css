@@ -50,12 +50,16 @@
 
   --success: oklch(76% 0.13 160);
   --success-soft: oklch(28% 0.05 160);
+  --success-strong: oklch(64% 0.14 160);
   --warning: oklch(80% 0.13 82);
   --warning-soft: oklch(29% 0.05 82);
+  --warning-strong: oklch(68% 0.14 82);
   --danger: oklch(70% 0.16 22);
   --danger-soft: oklch(28% 0.06 22);
+  --danger-strong: oklch(58% 0.18 22);
   --info: oklch(74% 0.08 235);
   --info-soft: oklch(28% 0.03 235);
+  --info-strong: oklch(62% 0.1 235);
 
   /* 圆角 / 阴影 / 层级 */
   --radius-xs: 4px;
@@ -66,8 +70,7 @@
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
   --shadow-md: 0 10px 30px oklch(0% 0 0 / 35%);
   --shadow: 0 24px 80px oklch(0% 0 0 / 45%);
-  --focus-ring:
-    0 0 0 2px var(--bg-page), 0 0 0 4px color-mix(in oklch, var(--brand) 65%, transparent);
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--brand);
 
   /* ---- 兼容别名：既有布局类与页面模板大量使用下列名称 ---- */
   --page: var(--bg-page);
@@ -112,12 +115,16 @@
 
   --success: oklch(48% 0.12 160);
   --success-soft: oklch(95% 0.03 160);
+  --success-strong: oklch(40% 0.13 160);
   --warning: oklch(52% 0.12 72);
   --warning-soft: oklch(95% 0.04 82);
+  --warning-strong: oklch(44% 0.13 72);
   --danger: oklch(53% 0.18 25);
   --danger-soft: oklch(95% 0.03 25);
+  --danger-strong: oklch(45% 0.19 25);
   --info: oklch(50% 0.09 235);
   --info-soft: oklch(95% 0.02 235);
+  --info-strong: oklch(42% 0.1 235);
 
   --shadow-sm: 0 1px 2px oklch(30% 0.03 255 / 8%);
   --shadow-md: 0 8px 24px oklch(30% 0.03 255 / 10%);
@@ -161,10 +168,12 @@
 /* ---------- 4. Element Plus 令牌映射 ---------- */
 :root {
   --el-color-primary: var(--brand);
-  --el-color-primary-light-3: color-mix(in oklch, var(--brand) 72%, var(--bg-surface));
-  --el-color-primary-light-5: color-mix(in oklch, var(--brand) 50%, var(--bg-surface));
-  --el-color-primary-light-7: color-mix(in oklch, var(--brand) 28%, var(--bg-surface));
-  --el-color-primary-light-8: color-mix(in oklch, var(--brand) 14%, var(--bg-surface));
+  /* Element Plus 的 primary 派生色一律直接取主题色梯度，不用 color-mix 与表面色混合，
+     保证亮/暗两套主题下 plain 按钮的边框与底色都落在同一组主题令牌上。 */
+  --el-color-primary-light-3: var(--brand-strong);
+  --el-color-primary-light-5: var(--brand);
+  --el-color-primary-light-7: var(--brand-hover);
+  --el-color-primary-light-8: var(--brand-soft);
   --el-color-primary-light-9: var(--brand-soft);
   --el-color-primary-dark-2: var(--brand-hover);
   --el-color-success: var(--success);
@@ -259,7 +268,8 @@
   }
 
   ::selection {
-    background: color-mix(in oklch, var(--brand) 35%, transparent);
+    background: var(--brand-soft);
+    color: var(--text-strong);
   }
 
   /* 细滚动条：与表面色同族，避免暗色主题里出现突兀的亮色轨道 */
@@ -762,7 +772,7 @@
 .count-pill-inline {
   padding: 1px 6px;
   margin-left: 6px;
-  border-color: color-mix(in oklch, var(--brand) 45%, transparent);
+  border-color: var(--brand);
   color: var(--brand);
 }
 .inbox-row-actions {
@@ -841,7 +851,7 @@
 }
 .inbox-answer .el-textarea__inner:focus {
   border-color: var(--brand);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand) 22%, transparent);
+  box-shadow: 0 0 0 3px var(--brand-soft);
 }
 .inbox-answer .el-textarea__inner::placeholder {
   color: var(--faint);
@@ -893,9 +903,9 @@
   width: 38px;
   height: 38px;
   place-items: center;
-  border: 1px solid color-mix(in oklch, var(--success) 40%, var(--line));
+  border: 1px solid var(--success);
   border-radius: 50%;
-  background: color-mix(in oklch, var(--success-soft) 50%, transparent);
+  background: var(--success-soft);
   color: var(--success);
 }
 .empty-compact {
@@ -936,12 +946,12 @@
   background: var(--surface-raised);
 }
 .notice-warning {
-  border-color: color-mix(in oklch, var(--warning) 45%, var(--line));
-  background: color-mix(in oklch, var(--warning-soft) 45%, var(--surface));
+  border-color: var(--warning);
+  background: var(--warning-soft);
 }
 .notice-danger {
-  border-color: color-mix(in oklch, var(--danger) 45%, var(--line));
-  background: color-mix(in oklch, var(--danger-soft) 45%, var(--surface));
+  border-color: var(--danger);
+  background: var(--danger-soft);
 }
 .notice-symbol {
   display: grid;
@@ -1024,7 +1034,7 @@
   background: var(--line);
 }
 .phase-track span.passed {
-  background: color-mix(in srgb, var(--green) 55%, var(--line));
+  background: var(--success);
 }
 .phase-track span.current {
   background: var(--accent);
@@ -1153,7 +1163,7 @@
 }
 .board-children {
   padding: 0 10px 4px 30px;
-  background: color-mix(in oklch, var(--line-subtle) 30%, transparent);
+  background: var(--bg-raised);
 }
 .board-child-row {
   grid-template-columns: minmax(0, 1fr) 280px auto;
@@ -1253,18 +1263,18 @@
   content: '';
 }
 .tag-warning {
-  border-color: color-mix(in oklch, var(--warning) 35%, var(--line));
-  background: color-mix(in oklch, var(--warning-soft) 55%, transparent);
+  border-color: var(--warning);
+  background: var(--warning-soft);
   color: var(--warning);
 }
 .tag-danger {
-  border-color: color-mix(in oklch, var(--danger) 35%, var(--line));
-  background: color-mix(in oklch, var(--danger-soft) 55%, transparent);
+  border-color: var(--danger);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 .tag-success {
-  border-color: color-mix(in oklch, var(--success) 35%, var(--line));
-  background: color-mix(in oklch, var(--success-soft) 55%, transparent);
+  border-color: var(--success);
+  background: var(--success-soft);
   color: var(--success);
 }
 .pipeline-row {
@@ -1874,7 +1884,7 @@
   display: flex;
   justify-content: center;
   padding: 15vh 16px 20px;
-  background: color-mix(in oklch, var(--page) 62%, transparent);
+  background: var(--el-mask-color);
 }
 .command-panel {
   width: min(560px, 100%);
@@ -1961,7 +1971,7 @@
   --el-button-active-text-color: var(--brand-contrast);
   --el-button-active-bg-color: var(--brand-strong);
   --el-button-active-border-color: var(--brand-strong);
-  --el-button-disabled-bg-color: color-mix(in oklch, var(--brand) 45%, var(--surface));
+  --el-button-disabled-bg-color: var(--brand-soft);
   --el-button-disabled-border-color: transparent;
   --el-button-disabled-text-color: var(--brand-contrast);
 }
@@ -1983,7 +1993,7 @@
 .el-input__wrapper.is-focus {
   box-shadow:
     0 0 0 1px var(--brand) inset,
-    0 0 0 3px color-mix(in oklch, var(--brand) 22%, transparent) !important;
+    0 0 0 3px var(--brand-soft) !important;
 }
 .el-input__inner {
   color: var(--text) !important;
@@ -2333,7 +2343,7 @@
   font-size: 11px;
 }
 .cron-row.is-busy {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  background: var(--brand-soft);
 }
 .cron-schedule {
   display: grid;
@@ -2493,10 +2503,10 @@
   font-size: 11px;
 }
 .service-event.is-error {
-  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+  border-color: var(--danger);
 }
 .service-event.is-warning {
-  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
+  border-color: var(--warning);
 }
 .service-event span:nth-child(2) {
   flex: 1;
@@ -2705,7 +2715,7 @@
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 }
 .instance-story-button:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-color: var(--brand);
 }
 .instance-story-button:focus-visible,
 .instance-job-row:focus-visible {
@@ -2716,10 +2726,10 @@
 }
 .instance-story.is-current .instance-story-button {
   border-color: var(--brand);
-  background: color-mix(in oklch, var(--brand-soft) 30%, var(--surface));
+  background: var(--brand-soft);
 }
 .instance-story.has-current-child:not(.is-current) .instance-story-button {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-color: var(--brand);
 }
 .instance-story-text {
   display: grid;
@@ -2756,8 +2766,8 @@
 }
 .instance-story.is-current .session-kind,
 .instance-story.has-current-child .session-kind {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
-  color: var(--accent);
+  border-color: var(--brand);
+  color: var(--brand);
 }
 .instance-job-list {
   margin: 0 0 10px;
@@ -2765,7 +2775,7 @@
   border: 1px solid var(--line);
   border-top: 0;
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  background: color-mix(in srgb, var(--surface-raised) 55%, transparent);
+  background: var(--surface-raised);
 }
 .instance-job-row {
   position: relative;
@@ -2802,12 +2812,12 @@
   background: var(--surface-hover);
 }
 .instance-job-row.is-selected {
-  background: color-mix(in oklch, var(--brand-soft) 40%, var(--surface));
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 35%, transparent);
+  background: var(--brand-soft);
+  box-shadow: inset 0 0 0 1px var(--brand);
 }
 .instance-job-row.is-selected::before,
 .instance-job-row.is-selected::after {
-  background: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--brand);
 }
 .instance-job-text {
   min-width: 0;
@@ -2998,10 +3008,10 @@
 
 /* 实例写操作结果提示：成功/失败分色 */
 .undo-toast.is-success {
-  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+  border-color: var(--success);
 }
 .undo-toast.is-error {
-  border-color: color-mix(in srgb, var(--red) 55%, var(--line));
+  border-color: var(--danger);
 }
 
 /* ============================================================================
@@ -3027,13 +3037,13 @@
 .pipeline-row:focus-visible {
   outline: none;
   background: var(--surface-hover);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 45%, transparent);
+  box-shadow: inset 0 0 0 1px var(--brand);
 }
 
 /* 选中态：品牌色底 + 1px 内描边，不做粗左条 */
 .simple-list-row.is-selected {
-  background: color-mix(in oklch, var(--brand-soft) 55%, var(--surface));
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 35%, transparent);
+  background: var(--brand-soft);
+  box-shadow: inset 0 0 0 1px var(--brand);
 }
 
 /* 行内代码：给「ID / 分支 / 路径」一个低调但可辨识的容器 */
@@ -3107,38 +3117,39 @@
 /* ---------- 6. Element Plus 状态色补漏 ----------
  * EP 只为 primary 生成了完整派生色，success/warning/danger/info 缺 light-3…light-9；
  * 实心按钮的 :hover 默认取 light-9（浅底）但文字仍是白色，会出现「白底白字」。
- * 这里补齐派生刻度，并把四种状态按钮的悬停/按下统一为「同色相更深底 + 反色字」。
+ * 这里按主题梯度补齐派生刻度：悬停落在主色、按下落在 *-strong（更深一档），
+ * 与 primary 的处理方式一致，四种主题色在明暗两套主题下共用同一亮度刻度。
  */
 :root {
-  --el-color-success-light-3: color-mix(in oklch, var(--success) 75%, var(--bg-surface));
-  --el-color-success-light-5: color-mix(in oklch, var(--success) 55%, var(--bg-surface));
-  --el-color-success-light-7: color-mix(in oklch, var(--success) 30%, var(--bg-surface));
-  --el-color-success-light-8: color-mix(in oklch, var(--success) 16%, var(--bg-surface));
+  --el-color-success-light-3: var(--success);
+  --el-color-success-light-5: var(--success);
+  --el-color-success-light-7: var(--success);
+  --el-color-success-light-8: var(--success-soft);
   --el-color-success-light-9: var(--success-soft);
-  --el-color-success-dark-2: color-mix(in oklch, var(--success) 88%, black);
-  --el-color-warning-light-3: color-mix(in oklch, var(--warning) 75%, var(--bg-surface));
-  --el-color-warning-light-5: color-mix(in oklch, var(--warning) 55%, var(--bg-surface));
-  --el-color-warning-light-7: color-mix(in oklch, var(--warning) 30%, var(--bg-surface));
-  --el-color-warning-light-8: color-mix(in oklch, var(--warning) 16%, var(--bg-surface));
+  --el-color-success-dark-2: var(--success-strong);
+  --el-color-warning-light-3: var(--warning);
+  --el-color-warning-light-5: var(--warning);
+  --el-color-warning-light-7: var(--warning);
+  --el-color-warning-light-8: var(--warning-soft);
   --el-color-warning-light-9: var(--warning-soft);
-  --el-color-warning-dark-2: color-mix(in oklch, var(--warning) 88%, black);
-  --el-color-danger-light-3: color-mix(in oklch, var(--danger) 75%, var(--bg-surface));
-  --el-color-danger-light-5: color-mix(in oklch, var(--danger) 55%, var(--bg-surface));
-  --el-color-danger-light-7: color-mix(in oklch, var(--danger) 30%, var(--bg-surface));
-  --el-color-danger-light-8: color-mix(in oklch, var(--danger) 16%, var(--bg-surface));
+  --el-color-warning-dark-2: var(--warning-strong);
+  --el-color-danger-light-3: var(--danger);
+  --el-color-danger-light-5: var(--danger);
+  --el-color-danger-light-7: var(--danger);
+  --el-color-danger-light-8: var(--danger-soft);
   --el-color-danger-light-9: var(--danger-soft);
-  --el-color-danger-dark-2: color-mix(in oklch, var(--danger) 88%, black);
+  --el-color-danger-dark-2: var(--danger-strong);
   --el-color-error-light-3: var(--el-color-danger-light-3);
   --el-color-error-light-5: var(--el-color-danger-light-5);
   --el-color-error-light-7: var(--el-color-danger-light-7);
   --el-color-error-light-8: var(--el-color-danger-light-8);
   --el-color-error-dark-2: var(--el-color-danger-dark-2);
-  --el-color-info-light-3: color-mix(in oklch, var(--info) 75%, var(--bg-surface));
-  --el-color-info-light-5: color-mix(in oklch, var(--info) 55%, var(--bg-surface));
-  --el-color-info-light-7: color-mix(in oklch, var(--info) 30%, var(--bg-surface));
-  --el-color-info-light-8: color-mix(in oklch, var(--info) 16%, var(--bg-surface));
+  --el-color-info-light-3: var(--info);
+  --el-color-info-light-5: var(--info);
+  --el-color-info-light-7: var(--info);
+  --el-color-info-light-8: var(--info-soft);
   --el-color-info-light-9: var(--info-soft);
-  --el-color-info-dark-2: color-mix(in oklch, var(--info) 88%, black);
+  --el-color-info-dark-2: var(--info-strong);
 }
 
 /* 实心状态按钮：悬停变深、文字保持反色，避免「白字落在浅底上」 */
@@ -3264,13 +3275,13 @@
   gap: 12px;
   margin-bottom: 18px;
   padding: 14px 16px;
-  border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--line));
+  border: 1px solid var(--warning);
   border-radius: var(--radius-sm);
-  background: color-mix(in oklch, var(--warning-soft) 40%, var(--surface));
+  background: var(--warning-soft);
 }
 .release-guard.is-danger {
-  border-color: color-mix(in oklch, var(--danger) 45%, var(--line));
-  background: color-mix(in oklch, var(--danger-soft) 40%, var(--surface));
+  border-color: var(--danger);
+  background: var(--danger-soft);
 }
 .release-guard-icon {
   width: 18px;
@@ -3358,14 +3369,14 @@
   outline-offset: 1px;
 }
 .env-segment.is-active {
-  border-color: color-mix(in oklch, var(--brand) 55%, var(--line));
+  border-color: var(--brand);
   background: var(--brand-soft);
   color: var(--brand);
   font-weight: 620;
 }
 .env-segment.is-active.is-prod {
-  border-color: color-mix(in oklch, var(--danger) 55%, var(--line));
-  background: color-mix(in oklch, var(--danger-soft) 45%, var(--surface));
+  border-color: var(--danger);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 /* 所选环境的固定口径：构建分支 / build_other / MR 目标，凹陷底色承载机器数据 */
