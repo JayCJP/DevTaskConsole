@@ -30,7 +30,11 @@ beforeEach(async () => {
   dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-board-data-'))
   // 构造一个由 *.code-workspace 描述的工作区，项目声明在 folders 中
   await mkdir(join(workspacesRoot, 'feature-x', 'repo-a', '.git'), { recursive: true })
-  await writeFile(join(workspacesRoot, 'feature-x', 'repo-a', '.git', 'HEAD'), 'ref: refs/heads/feat/x\n', 'utf8')
+  await writeFile(
+    join(workspacesRoot, 'feature-x', 'repo-a', '.git', 'HEAD'),
+    'ref: refs/heads/feat/x\n',
+    'utf8',
+  )
   await writeFile(
     join(workspacesRoot, 'feature-x', 'feature-x.code-workspace'),
     JSON.stringify({ folders: [{ path: 'repo-a' }], settings: {} }),
@@ -52,7 +56,13 @@ beforeEach(async () => {
     tapdAdapter: {
       listOwnedStories: async (owner: string) => ({
         stories: [
-          { storyId: firstStoryId, title: '客服需求 A', owner, tapdUrl: storyUrl, statusLabel: '方案中' },
+          {
+            storyId: firstStoryId,
+            title: '客服需求 A',
+            owner,
+            tapdUrl: storyUrl,
+            statusLabel: '方案中',
+          },
           {
             storyId: secondStoryId,
             title: '客服需求 B',
@@ -95,7 +105,10 @@ describe('board API', () => {
     expect(board.owner).toBe('蔡杰鹏')
     expect(board.includeReleased).toBe(false)
     expect(board.hiddenReleased).toBe(1)
-    expect(board.stories.map((story: { storyId: string }) => story.storyId)).toEqual([firstStoryId, secondStoryId])
+    expect(board.stories.map((story: { storyId: string }) => story.storyId)).toEqual([
+      firstStoryId,
+      secondStoryId,
+    ])
     expect(board.workspaces).toMatchObject([{ name: 'feature-x' }])
   })
 
@@ -110,8 +123,11 @@ describe('board API', () => {
     const board = response.json()
     expect(board.includeReleased).toBe(true)
     expect(board.hiddenReleased).toBe(0)
-    expect(board.stories.map((story: { storyId: string }) => story.storyId))
-      .toEqual([firstStoryId, secondStoryId, releasedStoryId])
+    expect(board.stories.map((story: { storyId: string }) => story.storyId)).toEqual([
+      firstStoryId,
+      secondStoryId,
+      releasedStoryId,
+    ])
   })
 
   it('binds a story to a workspace using a pasted TAPD link', async () => {
@@ -124,7 +140,11 @@ describe('board API', () => {
 
     expect(saved.statusCode).toBe(200)
     expect(saved.json()).toEqual([
-      expect.objectContaining({ tapdStoryId: firstStoryId, workspaceName: 'feature-x', storyTitle: '客服需求 A' }),
+      expect.objectContaining({
+        tapdStoryId: firstStoryId,
+        workspaceName: 'feature-x',
+        storyTitle: '客服需求 A',
+      }),
     ])
 
     const board = await server.inject({
@@ -205,7 +225,13 @@ describe('board API file cache', () => {
   /** 构建带调用计数的 TAPD 替身 server，覆盖全局 server 以便 afterEach 统一关闭 */
   async function buildCountingServer(tapdImpl: {
     listOwnedStories: (owner: string) => Promise<{
-      stories: Array<{ storyId: string; title: string; owner: string; tapdUrl: string; statusLabel?: string }>
+      stories: Array<{
+        storyId: string
+        title: string
+        owner: string
+        tapdUrl: string
+        statusLabel?: string
+      }>
       urlTemplate: string
     }>
     resolveParentStoryId: (storyId: string) => Promise<string>
@@ -235,7 +261,9 @@ describe('board API file cache', () => {
 
   const okTapd = {
     listOwnedStories: async (owner: string) => ({
-      stories: [{ storyId: firstStoryId, title: '需求 A', owner, tapdUrl: storyUrl, statusLabel: '方案中' }],
+      stories: [
+        { storyId: firstStoryId, title: '需求 A', owner, tapdUrl: storyUrl, statusLabel: '方案中' },
+      ],
       urlTemplate: 'https://www.tapd.cn/38260062/prong/stories/view/{id}',
     }),
     resolveParentStoryId: async (storyId: string) => storyId,
@@ -267,25 +295,38 @@ describe('board API file cache', () => {
   it('keeps owner/includeReleased entries isolated', async () => {
     const { calls } = await buildCountingServer(okTapd)
 
-    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F', headers })
-    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F&includeReleased=1', headers })
-    await server.inject({ method: 'GET', url: '/api/v1/board/stories?owner=%E5%BC%A0%E4%B8%89', headers })
+    await server.inject({
+      method: 'GET',
+      url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F',
+      headers,
+    })
+    await server.inject({
+      method: 'GET',
+      url: '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F&includeReleased=1',
+      headers,
+    })
+    await server.inject({
+      method: 'GET',
+      url: '/api/v1/board/stories?owner=%E5%BC%A0%E4%B8%89',
+      headers,
+    })
 
     expect(calls()).toBe(3)
   })
 
   it('does not cache a failed TAPD channel (ok=false)', async () => {
     const { calls } = await buildCountingServer({
-      listOwnedStories: async () => { throw new Error('TAPD down') },
+      listOwnedStories: async () => {
+        throw new Error('TAPD down')
+      },
       resolveParentStoryId: async (storyId) => storyId,
     })
     const url = '/api/v1/board/stories?owner=%E8%94%A1%E6%9D%B0%E9%B9%8F'
 
-     const first = await server.inject({ method: 'GET', url, headers })
+    const first = await server.inject({ method: 'GET', url, headers })
     expect(first.json().ok).toBe(false)
-    const second = await server.inject({ method: 'GET', url, headers })
-
     // 失败结果未写缓存，第二次仍会回源重试
+    await server.inject({ method: 'GET', url, headers })
     expect(calls()).toBe(2)
   })
 })

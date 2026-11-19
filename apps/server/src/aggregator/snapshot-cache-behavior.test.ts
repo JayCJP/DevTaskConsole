@@ -27,7 +27,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return {
     ...actual,
-    exec: (_cmd: string, _options: unknown, cb: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+    exec: (
+      _cmd: string,
+      _options: unknown,
+      cb: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ) => {
       if (mocks.codebuddyVersion === null) {
         cb(new Error('command not found'), { stdout: '', stderr: '' })
         return
@@ -108,7 +112,6 @@ vi.mock('../services/scheduled-tasks.js', async (importOriginal) => {
 import { buildSnapshotResult } from './snapshot.js'
 import { makeCacheEntry } from './snapshot-cache.fixture.js'
 
-const root = 'D:\\test-behavior-root'
 let workspacesRoot: string
 let dataDirectory: string
 
@@ -125,7 +128,11 @@ beforeEach(async () => {
 
   // 默认：本地扫描/TAPD/连通性/服务都返回空，避免触达真实环境
   mocks.readHarness.mockReset().mockResolvedValue({
-    requirements: [], harnessBugs: [], openQuestions: [], harnessActive: [], errors: [],
+    requirements: [],
+    harnessBugs: [],
+    openQuestions: [],
+    harnessActive: [],
+    errors: [],
   })
   mocks.tapdCheck.mockReset().mockResolvedValue(false)
   mocks.tapdAggregate.mockReset().mockResolvedValue({ requirements: [], bugs: [] })
@@ -203,17 +210,30 @@ describe('buildSnapshotResult 缓存行为（方案 §7 要点 2/10/11）', () =
     const result = await buildSnapshotResult(workspacesRoot, { force: true })
 
     expect(result.snapshot.channels.codebuddy.ok).toBe(false)
-    expect(result.snapshot.channels.codebuddy.error).toContain('https://www.codebuddy.cn/docs/cli/quickstart')
+    expect(result.snapshot.channels.codebuddy.error).toContain(
+      'https://www.codebuddy.cn/docs/cli/quickstart',
+    )
   })
 
   it('TAPD MCP 连接成功但取数失败时，通道仍标记为 ok（连接状态与取数解耦）', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const withTapdStory = { storyId: 'S-TAPD', title: '带 TAPD 绑定的需求', workspacePath: 'w', tapdStoryId: '123456' }
+    const withTapdStory = {
+      storyId: 'S-TAPD',
+      title: '带 TAPD 绑定的需求',
+      workspacePath: 'w',
+      tapdStoryId: '123456',
+    }
     mocks.readHarness.mockResolvedValue({
-      requirements: [withTapdStory], harnessBugs: [], openQuestions: [], harnessActive: [], errors: [],
+      requirements: [withTapdStory],
+      harnessBugs: [],
+      openQuestions: [],
+      harnessActive: [],
+      errors: [],
     })
     mocks.tapdCheck.mockResolvedValue(true)
-    mocks.tapdAggregate.mockRejectedValue(new Error('TAPD did not return requested Stories: 123456.'))
+    mocks.tapdAggregate.mockRejectedValue(
+      new Error('TAPD did not return requested Stories: 123456.'),
+    )
 
     const result = await buildSnapshotResult(workspacesRoot, { force: true })
 
@@ -238,8 +258,13 @@ describe('buildSnapshotResult 缓存行为（方案 §7 要点 2/10/11）', () =
     })
     // 用一个闸门让两个请求都挂起：只有并发才会在释放前累计到 2 次调用
     let release!: () => void
-    const gate = new Promise<void>((resolveGate) => { release = resolveGate })
-    mocks.codebuddyRequest.mockImplementation(async () => { await gate; return [] })
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate
+    })
+    mocks.codebuddyRequest.mockImplementation(async () => {
+      await gate
+      return []
+    })
 
     const cachedLocal = {
       ...makeCacheEntry().segments.local,
@@ -251,7 +276,9 @@ describe('buildSnapshotResult 缓存行为（方案 §7 要点 2/10/11）', () =
       cachedTapd: makeCacheEntry().segments.tapd,
     })
     // 两个请求都挂起时若已累计到 2 次调用，证明它们是并发发出的（串行时只会到第 1 次）
-    await vi.waitFor(() => expect(mocks.codebuddyRequest).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    await vi.waitFor(() => expect(mocks.codebuddyRequest).toHaveBeenCalledTimes(2), {
+      timeout: 2000,
+    })
     release()
     const result = await pending
 

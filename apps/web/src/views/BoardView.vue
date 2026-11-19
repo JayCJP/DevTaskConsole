@@ -6,6 +6,9 @@
 import { useConsoleContext } from '../composables/useConsoleContext'
 
 const ctx = useConsoleContext()
+// reactive(useBoardStories()) 跨 provide 边界后 TS 会把内部 ref 推断退化，
+// 这里显式放宽为 any 以保留模板中 board.xxx 的自动解包行为（运行时对象未变）。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const board = ctx.board as any
 const { boardStatusTag, boardErrorHint } = ctx
 </script>
