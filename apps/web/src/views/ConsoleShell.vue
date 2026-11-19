@@ -19,7 +19,6 @@ const {
   pageHeading,
   store,
   refreshCurrentPage,
-  snapshotLoading,
   selectedRequirement,
   detailOpen,
   selectedBugs,
@@ -48,19 +47,24 @@ const {
         <h1>{{ pageHeading }}</h1>
         <!-- 只在收件箱与发布页保留副标题：其余页面的说明由各分区标题自带，H1 不再叠加同义句 -->
         <p v-if="page === 'inbox'" class="page-subtitle">先处理真正需要你决策的事项。</p>
-        <p v-else-if="page === 'releases'" class="page-subtitle">按工作区构建项目 · 状态来自 DevOps 与本机快照，不伪装成实时</p>
+        <p v-else-if="page === 'releases'" class="page-subtitle">
+          按工作区构建项目 · 状态来自 DevOps 与本机快照，不伪装成实时
+        </p>
       </div>
       <div class="heading-actions">
-        <span v-if="store.snapshot" class="freshness">快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span>
-        <el-tooltip :content="store.loading ? '正在刷新' : '只刷新当前页面的数据（流水线/收件箱只重扫本地工作区，不触发 TAPD 查询）'" placement="bottom">
-          <span><el-button :loading="snapshotLoading" @click="refreshCurrentPage()">刷新</el-button></span>
-        </el-tooltip>
+        <span v-if="store.snapshot" class="freshness"
+          >快照 {{ new Date(store.snapshot.snapshotAt).toLocaleTimeString() }}</span
+        >
       </div>
     </div>
 
     <div v-if="store.error" class="notice notice-warning" role="status">
       <span class="notice-symbol">!</span>
-      <div><strong>数据暂不可用</strong><p>{{ store.error }}</p><p>此页只聚合展示上游系统状态，不会替代它们执行操作；修复上方原因后可重试。</p></div>
+      <div>
+        <strong>数据暂不可用</strong>
+        <p>{{ store.error }}</p>
+        <p>此页只聚合展示上游系统状态，不会替代它们执行操作；修复上方原因后可重试。</p>
+      </div>
       <el-button text @click="refreshCurrentPage()">重试</el-button>
     </div>
 
