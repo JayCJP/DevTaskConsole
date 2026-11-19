@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { snapshotSchema } from '@devtask/shared'
-import { buildSnapshot } from './snapshot.js'
+import { buildSnapshot, buildSnapshotResult } from './snapshot.js'
+import { makeCacheEntry } from './snapshot-cache.fixture.js'
 import { CronMappingStore } from './cron-data.js'
 
 // 必须在被测模块加载前隔离数据目录：
@@ -178,5 +179,46 @@ describe('snapshot channel status', () => {
       mode: 'query_only',
     })])
     expect(snapshot.channels.crons).toMatchObject({ ok: true, stale: false })
+  })
+})
+
+describe('snapshot segment refresh', () => {
+  it('rebuilds only local and reuses cached tapd when segments=[local]', async () => {
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-snapshot-segments-'))
+    // 无 MCP 配置：即使误触发 TAPD 也不会打真实上游
+    process.env.DEVTASK_MCP_CONFIG = join(workspacesRoot, 'missing-mcp.json')
+    // 用真实 fixture 的 workspacesRoot，避免缓存段因根目录不匹配被忽略
+    const cached = makeCacheEntry({ workspacesRoot })
+
+    const result = await buildSnapshotResult(workspacesRoot, {
+      segments: ['local'],
+      cachedLocal: cached.segments.local,
+      cachedTapd: cached.segments.tapd,
+    })
+
+    // local 被重建，tapd 复用缓存（这是 pipeline/inbox 刷新不触达 TAPD 的关键）
+    expect(result.rebuilt.local).toBe(true)
+    expect(result.rebuilt.tapd).toBe(false)
+    // 返回的 TAPD 通道 fetchedAt 仍是缓存里的时间戳，证实复用而非重拉
+    expect(result.snapshot.channels.tapd.fetchedAt).toBe(cached.segments.tapd.channel.fetchedAt)
+    // 复用段如实标记为 stale
+    expect(result.segments.tapd.channel.stale).toBe(true)
+  })
+
+  it('rebuilds only tapd and reuses cached local when segments=[tapd]', async () => {
+    workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-snapshot-segments-'))
+    process.env.DEVTASK_MCP_CONFIG = join(workspacesRoot, 'missing-mcp.json')
+    const cached = makeCacheEntry({ workspacesRoot })
+
+    const result = await buildSnapshotResult(workspacesRoot, {
+      segments: ['tapd'],
+      cachedLocal: cached.segments.local,
+      cachedTapd: cached.segments.tapd,
+    })
+
+    expect(result.rebuilt.local).toBe(false)
+    // TAPD 无 MCP 配置时会回退到缓存段（仍标记 rebuilt=false 的语义由 build 决定）
+    expect(result.segments.local.channel.stale).toBe(true)
+    expect(result.segments.local).toEqual({ ...cached.segments.local, channel: { ...cached.segments.local.channel, stale: true } })
   })
 })

@@ -116,6 +116,28 @@ describe('createCachedSnapshotProvider', () => {
     expect(cache.writes).toHaveLength(1)
   })
 
+  it('passes segment filters to the build so pipeline/inbox refresh only local', async () => {
+    const cached = makeEntry()
+    const cache = memoryCache(cached)
+    // 只重建 local：rebuilt.local=true、rebuilt.tapd=false
+    const build = fakeBuild(buildResult('2026-11-16T00:06:00.000Z', {
+      rebuilt: { local: true, tapd: false },
+    }))
+
+    const provider = createCachedSnapshotProvider({ workspacesRoot: root, cache, build })
+    await provider(false, ['local'])
+
+    // segments 原样透传给构建器，force 仍为 false
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(build.mock.calls[0][1]).toMatchObject({ force: false, segments: ['local'] })
+    // 两侧缓存段都注入了，构建器据此决定只重建 local
+    expect(build.mock.calls[0][1].cachedLocal).toEqual(cached.segments.local)
+    expect(build.mock.calls[0][1].cachedTapd).toEqual(cached.segments.tapd)
+    // local 重建触发写盘；tapd 段保持缓存原样（仍是旧数据，不应被当作新鲜）
+    expect(cache.writes).toHaveLength(1)
+    expect(cache.data?.segments.tapd).toEqual(cached.segments.tapd)
+  })
+
   it('does not throw when the cache write fails', async () => {
     const cache: SnapshotCacheStore = {
       read: () => undefined,

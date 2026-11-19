@@ -132,4 +132,37 @@ describe('snapshot single flight', () => {
     expect(response.statusCode).toBe(400)
     expect(provider).not.toHaveBeenCalled()
   })
+
+  it('lets refresh=1 override segments so manual refresh still rebuilds everything', async () => {
+    const provider = vi.fn(async () => emptySnapshot)
+    server = buildServer({
+      token,
+      logger: false,
+      snapshotProvider: provider,
+      workspaceInitializer: new WorkspaceInitializer({ dataDirectory }),
+      storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+    })
+
+    // force 与 segments 同时出现：force 优先（buildSnapshotResult 里 forceLocal/forceTapd 均为 true）
+    await server.inject({ method: 'GET', url: '/api/v1/snapshot?refresh=1&segments=local', headers })
+
+    expect(provider).toHaveBeenCalledWith(true, ['local'])
+  })
+
+  it('treats an empty segments value as a normal request', async () => {
+    const provider = vi.fn(async () => emptySnapshot)
+    server = buildServer({
+      token,
+      logger: false,
+      snapshotProvider: provider,
+      workspaceInitializer: new WorkspaceInitializer({ dataDirectory }),
+      storyServiceSupervisor: new StoryServiceSupervisor({ dataDirectory }),
+    })
+
+    const response = await server.inject({ method: 'GET', url: '/api/v1/snapshot?segments=', headers })
+
+    expect(response.statusCode).toBe(200)
+    // 空字符串被当作无 segments，只传 force，保持旧调用形态
+    expect(provider).toHaveBeenCalledWith(false)
+  })
 })
