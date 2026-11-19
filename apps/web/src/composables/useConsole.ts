@@ -58,6 +58,8 @@ import { buildMappingRows } from '../utils/application-mapping'
 
 export function useConsole() {
 
+/* ------------------------- 共享基础：路由、快照、抽屉、刷新分发 ------------------------- */
+
 const route = useRoute()
 const router = useRouter()
 const store = useConsoleStore()
@@ -137,6 +139,8 @@ const detailOpen = computed({
   },
 })
 const search = ref('')
+/* ------------------------- 工作区 / 映射：表单状态与列表快照 ------------------------- */
+
 const repositoryCandidates = ref<RepositoryCandidate[]>([])
 const selectedRepositoryNames = ref<string[]>([])
 /** 已保存的差异映射：服务端只返回与默认约定不一致、经人工确认的记录 */
@@ -298,6 +302,8 @@ const selectedRepositoryLabel = computed(() => `已选择 ${selectedRepositoryNa
  * Story 服务生命周期与运行期监督。
  * 服务的启动、停止、删除映射与监督事件都由它统一管理，页面只负责渲染。
  */
+/* ------------------------- 实例页：服务生命周期与运行期监督 ------------------------- */
+
 const lifecycle = useServiceLifecycle({ onChange: async () => { await store.refresh() } })
 /** Story ID → 服务状态（模板沿用既有命名） */
 const storyServices = lifecycle.services
@@ -356,6 +362,8 @@ const jobOutput = ref('')
 const jobError = ref('')
 const jobActionLoading = ref(false)
 /** 定时任务写操作错误 */
+/* ------------------------- 定时任务：状态、子 composable 与编辑弹层 ------------------------- */
+
 const cronError = ref('')
 /** 定时任务搜索关键词 */
 const cronQuery = ref('')
@@ -537,6 +545,8 @@ const unsyncedWorkspaceName = '未同步到工作区'
  *
  * @returns 分组后的收件箱数据，直接供模板渲染
  */
+/* ------------------------- 收件箱：分组、建议稿与答复汇总 ------------------------- */
+
 const inboxGroups = computed<InboxWorkspaceGroup[]>(() => {
   const titles = new Map((store.snapshot?.requirements ?? []).map((requirement) => [requirement.storyId, requirement.title]))
   const itemsByStory = new Map<string, InboxItem[]>()
@@ -744,6 +754,8 @@ const activeWorkflows = computed(() => store.snapshot?.harnessActive ?? [])
  * 快照里完全没有该 key 时仍然要列出来并标注「未检测」，
  * 否则用户看到的是一句兜底话，而不是「哪条通道没接」。
  */
+/* ------------------------- 通道状态展示（看板 / 连接与配置共用） ------------------------- */
+
 const channelCatalog = [
   { key: 'tapd', label: 'TAPD', purpose: '需求与缺陷' },
   { key: 'gitlab', label: 'GitLab', purpose: '合并请求' },
@@ -847,6 +859,8 @@ const channelUnavailable = computed(() =>
  * @param storyId Harness Story ID
  * @returns 该 Story 下的实例数组
  */
+/* ------------------------- 实例页：辅助判断与写操作 ------------------------- */
+
 function jobsByStory(storyId: string): Job[] {
   const pinned = new Set(jobExtras.prefs.value.pinned)
   return jobs.value
