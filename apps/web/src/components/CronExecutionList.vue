@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { CronExecution } from '@devtask/shared'
+import { formatTime } from '../utils/format-time'
 
 const props = defineProps<{
   /** 执行记录 */
@@ -84,22 +85,14 @@ function statusLabel(status: CronExecution['status']): string {
 }
 
 /**
- * 格式化时间为本地可读文本。
- * @param value ISO 时间
- * @returns 本地时间文本
- */
-function formatTime(value: string): string {
-  return new Date(value).toLocaleString()
-}
-
-/**
  * 计算耗时文本。
  * @param execution 执行记录
  * @returns 耗时文本；缺少结束时间时返回占位
  */
 function durationText(execution: CronExecution): string {
   if (!execution.finishedAt) return '进行中'
-  const milliseconds = new Date(execution.finishedAt).getTime() - new Date(execution.startedAt).getTime()
+  const milliseconds =
+    new Date(execution.finishedAt).getTime() - new Date(execution.startedAt).getTime()
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '未知'
   if (milliseconds < 60_000) return `${Math.round(milliseconds / 1000)} 秒`
   return `${Math.round(milliseconds / 60_000)} 分钟`
@@ -110,7 +103,9 @@ function durationText(execution: CronExecution): string {
   <div class="cron-executions">
     <div class="cron-executions-head">
       <strong>执行记录</strong>
-      <span class="tag" :class="props.source === 'api' ? 'tag-success' : 'tag-warning'">{{ sourceLabel }}</span>
+      <span class="tag" :class="props.source === 'api' ? 'tag-success' : 'tag-warning'">{{
+        sourceLabel
+      }}</span>
       <span class="cron-executions-count">{{ props.executions.length }} 条</span>
     </div>
     <p v-if="props.warning" class="cron-executions-warning" role="status">{{ props.warning }}</p>
@@ -122,24 +117,47 @@ function durationText(execution: CronExecution): string {
         <el-option label="成功" value="succeeded" />
         <el-option label="失败" value="failed" />
       </el-select>
-      <el-input v-model="keyword" size="small" placeholder="匹配 runId / 错误" clearable @keyup.enter="applyFilter" />
-      <el-button size="small" type="primary" plain :disabled="!canFilter" @click="applyFilter">筛选</el-button>
+      <el-input
+        v-model="keyword"
+        size="small"
+        placeholder="匹配 runId / 错误"
+        clearable
+        @keyup.enter="applyFilter"
+      />
+      <el-button size="small" type="primary" plain :disabled="!canFilter" @click="applyFilter"
+        >筛选</el-button
+      >
       <el-button size="small" :disabled="!canFilter" @click="clearFilter">清空</el-button>
     </div>
 
     <p v-if="props.error" class="mapping-error" role="alert">{{ props.error }}</p>
-    <div v-if="props.loading && !props.executions.length" class="empty-compact">正在读取执行记录…</div>
+    <div v-if="props.loading && !props.executions.length" class="empty-compact">
+      正在读取执行记录…
+    </div>
     <ol v-else-if="!isEmpty" class="cron-timeline">
       <li v-for="execution in props.executions" :key="execution.id" class="cron-timeline-item">
-        <span class="status-dot" :class="execution.status === 'running' ? 'is-active' : execution.status === 'failed' ? 'is-error' : ''" />
+        <span
+          class="status-dot"
+          :class="
+            execution.status === 'running'
+              ? 'is-active'
+              : execution.status === 'failed'
+                ? 'is-error'
+                : ''
+          "
+        />
         <div class="cron-timeline-body">
           <div class="cron-timeline-line">
-            <span class="tag" :class="statusClass(execution.status)">{{ statusLabel(execution.status) }}</span>
+            <span class="tag" :class="statusClass(execution.status)">{{
+              statusLabel(execution.status)
+            }}</span>
             <strong>{{ formatTime(execution.startedAt) }}</strong>
             <small>耗时 {{ durationText(execution) }}</small>
             <small v-if="execution.runId" class="cron-run-id">
               runId {{ execution.runId }}
-              <el-button link type="primary" size="small" @click="emit('copy', execution.runId)">复制</el-button>
+              <el-button link type="primary" size="small" @click="emit('copy', execution.runId)"
+                >复制</el-button
+              >
             </small>
           </div>
           <p v-if="execution.error" class="cron-timeline-error">{{ execution.error }}</p>
@@ -148,6 +166,8 @@ function durationText(execution: CronExecution): string {
     </ol>
     <div v-else class="empty-compact">该任务还没有执行记录。</div>
 
-    <el-button v-if="props.hasMore" size="small" :loading="props.loading" @click="emit('more')">加载更多</el-button>
+    <el-button v-if="props.hasMore" size="small" :loading="props.loading" @click="emit('more')"
+      >加载更多</el-button
+    >
   </div>
 </template>

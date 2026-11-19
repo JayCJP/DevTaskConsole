@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { JobDetail } from '@devtask/shared'
+import { formatTime } from '../utils/format-time'
 
 const props = defineProps<{
   /** 实例详情；未加载时缺省 */
@@ -23,18 +24,14 @@ const emit = defineEmits<{
 }>()
 
 /** 是否有可展示的详情内容 */
-const hasContent = computed(() => Boolean(
-  props.detail?.detail || props.detail?.needs || props.detail?.suggestedReply || props.detail?.startedAt,
-))
-
-/**
- * 格式化 Unix 毫秒时间戳。
- * @param value 毫秒时间戳
- * @returns 本地时间字符串；缺失时返回占位符
- */
-function formatTime(value?: number): string {
-  return value ? new Date(value).toLocaleString() : '未知'
-}
+const hasContent = computed(() =>
+  Boolean(
+    props.detail?.detail ||
+    props.detail?.needs ||
+    props.detail?.suggestedReply ||
+    props.detail?.startedAt,
+  ),
+)
 
 /** 起止时间摘要 */
 const timeSummary = computed(() => {
@@ -51,7 +48,9 @@ const timeSummary = computed(() => {
         <el-button size="small" :loading="props.pinSaving" @click="emit('toggle-pin')">
           {{ props.pinned ? '取消置顶' : '置顶该实例' }}
         </el-button>
-        <a v-if="props.detail?.webUrl" :href="props.detail.webUrl" target="_blank" rel="noreferrer">打开原页面</a>
+        <a v-if="props.detail?.webUrl" :href="props.detail.webUrl" target="_blank" rel="noreferrer"
+          >打开原页面</a
+        >
       </div>
     </div>
 
@@ -74,7 +73,9 @@ const timeSummary = computed(() => {
           填入回复框
         </el-button>
       </div>
-      <small class="job-detail-time">{{ timeSummary }}<span v-if="props.detail?.settled"> · 已终结</span></small>
+      <small class="job-detail-time"
+        >{{ timeSummary }}<span v-if="props.detail?.settled"> · 已终结</span></small
+      >
     </template>
   </section>
 </template>

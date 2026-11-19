@@ -49,15 +49,22 @@ import { useCronActions } from '../composables/useCronActions'
 import { useCronDispatches, type DispatchOutcome } from '../composables/useCronDispatches'
 import { useCronExecutions } from '../composables/useCronExecutions'
 import { useActionToasts } from '../composables/useActionToasts'
-import { buildInboxAnswerText, splitSuggestion, useInboxAnswers } from '../composables/useInboxAnswers'
+import {
+  buildInboxAnswerText,
+  splitSuggestion,
+  useInboxAnswers,
+} from '../composables/useInboxAnswers'
 import { useJobExtras } from '../composables/useJobExtras'
 import { useServiceLifecycle, type StoryServiceInfo } from '../composables/useServiceLifecycle'
 import { useStoryUpload, type UploadedAsset } from '../composables/useStoryUpload'
 import { useConsoleStore } from '../stores/console'
 import { buildMappingRows } from '../utils/application-mapping'
+import { CHANNEL_CATALOG } from '../utils/channels'
+import { copyToClipboard } from '../utils/clipboard'
+import { formatTime } from '../utils/format-time'
+import { mrStatusClass, mrStatusLabel } from '../utils/mr-status'
 
 export function useConsole() {
-
   /* ------------------------- 共享基础：路由、快照、抽屉、刷新分发 ------------------------- */
 
   const route = useRoute()
@@ -66,9 +73,23 @@ export function useConsole() {
   /** 看板：TAPD 需求 × 本地工作区绑定 */
   const board = reactive(useBoardStories())
   const selectedRequirement = ref<Requirement | null>(null)
-  const selectedBugs = computed(() => store.snapshot?.bugs.filter((bug) => bug.storyId === selectedRequirement.value?.storyId) ?? [])
-  const selectedHarnessBugs = computed(() => store.snapshot?.harnessBugs.filter((bug) => bug.storyId === selectedRequirement.value?.storyId) ?? [])
-  const selectedQuestions = computed(() => store.snapshot?.openQuestions.filter((question) => question.storyId === selectedRequirement.value?.storyId) ?? [])
+  const selectedBugs = computed(
+    () =>
+      store.snapshot?.bugs.filter((bug) => bug.storyId === selectedRequirement.value?.storyId) ??
+      [],
+  )
+  const selectedHarnessBugs = computed(
+    () =>
+      store.snapshot?.harnessBugs.filter(
+        (bug) => bug.storyId === selectedRequirement.value?.storyId,
+      ) ?? [],
+  )
+  const selectedQuestions = computed(
+    () =>
+      store.snapshot?.openQuestions.filter(
+        (question) => question.storyId === selectedRequirement.value?.storyId,
+      ) ?? [],
+  )
   const tapdAvailable = computed(() => store.snapshot?.channels.tapd?.ok ?? false)
   /** 快照是否已至少加载过一次；模板通过它区分「尚未加载」与「加载完成但无数据」 */
   const snapshotLoaded = computed(() => store.loaded)
@@ -130,7 +151,10 @@ export function useConsole() {
       await refreshSnapshot(true)
     }
   }
-  const gitLabProjectSchema = z.object({ id: z.number().int().positive(), pathWithNamespace: z.string() })
+  const gitLabProjectSchema = z.object({
+    id: z.number().int().positive(),
+    pathWithNamespace: z.string(),
+  })
 
   const detailOpen = computed({
     get: () => selectedRequirement.value !== null,
@@ -178,11 +202,15 @@ export function useConsole() {
   /** 新增映射时可选的仓库：扫描到的候选中排除已有差异映射的仓库 */
   const mappingRepoOptions = computed(() => {
     const mapped = new Set(applicationMappings.value.map((mapping) => mapping.repoName))
-    return repositoryCandidates.value.map((candidate) => candidate.name).filter((name) => !mapped.has(name))
+    return repositoryCandidates.value
+      .map((candidate) => candidate.name)
+      .filter((name) => !mapped.has(name))
   })
 
   /** 弹窗标题：编辑时带仓库名，便于确认操作对象 */
-  const mappingDialogTitle = computed(() => mappingEditingRepo.value ? `编辑映射 · ${mappingEditingRepo.value}` : '新增映射')
+  const mappingDialogTitle = computed(() =>
+    mappingEditingRepo.value ? `编辑映射 · ${mappingEditingRepo.value}` : '新增映射',
+  )
 
   /**
    * 表单是否偏离默认约定。与默认一致时无需落盘，避免生成无意义的记录。
@@ -190,18 +218,26 @@ export function useConsole() {
   const mappingFormChanged = computed(() => {
     const form = mappingForm.value
     const repoName = form.repoName.trim()
-    return typeof form.gitlabProjectId === 'number'
-      || (form.devopsApp.trim() !== '' && form.devopsApp.trim() !== repoName)
-      || (form.devopsGroup.trim() !== '' && form.devopsGroup.trim() !== defaultDevOpsGroup)
+    return (
+      typeof form.gitlabProjectId === 'number' ||
+      (form.devopsApp.trim() !== '' && form.devopsApp.trim() !== repoName) ||
+      (form.devopsGroup.trim() !== '' && form.devopsGroup.trim() !== defaultDevOpsGroup)
+    )
   })
 
   /** 是否允许提交映射表单 */
-  const canSubmitMappingForm = computed(() =>
-    mappingForm.value.repoName.trim().length > 0 && mappingFormChanged.value && !mappingSaving.value)
+  const canSubmitMappingForm = computed(
+    () =>
+      mappingForm.value.repoName.trim().length > 0 &&
+      mappingFormChanged.value &&
+      !mappingSaving.value,
+  )
 
   /** 扫描完成但没有候选仓库时才提示，避免与加载态、错误态叠加 */
-  const showNoRepositoryHint = computed(() =>
-    !candidatesLoading.value && repositoryCandidates.value.length === 0 && !candidatesError.value)
+  const showNoRepositoryHint = computed(
+    () =>
+      !candidatesLoading.value && repositoryCandidates.value.length === 0 && !candidatesError.value,
+  )
   const workspaceName = ref('')
   const branch = ref('')
   const baseBranch = ref('')
@@ -212,7 +248,11 @@ export function useConsole() {
   /** 新建工作区时可选的需求名称，TAPD 查询不到时用于展示 */
   const workspaceTapdTitle = ref('')
   /** 本轮工作区创建待写入的绑定；目标工作区名在提交时快照，避免轮询回调期间被新 job 覆盖 */
-  let pendingWorkspaceBinding: { tapdStoryId: string; storyTitle: string; workspaceName: string } | null = null
+  let pendingWorkspaceBinding: {
+    tapdStoryId: string
+    storyTitle: string
+    workspaceName: string
+  } | null = null
   const previewResult = ref<WorkspacePreview | null>(null)
   const workspaceJob = ref<WorkspaceInitializationJob | null>(null)
   const workspaceError = ref('')
@@ -256,7 +296,7 @@ export function useConsole() {
    * @returns 中文状态文案
    */
   function mergeRequestStatusLabel(status: WorkspaceMergeRequestCreateItem['status']): string {
-    return { created: '已创建', exists: '已存在', failed: '失败' }[status]
+    return mrStatusLabel(status)
   }
 
   /**
@@ -265,7 +305,7 @@ export function useConsole() {
    * @returns 标签样式类名
    */
   function mergeRequestStatusClass(status: WorkspaceMergeRequestCreateItem['status']): string {
-    return { created: 'tag-success', exists: 'tag-warning', failed: 'tag-danger' }[status]
+    return mrStatusClass(status)
   }
 
   /**
@@ -280,7 +320,9 @@ export function useConsole() {
   })
 
   /** 删除按钮是否可用：必须完整输入确认文案 */
-  const canConfirmDelete = computed(() => deleteConfirmText.value.trim() === deleteConfirmationPhrase)
+  const canConfirmDelete = computed(
+    () => deleteConfirmText.value.trim() === deleteConfirmationPhrase,
+  )
 
   /** 新建弹窗中的进度日志（DryRun 或真实初始化任务） */
   const workspaceLogs = computed(() => workspaceJob.value?.logs ?? previewResult.value?.logs ?? [])
@@ -297,14 +339,20 @@ export function useConsole() {
   const workspaceBusy = computed(() => workspaceSubmitting.value || workspaceRunning.value)
 
   /** 已选项目数量的展示文案 */
-  const selectedRepositoryLabel = computed(() => `已选择 ${selectedRepositoryNames.value.length} 个`)
+  const selectedRepositoryLabel = computed(
+    () => `已选择 ${selectedRepositoryNames.value.length} 个`,
+  )
   /**
    * Story 服务生命周期与运行期监督。
    * 服务的启动、停止、删除映射与监督事件都由它统一管理，页面只负责渲染。
    */
   /* ------------------------- 实例页：服务生命周期与运行期监督 ------------------------- */
 
-  const lifecycle = useServiceLifecycle({ onChange: async () => { await store.refresh() } })
+  const lifecycle = useServiceLifecycle({
+    onChange: async () => {
+      await store.refresh()
+    },
+  })
   /** Story ID → 服务状态（模板沿用既有命名） */
   const storyServices = lifecycle.services
   /** 正在操作的 Story ID */
@@ -371,7 +419,9 @@ export function useConsole() {
   const cronStatusFilter = ref<'all' | 'enabled' | 'paused' | 'attention'>('all')
   /** 派发轮次：用于展示未归档轮次并提供归档入口 */
   // cron 写操作会改变本地任务/轮次，发 force 让服务端重建 local 段；runtime 本就实时
-  const cronDispatches = useCronDispatches(async () => { await store.refresh(true) })
+  const cronDispatches = useCronDispatches(async () => {
+    await store.refresh(true)
+  })
   /** 定时任务写操作：乐观更新、失败回滚与撤销提示 */
   const cronActions = useCronActions({
     // 写操作会改变任务与轮次状态，两者都要刷新
@@ -379,7 +429,9 @@ export function useConsole() {
       await store.refresh(true)
       await cronDispatches.refresh()
     },
-    onError: (message: string) => { cronError.value = message },
+    onError: (message: string) => {
+      cronError.value = message
+    },
   })
   /** 行内执行记录 */
   const cronExecutions = useCronExecutions()
@@ -398,7 +450,9 @@ export function useConsole() {
   /** 审计抽屉开关 */
   const auditOpen = ref(false)
   /** 审计流水与撤销 */
-  const auditTrail = useAuditTrail(async () => { await store.refresh(true) })
+  const auditTrail = useAuditTrail(async () => {
+    await store.refresh(true)
+  })
   /* 组合式函数返回的 ref 需要顶层绑定，模板才会自动解包 */
   /** 执行记录列表 */
   const cronExecutionRows = cronExecutions.executions
@@ -503,7 +557,13 @@ export function useConsole() {
   const requirements = computed(() => {
     const rows = store.snapshot?.requirements ?? []
     const query = search.value.trim().toLocaleLowerCase()
-    return query ? rows.filter((row) => row.title.toLocaleLowerCase().includes(query) || row.storyId.toLocaleLowerCase().includes(query)) : rows
+    return query
+      ? rows.filter(
+          (row) =>
+            row.title.toLocaleLowerCase().includes(query) ||
+            row.storyId.toLocaleLowerCase().includes(query),
+        )
+      : rows
   })
   const inbox = computed(() => store.snapshot?.inbox ?? [])
 
@@ -548,7 +608,12 @@ export function useConsole() {
   /* ------------------------- 收件箱：分组、建议稿与答复汇总 ------------------------- */
 
   const inboxGroups = computed<InboxWorkspaceGroup[]>(() => {
-    const titles = new Map((store.snapshot?.requirements ?? []).map((requirement) => [requirement.storyId, requirement.title]))
+    const titles = new Map(
+      (store.snapshot?.requirements ?? []).map((requirement) => [
+        requirement.storyId,
+        requirement.title,
+      ]),
+    )
     const itemsByStory = new Map<string, InboxItem[]>()
     const unattachedItems: InboxItem[] = []
 
@@ -585,11 +650,18 @@ export function useConsole() {
       const items = itemsByStory.get(requirement.storyId)
       if (!items?.length) continue
       itemsByStory.delete(requirement.storyId)
-      const story = toStoryGroup(`inbox:${pipeline.path}:${requirement.storyId}`, requirement.storyId, items)
+      const story = toStoryGroup(
+        `inbox:${pipeline.path}:${requirement.storyId}`,
+        requirement.storyId,
+        items,
+      )
       groups.push({
         key: `inbox:${pipeline.path}`,
         name: pipeline.name,
-        pathHint: requirement.workspacePath && requirement.workspacePath !== pipeline.name ? requirement.workspacePath : '',
+        pathHint:
+          requirement.workspacePath && requirement.workspacePath !== pipeline.name
+            ? requirement.workspacePath
+            : '',
         synced: true,
         itemCount: items.length,
         highCount: story.highCount,
@@ -601,7 +673,8 @@ export function useConsole() {
     const leftovers = [...itemsByStory.values()].flat()
     if (leftovers.length || unattachedItems.length) {
       const stories = [...itemsByStory.entries()].map(([storyId, items]) =>
-        toStoryGroup(`unsynced:${storyId}`, storyId, items))
+        toStoryGroup(`unsynced:${storyId}`, storyId, items),
+      )
       if (unattachedItems.length) {
         stories.push(toStoryGroup('unsynced:no-story', '', unattachedItems))
       }
@@ -709,45 +782,49 @@ export function useConsole() {
       return
     }
     const text = buildInboxAnswerText(items, inboxAnswerMap.value)
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-      } else {
-        const helper = document.createElement('textarea')
-        helper.value = text
-        helper.setAttribute('readonly', '')
-        helper.style.position = 'fixed'
-        helper.style.opacity = '0'
-        document.body.appendChild(helper)
-        helper.select()
-        const ok = document.execCommand('copy')
-        document.body.removeChild(helper)
-        if (!ok) throw new Error('execCommand 返回 false')
-      }
-      actionToasts.notify(`已复制「${items[0]?.requirementId ?? 'Story'}」的 ${count} 条答案。`, 'success')
-    } catch {
+    if (await copyToClipboard(text)) {
+      actionToasts.notify(
+        `已复制「${items[0]?.requirementId ?? 'Story'}」的 ${count} 条答案。`,
+        'success',
+      )
+    } else {
       actionToasts.notify('复制失败，请手动选择文本。', 'error')
     }
   }
 
   /** 定时任务列表：快照事实 + 本地乐观覆盖（覆盖仅用于写操作期间的即时反馈） */
-  const crons = computed<Cron[]>(() => (store.snapshot?.crons ?? []).map((cron) => {
-    const override = cronActions.overrides.value[cron.id]
-    return override ? { ...cron, ...override } : cron
-  }))
+  const crons = computed<Cron[]>(() =>
+    (store.snapshot?.crons ?? []).map((cron) => {
+      const override = cronActions.overrides.value[cron.id]
+      return override ? { ...cron, ...override } : cron
+    }),
+  )
   const jobs = computed(() => [...(store.snapshot?.jobs ?? []), ...storyJobs.value])
-  const storyServiceRequirements = computed(() => requirements.value.filter((requirement) => requirement.workspacePath))
+  const storyServiceRequirements = computed(() =>
+    requirements.value.filter((requirement) => requirement.workspacePath),
+  )
   /** 工作区流水线视图：一个工作区一条流水线，最多一个 Story */
-  const workspacePipelines = computed<WorkspacePipeline[]>(() => store.snapshot?.workspacePipelines ?? [])
+  const workspacePipelines = computed<WorkspacePipeline[]>(
+    () => store.snapshot?.workspacePipelines ?? [],
+  )
   /** 流水线页计数：已经识别到 Story 的工作区数量 */
-  const pipelineStoryCount = computed(() => workspacePipelines.value.filter((pipeline) => pipeline.story).length)
+  const pipelineStoryCount = computed(
+    () => workspacePipelines.value.filter((pipeline) => pipeline.story).length,
+  )
   /** 已被工作区流水线认领的定时任务 ID，用于兜底展示未归属任务 */
-  const assignedCronIds = computed(() => new Set(workspacePipelines.value.flatMap((pipeline) => [
-    ...pipeline.crons.map((cron) => cron.id),
-    ...(pipeline.story?.crons ?? []).map((cron) => cron.id),
-  ])))
+  const assignedCronIds = computed(
+    () =>
+      new Set(
+        workspacePipelines.value.flatMap((pipeline) => [
+          ...pipeline.crons.map((cron) => cron.id),
+          ...(pipeline.story?.crons ?? []).map((cron) => cron.id),
+        ]),
+      ),
+  )
   /** 未能归属到工作区项目的定时任务（例如工作区扫描失败时的兜底数据） */
-  const unassignedCrons = computed<Cron[]>(() => crons.value.filter((cron) => !assignedCronIds.value.has(cron.id)))
+  const unassignedCrons = computed<Cron[]>(() =>
+    crons.value.filter((cron) => !assignedCronIds.value.has(cron.id)),
+  )
   const activeWorkflows = computed(() => store.snapshot?.harnessActive ?? [])
   /**
    * 已知数据通道的展示顺序与中文名。
@@ -756,14 +833,7 @@ export function useConsole() {
    */
   /* ------------------------- 通道状态展示（看板 / 连接与配置共用） ------------------------- */
 
-  const channelCatalog = [
-    { key: 'tapd', label: 'TAPD', purpose: '需求与缺陷' },
-    { key: 'gitlab', label: 'GitLab', purpose: '合并请求' },
-    { key: 'devops', label: 'DevOps', purpose: '构建与部署' },
-    { key: 'codebuddy', label: 'CodeBuddy', purpose: '实例与轮次' },
-    { key: 'crons', label: '定时任务', purpose: 'scheduled_tasks.json' },
-    { key: 'localHarness', label: '本地 Harness', purpose: 'e2e-state 与工作区' },
-  ] as const
+  const channelCatalog = CHANNEL_CATALOG
 
   /**
    * 把上游原始报错翻译成「谁出的问题 + 可能原因 + 该做什么」。
@@ -776,10 +846,20 @@ export function useConsole() {
     // 本项目 MCP 客户端 / TAPD 适配器自身生成的错误文案不来自上游 HTTP，
     // 不匹配 4xx/5xx，过去会落到「未识别的错误」兜底。需与后端实际抛出的文案保持一致。
     if (/missing required read-only tools|required read-only tools/.test(text)) {
-      return { reason: 'MCP 服务缺少本控制台要求的只读工具', action: '确认 mcp-server-tapd 版本与 requiredReadTools 清单一致后重新检测' }
+      return {
+        reason: 'MCP 服务缺少本控制台要求的只读工具',
+        action: '确认 mcp-server-tapd 版本与 requiredReadTools 清单一致后重新检测',
+      }
     }
-    if (/mcp connection failed|mcp 启动失败|mcp.*is not configured|mcp.*connect|handshake|spawn.*failed/.test(text)) {
-      return { reason: 'MCP 服务连接或握手失败（可能是限流、进程启动失败或配置错误）', action: '确认本机 MCP 服务可用后重新检测' }
+    if (
+      /mcp connection failed|mcp 启动失败|mcp.*is not configured|mcp.*connect|handshake|spawn.*failed/.test(
+        text,
+      )
+    ) {
+      return {
+        reason: 'MCP 服务连接或握手失败（可能是限流、进程启动失败或配置错误）',
+        action: '确认本机 MCP 服务可用后重新检测',
+      }
     }
     if (/tapd is not configured|not configured|no config|未配置/.test(text)) {
       return { reason: '尚未配置该通道', action: '在「连接与配置」补齐后再检测' }
@@ -794,7 +874,10 @@ export function useConsole() {
       return { reason: '网络超时或服务未启动', action: '确认本机网络与该服务可用后重试' }
     }
     if (/request failed|failed to fetch|network error|\b5\d\d\b|internal server/.test(text)) {
-      return { reason: '上游服务返回了失败响应，可能是令牌过期、配额用尽或该服务暂时不可用', action: '先到「连接与配置」重新检测，确认是哪一条通道失败' }
+      return {
+        reason: '上游服务返回了失败响应，可能是令牌过期、配额用尽或该服务暂时不可用',
+        action: '先到「连接与配置」重新检测，确认是哪一条通道失败',
+      }
     }
     return { reason: '上游返回了未识别的错误', action: '请查看下方原始错误信息并据此排查' }
   }
@@ -826,7 +909,12 @@ export function useConsole() {
       key: entry.key,
       label: entry.label,
       purpose: entry.purpose,
-      channel: (present as Record<string, { ok: boolean; error?: string; fetchedAt?: string; stale?: boolean } | undefined>)[entry.key],
+      channel: (
+        present as Record<
+          string,
+          { ok: boolean; error?: string; fetchedAt?: string; stale?: boolean } | undefined
+        >
+      )[entry.key],
     }))
     const extra = Object.entries(present)
       .filter(([key]) => !channelCatalog.some((entry) => entry.key === key))
@@ -863,11 +951,13 @@ export function useConsole() {
 
   function jobsByStory(storyId: string): Job[] {
     const pinned = new Set(jobExtras.prefs.value.pinned)
-    return jobs.value
-      .filter((job) => job.storyId === storyId)
-      .filter((job) => jobMatchesFilter(job))
-      // 置顶的实例排在前面，多个实例时不用翻找正在关注的那个
-      .sort((left, right) => Number(pinned.has(right.id)) - Number(pinned.has(left.id)))
+    return (
+      jobs.value
+        .filter((job) => job.storyId === storyId)
+        .filter((job) => jobMatchesFilter(job))
+        // 置顶的实例排在前面，多个实例时不用翻找正在关注的那个
+        .sort((left, right) => Number(pinned.has(right.id)) - Number(pinned.has(left.id)))
+    )
   }
 
   /**
@@ -937,9 +1027,9 @@ export function useConsole() {
   }
 
   /** 当前选中实例是否已置顶 */
-  const selectedJobPinned = computed(() => (
-    selectedJob.value ? jobExtras.prefs.value.pinned.includes(selectedJob.value.id) : false
-  ))
+  const selectedJobPinned = computed(() =>
+    selectedJob.value ? jobExtras.prefs.value.pinned.includes(selectedJob.value.id) : false,
+  )
 
   /**
    * 切换当前实例的置顶状态。
@@ -1036,20 +1126,22 @@ export function useConsole() {
    * 实例页分组：以工作区为根，只展示第一个项目下识别到的 Story。
    * @returns 实例页分组数组
    */
-  const instanceGroups = computed<InstanceGroup[]>(() => workspacePipelines.value.map((pipeline) => ({
-    key: `instance:${pipeline.path}`,
-    name: pipeline.name,
-    path: pipeline.path,
-    ...(pipeline.primaryProject
-      ? {
-        project: {
-          name: pipeline.primaryProject.name,
-          ...(pipeline.primaryProject.branch ? { branch: pipeline.primaryProject.branch } : {}),
-        },
-      }
-      : {}),
-    stories: pipeline.story ? [pipeline.story.requirement] : [],
-  })))
+  const instanceGroups = computed<InstanceGroup[]>(() =>
+    workspacePipelines.value.map((pipeline) => ({
+      key: `instance:${pipeline.path}`,
+      name: pipeline.name,
+      path: pipeline.path,
+      ...(pipeline.primaryProject
+        ? {
+            project: {
+              name: pipeline.primaryProject.name,
+              ...(pipeline.primaryProject.branch ? { branch: pipeline.primaryProject.branch } : {}),
+            },
+          }
+        : {}),
+      stories: pipeline.story ? [pipeline.story.requirement] : [],
+    })),
+  )
 
   /**
    * 各实例分组的空态引导文案（纯静态文字，无跳转交互）。
@@ -1061,7 +1153,8 @@ export function useConsole() {
     const guides: Record<string, string> = {}
     for (const group of instanceGroups.value) {
       const subject = group.project?.name ? `项目 ${group.project.name} ` : '当前工作区'
-      guides[group.key] = `${subject}下还没有 Story。点「新建 Story」在右侧填写信息创建骨架，即可启动实例并在对话中执行 /start 补全需求。`
+      guides[group.key] =
+        `${subject}下还没有 Story。点「新建 Story」在右侧填写信息创建骨架，即可启动实例并在对话中执行 /start 补全需求。`
     }
     return guides
   })
@@ -1106,13 +1199,7 @@ export function useConsole() {
     storyDraft.value = { storyId: '', title: '' }
     storyCreateError.value = ''
     selectedStoryId.value = ''
-    if (selectedJob.value) {
-      jobStreamController?.abort()
-      selectedJob.value = null
-      jobExtras.clearDetail()
-      jobTranscript.value = ''
-      jobOutput.value = ''
-    }
+    if (selectedJob.value) closeCurrentJob()
 
     // 自动带出 TAPD 关联：board 仅在看板页加载，实例页可能未加载，这里按需补拉
     storyTapdBinding.value = { state: 'pending' }
@@ -1123,7 +1210,8 @@ export function useConsole() {
       const stories: BoardStory[] = board.stories
       const binding = stories.find((story) => story.workspaceName === group.name)
       // 写入前二次校验：目标工作区必须与当前锁定一致，否则丢弃旧推导
-      if (generation !== storyBindingGeneration || storyTargetWorkspace.value.name !== group.name) return
+      if (generation !== storyBindingGeneration || storyTargetWorkspace.value.name !== group.name)
+        return
       if (binding?.storyId) {
         storyTapdBinding.value = {
           state: 'bound',
@@ -1176,13 +1264,14 @@ export function useConsole() {
     try {
       // 组装 TAPD 来源：仅在推导出绑定时携带，后端据此写 sources.storyIdInTapd
       const binding = storyTapdBinding.value
-      const sources = binding.state === 'bound'
-        ? {
-          storyIdInTapd: binding.storyIdInTapd,
-          ...(binding.tapdUrl ? { tapdUrl: binding.tapdUrl } : {}),
-          ...(binding.owner ? { owner: binding.owner } : {}),
-        }
-        : undefined
+      const sources =
+        binding.state === 'bound'
+          ? {
+              storyIdInTapd: binding.storyIdInTapd,
+              ...(binding.tapdUrl ? { tapdUrl: binding.tapdUrl } : {}),
+              ...(binding.owner ? { owner: binding.owner } : {}),
+            }
+          : undefined
       await apiRequest('/api/v1/stories', {
         method: 'POST',
         body: JSON.stringify({
@@ -1197,7 +1286,10 @@ export function useConsole() {
       // 创建完成后退出创建态并自动聚焦新 Story，右侧切换为实例操作面板
       selectedEmptyGroupKey.value = ''
       selectedStoryId.value = storyId
-      actionToasts.notify(`Story「${title}」已创建，现在可以启动实例并在对话中执行 /start ${storyId}`, 'success')
+      actionToasts.notify(
+        `Story「${title}」已创建，现在可以启动实例并在对话中执行 /start ${storyId}`,
+        'success',
+      )
     } catch (cause) {
       storyCreateError.value = cause instanceof Error ? cause.message : '创建 Story 失败。'
     } finally {
@@ -1216,11 +1308,11 @@ export function useConsole() {
       path: pipeline.path,
       ...(pipeline.primaryProject
         ? {
-          project: {
-            name: pipeline.primaryProject.name,
-            ...(pipeline.primaryProject.branch ? { branch: pipeline.primaryProject.branch } : {}),
-          },
-        }
+            project: {
+              name: pipeline.primaryProject.name,
+              ...(pipeline.primaryProject.branch ? { branch: pipeline.primaryProject.branch } : {}),
+            },
+          }
         : {}),
       // 没有任务的 Story 也保留，确保「新建任务」入口不会随空列表一起消失
       stories: pipeline.story
@@ -1260,9 +1352,9 @@ export function useConsole() {
   })
 
   /** 当前 Story 的服务登记（未启动时缺省） */
-  const currentService = computed<StoryServiceInfo | undefined>(() => (
-    selectedStoryId.value ? storyServices.value[selectedStoryId.value] : undefined
-  ))
+  const currentService = computed<StoryServiceInfo | undefined>(() =>
+    selectedStoryId.value ? storyServices.value[selectedStoryId.value] : undefined,
+  )
 
   /** 当前服务的状态点样式 */
   const currentServiceDot = computed(() => {
@@ -1292,9 +1384,9 @@ export function useConsole() {
   })
 
   /** 当前服务的端口文案 */
-  const currentPortLabel = computed(() => (
-    currentService.value?.port ? `端口 ${currentService.value.port}` : '端口未分配'
-  ))
+  const currentPortLabel = computed(() =>
+    currentService.value?.port ? `端口 ${currentService.value.port}` : '端口未分配',
+  )
 
   /**
    * 当前 Story 对应的 CodeBuddy 实例 Web 入口。
@@ -1311,7 +1403,9 @@ export function useConsole() {
   const currentServiceRunning = computed(() => currentService.value?.status === 'running')
 
   /** 当前选中实例的状态徽标样式 */
-  const currentJobClass = computed(() => (selectedJob.value?.status === 'busy' ? 'tag-success' : ''))
+  const currentJobClass = computed(() =>
+    selectedJob.value?.status === 'busy' ? 'tag-success' : '',
+  )
 
   /** 当前选中实例的状态文案 */
   const currentJobLabel = computed(() => (selectedJob.value?.status === 'busy' ? '执行中' : '空闲'))
@@ -1328,7 +1422,9 @@ export function useConsole() {
   /** 运行中的任务数量 */
   const activeCronCount = computed(() => crons.value.filter((cron) => cron.enabled === true).length)
   /** 已暂停的任务数量 */
-  const pausedCronCount = computed(() => crons.value.filter((cron) => cron.enabled === false).length)
+  const pausedCronCount = computed(
+    () => crons.value.filter((cron) => cron.enabled === false).length,
+  )
 
   /**
    * 判断任务是否缺少必要配置或尚未完成归属校验。
@@ -1349,13 +1445,21 @@ export function useConsole() {
    * @returns 匹配时返回 true
    */
   function matchesCronFilters(cron: Cron, query: string): boolean {
-    const matchesStatus = cronStatusFilter.value === 'all'
-      || (cronStatusFilter.value === 'enabled' && cron.enabled === true)
-      || (cronStatusFilter.value === 'paused' && cron.enabled === false)
-      || (cronStatusFilter.value === 'attention' && cronNeedsAttention(cron))
+    const matchesStatus =
+      cronStatusFilter.value === 'all' ||
+      (cronStatusFilter.value === 'enabled' && cron.enabled === true) ||
+      (cronStatusFilter.value === 'paused' && cron.enabled === false) ||
+      (cronStatusFilter.value === 'attention' && cronNeedsAttention(cron))
     if (!matchesStatus) return false
     if (!query) return true
-    const searchable = [cron.id, cron.storyTitle, cron.storyId, cron.cron, cron.promptFirstLine, cron.ownerSessionId]
+    const searchable = [
+      cron.id,
+      cron.storyTitle,
+      cron.storyId,
+      cron.cron,
+      cron.promptFirstLine,
+      cron.ownerSessionId,
+    ]
       .filter(Boolean)
       .join(' ')
       .toLocaleLowerCase()
@@ -1366,25 +1470,42 @@ export function useConsole() {
   const visibleCronGroups = computed<CronGroup[]>(() => {
     const query = cronQuery.value.trim().toLocaleLowerCase()
     const hasFilters = Boolean(query) || cronStatusFilter.value !== 'all'
-    return cronGroups.value.map((group) => ({
-      ...group,
-      stories: group.stories.map((story) => ({
-        ...story,
-        crons: story.crons.filter((cron) => matchesCronFilters(cron, query)),
-      })).filter((story) => story.crons.length > 0 || !hasFilters),
-      looseCrons: group.looseCrons.filter((cron) => matchesCronFilters(cron, query)),
-      unassignedCrons: group.unassignedCrons.filter((cron) => matchesCronFilters(cron, query)),
-    })).filter((group) => group.stories.length > 0 || group.looseCrons.length > 0 || group.unassignedCrons.length > 0)
+    return cronGroups.value
+      .map((group) => ({
+        ...group,
+        stories: group.stories
+          .map((story) => ({
+            ...story,
+            crons: story.crons.filter((cron) => matchesCronFilters(cron, query)),
+          }))
+          .filter((story) => story.crons.length > 0 || !hasFilters),
+        looseCrons: group.looseCrons.filter((cron) => matchesCronFilters(cron, query)),
+        unassignedCrons: group.unassignedCrons.filter((cron) => matchesCronFilters(cron, query)),
+      }))
+      .filter(
+        (group) =>
+          group.stories.length > 0 ||
+          group.looseCrons.length > 0 ||
+          group.unassignedCrons.length > 0,
+      )
   })
 
   /** 当前筛选结果中的任务数量 */
-  const filteredCronCount = computed(() => visibleCronGroups.value.reduce((total, group) => (
-    total + group.looseCrons.length + group.unassignedCrons.length
-    + group.stories.reduce((storyTotal, story) => storyTotal + story.crons.length, 0)
-  ), 0))
+  const filteredCronCount = computed(() =>
+    visibleCronGroups.value.reduce(
+      (total, group) =>
+        total +
+        group.looseCrons.length +
+        group.unassignedCrons.length +
+        group.stories.reduce((storyTotal, story) => storyTotal + story.crons.length, 0),
+      0,
+    ),
+  )
 
   /** 是否已设置搜索或筛选条件 */
-  const cronHasActiveFilters = computed(() => Boolean(cronQuery.value.trim()) || cronStatusFilter.value !== 'all')
+  const cronHasActiveFilters = computed(
+    () => Boolean(cronQuery.value.trim()) || cronStatusFilter.value !== 'all',
+  )
 
   /** 清空定时任务搜索与状态筛选。 */
   function resetCronFilters(): void {
@@ -1392,24 +1513,34 @@ export function useConsole() {
     cronStatusFilter.value = 'all'
   }
 
-  const pageHeading = computed(() => page.value === 'tools' ? '连接与配置' : String(route.meta.title ?? 'DevTask'))
+  const pageHeading = computed(() =>
+    page.value === 'tools' ? '连接与配置' : String(route.meta.title ?? 'DevTask'),
+  )
 
-  watch([page, () => store.snapshot?.requirements.length], ([value]) => {
-    if (value === 'workspaces') {
-      void refreshRepositoryCandidates()
-      void refreshWorkspaces()
-    }
-    if (value === 'instances') void refreshStoryServices()
-    // 发布页按工作区列出项目，并按需拉取每个项目的 DevOps 只读数据
-    if (value === 'releases') void prepareReleasePage()
-  }, { immediate: true })
+  watch(
+    [page, () => store.snapshot?.requirements.length],
+    ([value]) => {
+      if (value === 'workspaces') {
+        void refreshRepositoryCandidates()
+        void refreshWorkspaces()
+      }
+      if (value === 'instances') void refreshStoryServices()
+      // 发布页按工作区列出项目，并按需拉取每个项目的 DevOps 只读数据
+      if (value === 'releases') void prepareReleasePage()
+    },
+    { immediate: true },
+  )
 
   // 看板以 TAPD 需求为数据元，与其他页面的本地快照分开拉取。
   // 单独监听 page：若放进上面同时依赖 requirements.length 的 watch，首次快照到达时
   // requirements.length 变化会再次触发，导致刷新页面重复请求看板接口。
-  watch(page, (value) => {
-    if (value === 'board') void board.load()
-  }, { immediate: true })
+  watch(
+    page,
+    (value) => {
+      if (value === 'board') void board.load()
+    },
+    { immediate: true },
+  )
 
   // 刷新页面或直接进入深链接时，确保快照至少拉取一次，避免首屏空数据
   onMounted(() => {
@@ -1433,7 +1564,9 @@ export function useConsole() {
 
   watch(
     [workspaceName, selectedRepositoryNames, branch, baseBranch, skipInstall, skipGraphify],
-    () => { previewResult.value = null },
+    () => {
+      previewResult.value = null
+    },
     { deep: true },
   )
 
@@ -1447,6 +1580,18 @@ export function useConsole() {
 
   function openRequirement(requirement: Requirement): void {
     selectedRequirement.value = requirement
+  }
+
+  /**
+   * 关闭当前实例详情：中止在途日志流、清空选中态与详情/输出缓存。
+   * 切换 Story、选中空工作区等场景共用，避免各处重复同一组清理。
+   */
+  function closeCurrentJob(): void {
+    jobStreamController?.abort()
+    selectedJob.value = null
+    jobExtras.clearDetail()
+    jobTranscript.value = ''
+    jobOutput.value = ''
   }
 
   /**
@@ -1491,7 +1636,9 @@ export function useConsole() {
 
   /** 新建弹层对应的 Story 与 TAPD 上下文；缺失处理人时使用看板当前处理人 */
   const editorRequirement = computed(() => {
-    const requirement = store.snapshot?.requirements.find((item) => item.storyId === editorStoryId.value)
+    const requirement = store.snapshot?.requirements.find(
+      (item) => item.storyId === editorStoryId.value,
+    )
     if (!requirement) return null
     const boardStory = board.stories.find((story) => story.storyId === requirement.tapdStoryId)
     return {
@@ -1508,14 +1655,20 @@ export function useConsole() {
   })
 
   /** 编辑弹层对应的 Story 是否有可用服务端口 */
-  const editorServiceReady = computed(() => storyServices.value[editorStoryId.value]?.status === 'running')
+  const editorServiceReady = computed(
+    () => storyServices.value[editorStoryId.value]?.status === 'running',
+  )
 
   /**
    * 提交编辑弹层：新建走创建接口，编辑走更新接口。
    * @param payload 表达式与可选提示词
    * @returns Promise<void>
    */
-  async function submitCronEditor(payload: { cron: string; prompt?: string; mode?: CronMode }): Promise<void> {
+  async function submitCronEditor(payload: {
+    cron: string
+    prompt?: string
+    mode?: CronMode
+  }): Promise<void> {
     cronSaving.value = true
     cronEditorError.value = ''
     try {
@@ -1524,17 +1677,20 @@ export function useConsole() {
         if (ok) cronEditorOpen.value = false
         return
       }
-      const created = await apiRequest<{ taskId: string | null; warnings?: string[] }>('/api/v1/crons', {
-        method: 'POST',
-        body: JSON.stringify({
-          storyId: editorStoryId.value,
-          cron: payload.cron,
-          prompt: payload.prompt,
-          mode: payload.mode ?? 'query_only',
-          durable: true,
-          expiryDays: 30,
-        }),
-      })
+      const created = await apiRequest<{ taskId: string | null; warnings?: string[] }>(
+        '/api/v1/crons',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            storyId: editorStoryId.value,
+            cron: payload.cron,
+            prompt: payload.prompt,
+            mode: payload.mode ?? 'query_only',
+            durable: true,
+            expiryDays: 30,
+          }),
+        },
+      )
       await store.refresh(true)
       await cronDispatches.refresh()
       cronEditorOpen.value = false
@@ -1588,7 +1744,9 @@ export function useConsole() {
    * @param taskId 任务 ID
    * @returns 未归档轮次；没有时返回 undefined
    */
-  function openDispatchOf(taskId: string): { roundId: string; createdAt: string; label?: string } | undefined {
+  function openDispatchOf(
+    taskId: string,
+  ): { roundId: string; createdAt: string; label?: string } | undefined {
     const round = cronDispatches.openRoundOf(taskId)
     if (!round) return undefined
     return {
@@ -1627,11 +1785,7 @@ export function useConsole() {
    * @returns Promise<void>
    */
   async function copyText(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      // 剪贴板可能被浏览器策略禁用，失败时保持静默
-    }
+    await copyToClipboard(text)
   }
 
   /**
@@ -1657,11 +1811,7 @@ export function useConsole() {
   function focusStory(storyId: string): void {
     selectedStoryId.value = storyId
     if (!selectedJob.value) return
-    jobStreamController?.abort()
-    selectedJob.value = null
-    jobExtras.clearDetail()
-    jobTranscript.value = ''
-    jobOutput.value = ''
+    closeCurrentJob()
     jobError.value = ''
   }
 
@@ -1710,18 +1860,23 @@ export function useConsole() {
     const activeRequirements = storyServiceRequirements.value.filter(
       (requirement) => storyServices.value[requirement.storyId]?.status === 'running',
     )
-    const jobLists = await Promise.all(activeRequirements.map(async (requirement) => {
-      try {
-        return await apiRequest<Job[]>(`/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs`)
-      } catch {
-        return []
-      }
-    }))
+    const jobLists = await Promise.all(
+      activeRequirements.map(async (requirement) => {
+        try {
+          return await apiRequest<Job[]>(
+            `/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs`,
+          )
+        } catch {
+          return []
+        }
+      }),
+    )
     storyJobs.value = jobLists.flat()
   }
 
   /** Bug 修复轮次的补充口径：限定处理人与缺陷状态，并要求按查询+修复流程执行 */
-  const bugFixPromptSuffix = '处理人蔡杰鹏，缺陷状态待解决和重新打开，根据结果使用查询+修复按流程修复bug'
+  const bugFixPromptSuffix =
+    '处理人蔡杰鹏，缺陷状态待解决和重新打开，根据结果使用查询+修复按流程修复bug'
 
   function prepareJob(requirement: Requirement, mode: 'run' | 'fixbugs'): void {
     selectedStoryId.value = requirement.storyId
@@ -1729,9 +1884,10 @@ export function useConsole() {
     selectedResumableSession.value = ''
     jobName.value = `${requirement.title} · ${mode === 'run' ? '需求开发' : 'Bug 修复'}`
     // 修复模式在 harness 入口之后追加本次缺陷口径，避免把无关缺陷纳入本轮
-    jobPrompt.value = mode === 'run'
-      ? `/start ${requirement.storyId}`
-      : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix}`
+    jobPrompt.value =
+      mode === 'run'
+        ? `/start ${requirement.storyId}`
+        : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix}`
     jobError.value = ''
   }
 
@@ -1740,7 +1896,9 @@ export function useConsole() {
     resumableLoading.value = true
     jobError.value = ''
     try {
-      const result: unknown = await apiRequest(`/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs/resumable`)
+      const result: unknown = await apiRequest(
+        `/api/v1/stories/${encodeURIComponent(requirement.storyId)}/jobs/resumable`,
+      )
       resumableSessions.value = resumableSessionSchema.array().parse(result)
       selectedResumableSession.value = resumableSessions.value[0]?.sessionId ?? ''
     } catch (cause) {
@@ -1775,9 +1933,10 @@ export function useConsole() {
    * @returns 可用于直接展示的实例；无法识别时返回 null
    */
   function createdJobOf(payload: unknown): Job | null {
-    const wrapped = payload && typeof payload === 'object' && 'data' in payload
-      ? (payload as { data: unknown }).data
-      : payload
+    const wrapped =
+      payload && typeof payload === 'object' && 'data' in payload
+        ? (payload as { data: unknown }).data
+        : payload
     const candidate = typeof wrapped === 'object' && wrapped !== null ? wrapped : {}
     const parsed = jobSchema.safeParse({ ...candidate, storyId: selectedStoryId.value })
     return parsed.success ? parsed.data : null
@@ -1788,17 +1947,21 @@ export function useConsole() {
     jobActionLoading.value = true
     jobError.value = ''
     try {
-      const created = await apiRequest<unknown>(`/api/v1/stories/${encodeURIComponent(selectedStoryId.value)}/jobs`, {
-        method: 'POST',
-        body: JSON.stringify({ name: jobName.value.trim(), prompt: jobPrompt.value.trim() }),
-      })
+      const created = await apiRequest<unknown>(
+        `/api/v1/stories/${encodeURIComponent(selectedStoryId.value)}/jobs`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ name: jobName.value.trim(), prompt: jobPrompt.value.trim() }),
+        },
+      )
       await refreshStoryServices()
       // 创建成功后直接打开该轮次，用户能立刻看到它在跑，而不是「按钮闪一下就没下文」
       const job = createdJobOf(created)
       if (job) await openJob(job)
       await refreshStoryServices()
     } catch (cause) {
-      jobError.value = cause instanceof Error ? cause.message : 'Unable to create the CodeBuddy job.'
+      jobError.value =
+        cause instanceof Error ? cause.message : 'Unable to create the CodeBuddy job.'
     } finally {
       jobActionLoading.value = false
     }
@@ -1824,11 +1987,13 @@ export function useConsole() {
       const transcript = await apiRequest<unknown>(
         `/api/v1/stories/${encodeURIComponent(job.storyId ?? '')}/jobs/${encodeURIComponent(job.id)}/transcript`,
       )
-      jobTranscript.value = typeof transcript === 'string' ? transcript : JSON.stringify(transcript, null, 2)
+      jobTranscript.value =
+        typeof transcript === 'string' ? transcript : JSON.stringify(transcript, null, 2)
       await streamJobOutput(job, controller)
     } catch (cause) {
       if (!controller.signal.aborted) {
-        jobError.value = cause instanceof Error ? cause.message : 'Unable to load Job transcript or stream.'
+        jobError.value =
+          cause instanceof Error ? cause.message : 'Unable to load Job transcript or stream.'
       }
     }
   }
@@ -1849,7 +2014,10 @@ export function useConsole() {
           },
         )
         if (!response.ok) {
-          throw new ApiError(`Unable to open Job stream (HTTP ${response.status}).`, response.status)
+          throw new ApiError(
+            `Unable to open Job stream (HTTP ${response.status}).`,
+            response.status,
+          )
         }
         if (!response.body) throw new ApiError('Job stream has no response body.', 502)
         const reader = response.body.getReader()
@@ -1878,7 +2046,10 @@ export function useConsole() {
         if (cause instanceof ApiError && cause.status < 500) throw cause
         if (attempt === 4) throw cause
       }
-      await waitForStreamRetry([1000, 2000, 5000, 10_000, 30_000][attempt] ?? 30_000, controller.signal)
+      await waitForStreamRetry(
+        [1000, 2000, 5000, 10_000, 30_000][attempt] ?? 30_000,
+        controller.signal,
+      )
     }
   }
 
@@ -1927,10 +2098,13 @@ export function useConsole() {
     jobActionLoading.value = true
     jobError.value = ''
     try {
-      const result = await apiRequest<unknown>(`/api/v1/stories/${encodeURIComponent(storyId)}/jobs/${encodeURIComponent(job.id)}/reply`, {
-        method: 'POST',
-        body: JSON.stringify({ text: jobReply.value.trim(), bash: false }),
-      })
+      const result = await apiRequest<unknown>(
+        `/api/v1/stories/${encodeURIComponent(storyId)}/jobs/${encodeURIComponent(job.id)}/reply`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: jobReply.value.trim(), bash: false }),
+        },
+      )
       jobTranscript.value += `\n\nYou: ${jobReply.value.trim()}`
       jobReply.value = ''
       actionToasts.notify(replyNoticeOf(result) ?? '回复已提交。', 'success')
@@ -1949,13 +2123,19 @@ export function useConsole() {
     jobActionLoading.value = true
     jobError.value = ''
     try {
-      await apiRequest(`/api/v1/stories/${encodeURIComponent(job.storyId)}/jobs/${encodeURIComponent(job.id)}/name`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: renameDraft.value.trim() }),
-      })
+      await apiRequest(
+        `/api/v1/stories/${encodeURIComponent(job.storyId)}/jobs/${encodeURIComponent(job.id)}/name`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ name: renameDraft.value.trim() }),
+        },
+      )
       selectedJob.value = { ...job, name: renameDraft.value.trim() }
       storyJobs.value = storyJobs.value.map((item) =>
-        item.storyId === job.storyId && item.id === job.id ? { ...item, name: renameDraft.value.trim() } : item)
+        item.storyId === job.storyId && item.id === job.id
+          ? { ...item, name: renameDraft.value.trim() }
+          : item,
+      )
     } catch (cause) {
       jobError.value = cause instanceof Error ? cause.message : 'Unable to rename the instance.'
     } finally {
@@ -1975,17 +2155,26 @@ export function useConsole() {
     jobError.value = ''
     try {
       const jobPath = `/api/v1/stories/${encodeURIComponent(job.storyId)}/jobs/${encodeURIComponent(job.id)}`
-      const result: unknown = await apiRequest(action === 'delete' ? jobPath : `${jobPath}/${action}`, {
-        method: action === 'delete' ? 'DELETE' : 'POST',
-      })
+      const result: unknown = await apiRequest(
+        action === 'delete' ? jobPath : `${jobPath}/${action}`,
+        {
+          method: action === 'delete' ? 'DELETE' : 'POST',
+        },
+      )
       if (action === 'delete') {
-        if (typeof result !== 'object' || result === null || !('deleted' in result) || typeof result.deleted !== 'boolean') {
+        if (
+          typeof result !== 'object' ||
+          result === null ||
+          !('deleted' in result) ||
+          typeof result.deleted !== 'boolean'
+        ) {
           throw new Error('CodeBuddy returned an invalid deletion response.')
         }
         if (!result.deleted) {
-          const reason = 'reason' in result && typeof result.reason === 'string'
-            ? result.reason
-            : 'CodeBuddy did not delete the instance.'
+          const reason =
+            'reason' in result && typeof result.reason === 'string'
+              ? result.reason
+              : 'CodeBuddy did not delete the instance.'
           throw new Error(reason)
         }
         selectedJob.value = null
@@ -1995,7 +2184,9 @@ export function useConsole() {
       // 操作完成后同时刷新左侧列表与右侧详情，状态不停留在旧值
       await refreshStoryServices()
       if (action !== 'delete') {
-        const refreshed = storyJobs.value.find((item) => item.id === job.id && item.storyId === job.storyId)
+        const refreshed = storyJobs.value.find(
+          (item) => item.id === job.id && item.storyId === job.storyId,
+        )
         if (refreshed) {
           selectedJob.value = refreshed
           await jobExtras.loadDetail(job.storyId, job.id)
@@ -2022,10 +2213,13 @@ export function useConsole() {
       const result: unknown = await apiRequest('/api/v1/workspaces/candidates')
       repositoryCandidates.value = repositoryCandidateSchema.array().parse(result)
       const availableNames = new Set(repositoryCandidates.value.map((candidate) => candidate.name))
-      selectedRepositoryNames.value = selectedRepositoryNames.value.filter((name) => availableNames.has(name))
+      selectedRepositoryNames.value = selectedRepositoryNames.value.filter((name) =>
+        availableNames.has(name),
+      )
       await loadApplicationMappings()
     } catch (cause) {
-      candidatesError.value = cause instanceof Error ? cause.message : 'Repository discovery failed.'
+      candidatesError.value =
+        cause instanceof Error ? cause.message : 'Repository discovery failed.'
     } finally {
       candidatesLoading.value = false
     }
@@ -2038,11 +2232,12 @@ export function useConsole() {
   async function loadApplicationMappings(): Promise<void> {
     mappingsError.value = ''
     try {
-      applicationMappings.value = applicationMappingSchema.array().parse(
-        await apiRequest<unknown>('/api/v1/application-mappings'),
-      )
+      applicationMappings.value = applicationMappingSchema
+        .array()
+        .parse(await apiRequest<unknown>('/api/v1/application-mappings'))
     } catch (cause) {
-      mappingsError.value = cause instanceof Error ? cause.message : 'Unable to load application mappings.'
+      mappingsError.value =
+        cause instanceof Error ? cause.message : 'Unable to load application mappings.'
     }
   }
 
@@ -2053,20 +2248,25 @@ export function useConsole() {
    */
   function openMappingDialog(repoName?: string): void {
     mappingFormError.value = ''
-    const saved = repoName ? applicationMappings.value.find((mapping) => mapping.repoName === repoName) : undefined
+    const saved = repoName
+      ? applicationMappings.value.find((mapping) => mapping.repoName === repoName)
+      : undefined
     const savedProjectId = saved?.gitlabProjectId
     mappingEditingRepo.value = saved ? saved.repoName : null
     const form = mappingForm.value
     form.repoName = saved?.repoName ?? ''
     form.gitlabProjectId = savedProjectId
-    form.devopsApp = saved?.devopsApp !== undefined && saved.devopsApp !== saved.repoName ? saved.devopsApp : ''
-    form.devopsGroup = saved?.devopsGroup !== undefined && saved.devopsGroup !== defaultDevOpsGroup
-      ? saved.devopsGroup
-      : ''
+    form.devopsApp =
+      saved?.devopsApp !== undefined && saved.devopsApp !== saved.repoName ? saved.devopsApp : ''
+    form.devopsGroup =
+      saved?.devopsGroup !== undefined && saved.devopsGroup !== defaultDevOpsGroup
+        ? saved.devopsGroup
+        : ''
     // 编辑时已保存的项目 ID 需要一个占位选项，否则下拉无法显示已选值
-    mappingProjectOptions.value = savedProjectId !== undefined
-      ? [{ id: savedProjectId, pathWithNamespace: `GitLab 项目 #${savedProjectId}（已保存）` }]
-      : []
+    mappingProjectOptions.value =
+      savedProjectId !== undefined
+        ? [{ id: savedProjectId, pathWithNamespace: `GitLab 项目 #${savedProjectId}（已保存）` }]
+        : []
     mappingDialogOpen.value = true
     if (form.repoName) void loadMappingProjectOptions(form.repoName)
   }
@@ -2099,15 +2299,19 @@ export function useConsole() {
       const search = new URLSearchParams({ search: keyword })
       const result: unknown = await apiRequest(`/api/v1/gitlab/projects?${search}`)
       const projects = gitLabProjectSchema.array().parse(result)
-      const savedProjectId = applicationMappings.value
-        .find((mapping) => mapping.repoName === mappingEditingRepo.value)?.gitlabProjectId
+      const savedProjectId = applicationMappings.value.find(
+        (mapping) => mapping.repoName === mappingEditingRepo.value,
+      )?.gitlabProjectId
       const savedOption = mappingProjectOptions.value.find((option) => option.id === savedProjectId)
       mappingProjectOptions.value = [
-        ...(savedOption && !projects.some((project) => project.id === savedProjectId) ? [savedOption] : []),
+        ...(savedOption && !projects.some((project) => project.id === savedProjectId)
+          ? [savedOption]
+          : []),
         ...projects,
       ]
     } catch (cause) {
-      mappingFormError.value = cause instanceof Error ? cause.message : 'GitLab project search failed.'
+      mappingFormError.value =
+        cause instanceof Error ? cause.message : 'GitLab project search failed.'
     } finally {
       mappingProjectsLoading.value = false
     }
@@ -2140,13 +2344,16 @@ export function useConsole() {
     }
     mappingSaving.value = true
     try {
-      applicationMappings.value = applicationMappingSchema.array().parse(await apiRequest<unknown>(
-        '/api/v1/application-mappings',
-        { method: 'PUT', body: JSON.stringify(parsed.data) },
-      ))
+      applicationMappings.value = applicationMappingSchema.array().parse(
+        await apiRequest<unknown>('/api/v1/application-mappings', {
+          method: 'PUT',
+          body: JSON.stringify(parsed.data),
+        }),
+      )
       closeMappingDialog()
     } catch (cause) {
-      mappingFormError.value = cause instanceof Error ? cause.message : 'Unable to save application mapping.'
+      mappingFormError.value =
+        cause instanceof Error ? cause.message : 'Unable to save application mapping.'
     } finally {
       mappingSaving.value = false
     }
@@ -2161,12 +2368,17 @@ export function useConsole() {
     mappingRemoving.value = repoName
     mappingsError.value = ''
     try {
-      applicationMappings.value = applicationMappingSchema.array().parse(await apiRequest<unknown>(
-        `/api/v1/application-mappings/${encodeURIComponent(repoName)}`,
-        { method: 'DELETE' },
-      ))
+      applicationMappings.value = applicationMappingSchema
+        .array()
+        .parse(
+          await apiRequest<unknown>(
+            `/api/v1/application-mappings/${encodeURIComponent(repoName)}`,
+            { method: 'DELETE' },
+          ),
+        )
     } catch (cause) {
-      mappingsError.value = cause instanceof Error ? cause.message : 'Unable to remove application mapping.'
+      mappingsError.value =
+        cause instanceof Error ? cause.message : 'Unable to remove application mapping.'
     } finally {
       mappingRemoving.value = ''
     }
@@ -2187,10 +2399,12 @@ export function useConsole() {
     workspaceError.value = ''
     workspaceJob.value = null
     try {
-      previewResult.value = workspacePreviewSchema.parse(await apiRequest<unknown>('/api/v1/workspaces/initialize/preview', {
-        method: 'POST',
-        body: JSON.stringify(workspaceRequest()),
-      }))
+      previewResult.value = workspacePreviewSchema.parse(
+        await apiRequest<unknown>('/api/v1/workspaces/initialize/preview', {
+          method: 'POST',
+          body: JSON.stringify(workspaceRequest()),
+        }),
+      )
     } catch (cause) {
       workspaceError.value = cause instanceof Error ? cause.message : 'DryRun failed.'
     }
@@ -2210,18 +2424,25 @@ export function useConsole() {
     // 目标工作区名在此刻快照，避免回调的 await 期间被新一轮 job 覆盖导致写错工作区。
     const tapdStoryId = workspaceTapdInput.value.trim()
     pendingWorkspaceBinding = tapdStoryId
-      ? { tapdStoryId, storyTitle: workspaceTapdTitle.value.trim(), workspaceName: workspaceName.value }
+      ? {
+          tapdStoryId,
+          storyTitle: workspaceTapdTitle.value.trim(),
+          workspaceName: workspaceName.value,
+        }
       : null
     workspaceSubmitting.value = true
     try {
-      workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>('/api/v1/workspaces/initialize', {
-        method: 'POST',
-        body: JSON.stringify(workspaceRequest()),
-      }))
+      workspaceJob.value = workspaceInitializationJobSchema.parse(
+        await apiRequest<unknown>('/api/v1/workspaces/initialize', {
+          method: 'POST',
+          body: JSON.stringify(workspaceRequest()),
+        }),
+      )
       // 用自增后的最新令牌发起本轮轮询
       pollWorkspaceJob(workspaceJob.value.id, workspacePollGeneration)
     } catch (cause) {
-      workspaceError.value = cause instanceof Error ? cause.message : 'Unable to start workspace initialization.'
+      workspaceError.value =
+        cause instanceof Error ? cause.message : 'Unable to start workspace initialization.'
     } finally {
       // 提交阶段结束；此后忙碌态由 job 的 running 状态接管
       workspaceSubmitting.value = false
@@ -2270,9 +2491,13 @@ export function useConsole() {
       refreshWorkspaces(),
       loadApplicationMappings(),
     ])
-    const failed = results.filter((item): item is PromiseRejectedResult => item.status === 'rejected')
+    const failed = results.filter(
+      (item): item is PromiseRejectedResult => item.status === 'rejected',
+    )
     if (failed.length) {
-      const reasons = failed.map((item) => item.reason instanceof Error ? item.reason.message : '未知错误')
+      const reasons = failed.map((item) =>
+        item.reason instanceof Error ? item.reason.message : '未知错误',
+      )
       actionToasts.notify(`工作区已创建，但部分数据刷新失败：${reasons.join('；')}`, 'error')
     }
   }
@@ -2306,7 +2531,8 @@ export function useConsole() {
         }
         // failed / interrupted 等其它终态：仅更新 workspaceJob，不触发刷新（沿用原行为）
       } catch (cause) {
-        workspaceError.value = cause instanceof Error ? cause.message : 'Unable to read initialization progress.'
+        workspaceError.value =
+          cause instanceof Error ? cause.message : 'Unable to read initialization progress.'
       }
     }, 1000)
   }
@@ -2332,10 +2558,12 @@ export function useConsole() {
     cancelWorkspacePolling()
     workspaceSubmitting.value = true
     try {
-      workspaceJob.value = workspaceInitializationJobSchema.parse(await apiRequest<unknown>(
-        `/api/v1/workspaces/initialize/${job.id}/resume`,
-        { method: 'POST', body: JSON.stringify({ acknowledgeRerun: true }) },
-      ))
+      workspaceJob.value = workspaceInitializationJobSchema.parse(
+        await apiRequest<unknown>(`/api/v1/workspaces/initialize/${job.id}/resume`, {
+          method: 'POST',
+          body: JSON.stringify({ acknowledgeRerun: true }),
+        }),
+      )
       pollWorkspaceJob(job.id, workspacePollGeneration)
     } catch (cause) {
       workspaceError.value = cause instanceof Error ? cause.message : '续跑初始化任务失败。'
@@ -2359,7 +2587,8 @@ export function useConsole() {
       // 抽屉打开时同步刷新详情，避免删除/新建后展示旧数据
       const current = selectedWorkspace.value
       if (current) {
-        selectedWorkspace.value = workspaces.value.find((item) => item.name === current.name) ?? null
+        selectedWorkspace.value =
+          workspaces.value.find((item) => item.name === current.name) ?? null
       }
     } catch (cause) {
       workspacesError.value = cause instanceof Error ? cause.message : '工作区列表加载失败。'
@@ -2423,7 +2652,8 @@ export function useConsole() {
         failedItems.length ? 'error' : 'success',
       )
     } catch (cause) {
-      workspaceMergeRequestError.value = cause instanceof Error ? cause.message : '创建合并请求失败。'
+      workspaceMergeRequestError.value =
+        cause instanceof Error ? cause.message : '创建合并请求失败。'
       actionToasts.notify(`创建合并请求失败：${workspaceMergeRequestError.value}`, 'error')
     } finally {
       mrCreatingProjects.value = []
@@ -2502,10 +2732,13 @@ export function useConsole() {
     deleteError.value = ''
     deleteResult.value = null
     try {
-      const result: unknown = await apiRequest<unknown>(`/api/v1/workspaces/${encodeURIComponent(workspace.name)}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ confirmText: deleteConfirmationPhrase }),
-      })
+      const result: unknown = await apiRequest<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspace.name)}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ confirmText: deleteConfirmationPhrase }),
+        },
+      )
       deleteResult.value = workspaceDeleteResultSchema.parse(result)
       if (selectedWorkspace.value?.name === workspace.name) selectedWorkspace.value = null
       await refreshWorkspaces()
@@ -2519,7 +2752,14 @@ export function useConsole() {
   /* ------------------------- 发布页：按工作区构建与创建 MR ------------------------- */
 
   /** 发布页的 6 档构建环境，顺序即分段器展示顺序 */
-  const buildEnvironments: readonly BuildEnvironment[] = ['dev', 'test', 'pre', 'pre-txnj', 'prod-txnj', 'prod']
+  const buildEnvironments: readonly BuildEnvironment[] = [
+    'dev',
+    'test',
+    'pre',
+    'pre-txnj',
+    'prod-txnj',
+    'prod',
+  ]
   /** 当前选中的构建环境 */
   const selectedBuildEnv = ref<BuildEnvironment>('dev')
   /** DevOps 数据是否连接：取统一快照的通道状态 */
@@ -2540,7 +2780,8 @@ export function useConsole() {
     if (releaseGatePhase.value !== undefined) {
       return `Harness 正在执行 Phase ${releaseGatePhase.value}，由发布助手负责；此阶段禁止触发构建与创建 MR。`
     }
-    if (!devopsOk.value) return 'DevOps 通道不可用，无法触发构建或创建 MR；请到「连接与配置」检查会话。'
+    if (!devopsOk.value)
+      return 'DevOps 通道不可用，无法触发构建或创建 MR；请到「连接与配置」检查会话。'
     return ''
   })
 
@@ -2599,7 +2840,10 @@ export function useConsole() {
    * @returns DevOps 应用名
    */
   function devopsAppOf(projectName: string): string {
-    return applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsApp ?? projectName
+    return (
+      applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsApp ??
+      projectName
+    )
   }
 
   /**
@@ -2608,7 +2852,10 @@ export function useConsole() {
    * @returns DevOps 分组名
    */
   function devopsGroupOf(projectName: string): string {
-    return applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsGroup ?? defaultDevOpsGroup
+    return (
+      applicationMappings.value.find((mapping) => mapping.repoName === projectName)?.devopsGroup ??
+      defaultDevOpsGroup
+    )
   }
 
   /**
@@ -2635,12 +2882,14 @@ export function useConsole() {
    * @param project 项目名
    */
   function requestSingleBuild(workspace: string, project: string): void {
-    openBuildConfirm([{
-      workspace,
-      project,
-      group: devopsGroupOf(project),
-      app: devopsAppOf(project),
-    }])
+    openBuildConfirm([
+      {
+        workspace,
+        project,
+        group: devopsGroupOf(project),
+        app: devopsAppOf(project),
+      },
+    ])
   }
 
   /**
@@ -2687,10 +2936,12 @@ export function useConsole() {
     for (const item of buildConfirmItems.value) {
       buildingApps.value.push(item.app)
       try {
-        const result = buildTriggerResultSchema.parse(await apiRequest<unknown>('/api/v1/devops/build', {
-          method: 'POST',
-          body: JSON.stringify({ group: item.group, app: item.app, env }),
-        }))
+        const result = buildTriggerResultSchema.parse(
+          await apiRequest<unknown>('/api/v1/devops/build', {
+            method: 'POST',
+            body: JSON.stringify({ group: item.group, app: item.app, env }),
+          }),
+        )
         buildOutcomes.value.push({
           app: item.app,
           ok: true,
@@ -2709,7 +2960,9 @@ export function useConsole() {
     }
     const failed = buildOutcomes.value.filter((outcome) => !outcome.ok).length
     actionToasts.notify(
-      failed ? `构建完成：成功 ${buildOutcomes.value.length - failed} 个，失败 ${failed} 个。` : `构建已提交：${buildOutcomes.value.length} 个。`,
+      failed
+        ? `构建完成：成功 ${buildOutcomes.value.length - failed} 个，失败 ${failed} 个。`
+        : `构建已提交：${buildOutcomes.value.length} 个。`,
       failed ? 'error' : 'success',
     )
   }
@@ -2754,7 +3007,12 @@ export function useConsole() {
    */
   async function createReleaseMr(workspace: string, projects?: string[]): Promise<void> {
     if (releaseMrCreating.value.length || !buildAllowed.value) return
-    const names = projects ?? (workspaces.value.find((item) => item.name === workspace)?.projects.map((project) => project.name) ?? [])
+    const names =
+      projects ??
+      workspaces.value
+        .find((item) => item.name === workspace)
+        ?.projects.map((project) => project.name) ??
+      []
     if (!names.length) return
     releaseMrError.value = ''
     releaseMrCreating.value.push(...names.map((name) => mrKey(workspace, name)))
@@ -2772,7 +3030,9 @@ export function useConsole() {
       const parsed = workspaceMergeRequestCreateResultSchema.parse(result)
       const failed = parsed.items.filter((item) => item.status === 'failed')
       if (failed.length) {
-        releaseMrError.value = failed.map((item) => `${item.project}：${item.message ?? '创建失败'}`).join('；')
+        releaseMrError.value = failed
+          .map((item) => `${item.project}：${item.message ?? '创建失败'}`)
+          .join('；')
       }
       const succeeded = parsed.items.filter((item) => item.status !== 'failed')
       if (succeeded.length) {
@@ -2789,7 +3049,9 @@ export function useConsole() {
       releaseMrError.value = cause instanceof Error ? cause.message : '创建合并请求失败。'
       actionToasts.notify(`创建合并请求失败：${releaseMrError.value}`, 'error')
     } finally {
-      releaseMrCreating.value = releaseMrCreating.value.filter((key) => !names.some((name) => key === mrKey(workspace, name)))
+      releaseMrCreating.value = releaseMrCreating.value.filter(
+        (key) => !names.some((name) => key === mrKey(workspace, name)),
+      )
     }
   }
 
@@ -2799,7 +3061,7 @@ export function useConsole() {
    * @returns 中文文案
    */
   function releaseMrStatusLabel(status: WorkspaceMergeRequestCreateItem['status']): string {
-    return status === 'created' ? '已创建' : status === 'exists' ? '已存在' : '失败'
+    return mrStatusLabel(status)
   }
 
   /**
@@ -2808,7 +3070,7 @@ export function useConsole() {
    * @returns 标签样式类
    */
   function releaseMrStatusClass(status: WorkspaceMergeRequestCreateItem['status']): string {
-    return status === 'created' ? 'tag-success' : status === 'exists' ? 'tag-warning' : 'tag-danger'
+    return mrStatusClass(status)
   }
 
   /**
@@ -2825,7 +3087,7 @@ export function useConsole() {
    * @returns 本地时间文本；无值时返回 '未知'
    */
   function formatWorkspaceTime(value?: string): string {
-    return value ? new Date(value).toLocaleString() : '未知'
+    return formatTime(value)
   }
   return {
     route,

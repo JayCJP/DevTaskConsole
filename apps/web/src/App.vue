@@ -14,14 +14,29 @@ import {
   Sunny,
   Timer,
 } from '@element-plus/icons-vue'
-import { ApiError, apiRequest, clearConsoleToken, readConsoleToken, saveConsoleToken } from './api/client'
+import {
+  ApiError,
+  apiRequest,
+  clearConsoleToken,
+  readConsoleToken,
+  saveConsoleToken,
+} from './api/client'
 import { navItems } from './router'
 import { useConsoleStore } from './stores/console'
+import { hasChannelWarning } from './utils/channels'
 
 const router = useRouter()
 const route = useRoute()
 const store = useConsoleStore()
-const icons = { inbox: MessageBox, board: Grid, pipeline: Share, instances: Monitor, crons: Timer, releases: Promotion, workspaces: FolderOpened }
+const icons = {
+  inbox: MessageBox,
+  board: Grid,
+  pipeline: Share,
+  instances: Monitor,
+  crons: Timer,
+  releases: Promotion,
+  workspaces: FolderOpened,
+}
 const token = ref('')
 const authenticated = ref(false)
 const loginError = ref('')
@@ -34,7 +49,9 @@ let pendingGTimeout: ReturnType<typeof setTimeout> | undefined
 
 const commandItems = computed(() => {
   const query = commandQuery.value.trim().toLocaleLowerCase()
-  return navItems.filter((item) => !query || item.title.toLocaleLowerCase().includes(query) || item.path.includes(query))
+  return navItems.filter(
+    (item) => !query || item.title.toLocaleLowerCase().includes(query) || item.path.includes(query),
+  )
 })
 const pageTitle = computed(() => String(route.meta.title ?? 'DevTask Console'))
 /**
@@ -43,12 +60,12 @@ const pageTitle = computed(() => String(route.meta.title ?? 'DevTask Console'))
  * 快照未加载、全局错误、任一通道失败或缺失，都按需检查处理，
  * 避免出现「看板报错、顶栏却写连接正常」的矛盾。
  */
-const knownChannels = ['tapd', 'gitlab', 'devops', 'codebuddy', 'crons', 'localHarness'] as const
-const connectionWarning = computed(() => {
-  if (store.error || !store.snapshot) return true
-  const channels = store.snapshot.channels as Record<string, { ok: boolean } | undefined>
-  return knownChannels.some((key) => !channels[key] || !channels[key].ok)
-})
+const connectionWarning = computed(() =>
+  hasChannelWarning(
+    store.snapshot?.channels as Record<string, { ok: boolean } | undefined> | undefined,
+    Boolean(store.error),
+  ),
+)
 /** 顶栏状态的说明文案，供 title 与无障碍标签使用 */
 const connectionLabel = computed(() => {
   if (!store.snapshot) return '尚未加载快照'
@@ -132,7 +149,9 @@ function toggleTheme(): void {
 
 function onKeydown(event: KeyboardEvent): void {
   const target = event.target
-  const editing = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+  const editing =
+    target instanceof HTMLElement &&
+    (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     openCommand()
@@ -189,20 +208,41 @@ onBeforeUnmount(() => {
         <h1>DevTask Console</h1>
         <p class="muted">输入本机控制台访问令牌以继续。</p>
       </div>
-      <el-input v-model="token" type="password" show-password autocomplete="current-password" placeholder="本机访问令牌" />
+      <el-input
+        v-model="token"
+        type="password"
+        show-password
+        autocomplete="current-password"
+        placeholder="本机访问令牌"
+      />
       <p v-if="loginError" class="error-text">{{ loginError }}</p>
-      <el-button type="primary" native-type="submit" :disabled="!token.trim()" class="login-button">解锁控制台</el-button>
-      <p class="login-help">令牌保存在本机用户数据目录的 <code>control-panel-token</code> 文件中。</p>
+      <el-button type="primary" native-type="submit" :disabled="!token.trim()" class="login-button"
+        >解锁控制台</el-button
+      >
+      <p class="login-help">
+        令牌保存在本机用户数据目录的 <code>control-panel-token</code> 文件中。
+      </p>
     </form>
   </div>
 
   <div v-else class="app-shell" :class="{ 'light-theme': !darkMode }">
     <aside class="nav-rail">
-      <button class="brand-lockup" type="button" aria-label="DevTask Console 首页" @click="navigateTo('/inbox')">
+      <button
+        class="brand-lockup"
+        type="button"
+        aria-label="DevTask Console 首页"
+        @click="navigateTo('/inbox')"
+      >
         <span class="brand-mark">DT</span>
       </button>
       <nav class="primary-nav" aria-label="主导航">
-        <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="nav-link" :title="`${item.title} · ${item.shortcut}`">
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.path"
+          :to="item.path"
+          class="nav-link"
+          :title="`${item.title} · ${item.shortcut}`"
+        >
           <el-icon><component :is="icons[item.icon]" /></el-icon>
           <span>{{ item.title }}</span>
           <span v-if="route.path === item.path" class="nav-active-mark" />
@@ -210,7 +250,12 @@ onBeforeUnmount(() => {
       </nav>
       <div class="rail-bottom">
         <el-tooltip content="连接与配置" placement="right">
-          <RouterLink to="/tools" class="tool-link" :class="{ active: route.path === '/tools' }" aria-label="连接与配置">
+          <RouterLink
+            to="/tools"
+            class="tool-link"
+            :class="{ active: route.path === '/tools' }"
+            aria-label="连接与配置"
+          >
             <el-icon><Setting /></el-icon>
           </RouterLink>
         </el-tooltip>
@@ -220,16 +265,30 @@ onBeforeUnmount(() => {
 
     <div class="workspace-shell">
       <header class="topbar">
-        <div class="breadcrumb"><span>DevTask</span><span class="breadcrumb-separator">/</span><strong>{{ pageTitle }}</strong></div>
+        <div class="breadcrumb">
+          <span>DevTask</span><span class="breadcrumb-separator">/</span
+          ><strong>{{ pageTitle }}</strong>
+        </div>
         <div class="topbar-actions">
           <button class="search-trigger" type="button" @click="openCommand">
             <el-icon><Search /></el-icon><span>搜索或执行命令</span><kbd>{{ shortcutLabel }}</kbd>
           </button>
-          <button class="icon-button" type="button" :aria-label="darkMode ? '切换亮色主题' : '切换暗色主题'" @click="toggleTheme">
+          <button
+            class="icon-button"
+            type="button"
+            :aria-label="darkMode ? '切换亮色主题' : '切换暗色主题'"
+            @click="toggleTheme"
+          >
             <el-icon><component :is="darkMode ? Sunny : Moon" /></el-icon>
           </button>
-          <RouterLink to="/tools" class="connection-chip" :class="connectionWarning ? 'connection-warning' : 'connection-unknown'">
-            <span class="status-dot" :class="connectionWarning ? 'is-error' : ''" />{{ connectionLabel }}
+          <RouterLink
+            to="/tools"
+            class="connection-chip"
+            :class="connectionWarning ? 'connection-warning' : 'connection-unknown'"
+          >
+            <span class="status-dot" :class="connectionWarning ? 'is-error' : ''" />{{
+              connectionLabel
+            }}
           </RouterLink>
         </div>
       </header>
@@ -243,16 +302,30 @@ onBeforeUnmount(() => {
       <section class="command-panel" role="dialog" aria-modal="true" aria-label="命令面板">
         <div class="command-input-row">
           <el-icon><Search /></el-icon>
-          <input ref="commandInput" v-model="commandQuery" placeholder="跳转页面…" @keydown.down.prevent="commandInput?.blur()" @keydown.enter="commandItems[0] && navigateTo(commandItems[0].path)" />
+          <input
+            ref="commandInput"
+            v-model="commandQuery"
+            placeholder="跳转页面…"
+            @keydown.down.prevent="commandInput?.blur()"
+            @keydown.enter="commandItems[0] && navigateTo(commandItems[0].path)"
+          />
           <kbd>ESC</kbd>
         </div>
         <p class="command-caption">导航</p>
-        <button v-for="item in commandItems" :key="item.path" class="command-result" type="button" @click="navigateTo(item.path)">
+        <button
+          v-for="item in commandItems"
+          :key="item.path"
+          class="command-result"
+          type="button"
+          @click="navigateTo(item.path)"
+        >
           <el-icon><component :is="icons[item.icon]" /></el-icon>
           <span>{{ item.title }}</span>
           <kbd>{{ item.shortcut }}</kbd>
         </button>
-        <button v-if="commandItems.length === 0" class="command-empty" type="button" disabled>没有匹配页面</button>
+        <button v-if="commandItems.length === 0" class="command-empty" type="button" disabled>
+          没有匹配页面
+        </button>
       </section>
     </div>
   </div>
