@@ -27,6 +27,8 @@
 - [与 HarnessFlow 的关系](#与-harnessflow-的关系)
 - [配置说明](#配置说明)
 - [功能模块](#功能模块)
+  - [实例管理](#实例管理)
+  - [Story 服务的进程托管方式](#story-服务的进程托管方式)
 - [安全边界](#安全边界)
 - [验证与构建](#验证与构建)
 - [路线图](#路线图)
@@ -60,11 +62,22 @@
 
 ### 环境要求
 
-| 依赖                   | 版本             |
-| ---------------------- | ---------------- |
-| Node.js                | `>= 22`          |
-| pnpm                   | `11.x`           |
-| PowerShell 7（`pwsh`） | 工作区初始化所需 |
+| 依赖                           | 版本                           |
+| ------------------------------ | ------------------------------ |
+| Node.js                        | `>= 22`                        |
+| pnpm                           | `11.x`                         |
+| PowerShell 7（`pwsh`）         | 工作区初始化所需               |
+| herdr-app + herdr-core（`hc`） | 默认进程托管所需（可选，见下） |
+
+### 可选依赖：herdr-app / herdr-core
+
+默认进程托管方式（`app-hc`）依赖本机安装 [herdr-app](https://github.com/herdrdev/herdr-app) 桌面端及其核心 herdr-core 的命令行工具 `hc`。两者分工：
+
+- **herdr-app** —— 桌面 GUI，把 Story 服务显示成 `devtask-services` space 下的 tab（以 storyId 命名），便于人工查看；创建 tab 依赖桌面窗口。
+- **hc** —— herdr-core 的 CLI，真正托管常驻终端（`codebuddy --serve` 跑在它里面），窗口关闭也不会中断服务；服务端用它查状态、停止和清理。
+- **herdr**（老的多路复用器）—— 仅作为可回退的 launcher 保留，无需桌面 GUI。
+
+> 若本机没有 herdr-app/hc，设置 `DEVTASK_STORY_LAUNCHER=herdr` 或 `spawn` 即可在不装该依赖的情况下运行；详情见 [Story 服务的进程托管方式](#story-服务的进程托管方式) 与 [`docs/herdr-app-hc-替换方案.md`](docs/herdr-app-hc-替换方案.md)。
 
 ### 安装与启动
 
@@ -166,6 +179,14 @@ HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在�
 | `DEVTASK_MCP_CONFIG`      | MCP 连接配置文件路径    | `%USERPROFILE%\.codebuddy\mcp.json` |
 | `DEVTASK_DATA_DIR`        | 应用数据存放目录        | `%LOCALAPPDATA%\DevTaskConsole`     |
 
+### 进程托管配置
+
+| 变量                     | 说明                                                     | 默认值   |
+| ------------------------ | -------------------------------------------------------- | -------- |
+| `DEVTASK_STORY_LAUNCHER` | Story 服务托管方式：`app-hc` / `herdr` / `spawn`（见下） | `app-hc` |
+
+> 默认由桌面端 herdr-app 起终端、herdr-core 的 `hc` 查停，服务会出现在 herdr-app 的 `devtask-services` space 下。若桌面端未打开，请改用 `herdr` 或 `spawn`。
+
 ### 连接配置
 
 服务端默认从 `%USERPROFILE%\.codebuddy\mcp.json` 读取 MCP 连接设置。**请勿提交该文件到版本库**，连接器凭据仅由服务端读取。
@@ -194,6 +215,25 @@ HarnessFlow 定义了「**研发流程应该如何运转**」，但它工作在�
 - 以 `codebuddy --serve` 在回环地址启动，附加 `--auth none`，健康检查通过后才报告成功。
 - 服务启动时检查已注册实例，不健康者按 5 / 15 / 30 秒退避在同端口重试。
 - Job 的列表 / 创建、对话记录、SSE 输出、回复、停止、重启与删除均通过带鉴权的控制台路由代理，浏览器不会直接接触上游端口。
+
+### Story 服务的进程托管方式
+
+实例页启动的 CodeBuddy HTTP 服务由服务端托管，共三种实现，共用同一套端口分配、健康检查、退避重启与注册表逻辑。通过 `DEVTASK_STORY_LAUNCHER` 选择：
+
+| 值               | 托管方式                                   | 说明                                                                                         |
+| ---------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `app-hc`（默认） | herdr-app 起终端 + herdr-core 的 `hc` 查停 | 服务显示在 herdr-app 桌面 tab（space 名 `devtask-services`，tab 名为 storyId）；需桌面端常开 |
+| `herdr`          | 老 herdr 常驻 pane                         | 不依赖桌面 GUI；pid 记的是 pane shell 进程号                                                 |
+| `spawn`          | 内置 detached 子进程                       | 无外部依赖，但 Windows 上可能弹出独立控制台窗口                                              |
+
+关于默认方式（`app-hc`）的几点说明：
+
+- **前置条件**：herdr-app 桌面端需保持打开——创建 tab 依赖它的窗口；服务本身跑在 herdr-core 上，窗口关掉不会中断已启动的服务。
+- **身份登记**：注册表 `story-services.json` 里这类服务的 `pid` 是字符串形式的终端 address（如 `t1w`），而非数字进程号；可用 `hc get <address>` 查看真实进程。
+- **旧服务不自动迁移**：`ensureRunning` 对已 `running` 的服务直接复用，不会重新 launch。若某 Story 之前用 `herdr`/`spawn` 启动过，需先停止再启动，才会以 `app-hc` 方式重建并显示 tab。
+- **回退**：桌面端不可用时，设 `DEVTASK_STORY_LAUNCHER=herdr` 或 `spawn` 重启服务端即可。
+
+详细方案与实测记录见 [`docs/herdr-app-hc-替换方案.md`](docs/herdr-app-hc-替换方案.md)。
 
 ## 安全边界
 

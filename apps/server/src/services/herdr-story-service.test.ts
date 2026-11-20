@@ -60,11 +60,12 @@ describe('storyServiceWorkspaceLabel', () => {
 })
 
 describe('resolveStoryServiceLauncher', () => {
-  it('defaults to herdr and only falls back on an explicit spawn value', () => {
-    expect(resolveStoryServiceLauncher({})).toBe('herdr')
+  it('defaults to app-hc and only switches on explicit herdr/spawn values', () => {
+    expect(resolveStoryServiceLauncher({})).toBe('app-hc')
     expect(resolveStoryServiceLauncher({ [HERDR_LAUNCHER_ENV]: 'herdr' })).toBe('herdr')
-    expect(resolveStoryServiceLauncher({ [HERDR_LAUNCHER_ENV]: 'anything-else' })).toBe('herdr')
+    expect(resolveStoryServiceLauncher({ [HERDR_LAUNCHER_ENV]: 'anything-else' })).toBe('app-hc')
     expect(resolveStoryServiceLauncher({ [HERDR_LAUNCHER_ENV]: ' SPAWN ' })).toBe('spawn')
+    expect(resolveStoryServiceLauncher({ [HERDR_LAUNCHER_ENV]: 'app-hc' })).toBe('app-hc')
   })
 })
 
@@ -73,7 +74,12 @@ describe('createHerdrLifecycle launch', () => {
     const label = storyServiceWorkspaceLabel('STORY-1')
     const { run, calls } = createFakeRunner((args) => {
       if (args[0] === 'workspace' && args[1] === 'list') {
-        return { workspaces: [{ workspace_id: 'w1', label }, { workspace_id: 'w2', label: 'other' }] }
+        return {
+          workspaces: [
+            { workspace_id: 'w1', label },
+            { workspace_id: 'w2', label: 'other' },
+          ],
+        }
       }
       if (args[0] === 'workspace' && args[1] === 'close') return { type: 'ok' }
       if (args[0] === 'workspace' && args[1] === 'create') {
@@ -111,13 +117,15 @@ describe('createHerdrLifecycle launch', () => {
   it('rejects when workspace create does not return a root pane', async () => {
     const { run } = createFakeRunner((args) => {
       if (args[0] === 'workspace' && args[1] === 'list') return { workspaces: [] }
-      if (args[0] === 'workspace' && args[1] === 'create') return { workspace: { workspace_id: 'w9' } }
+      if (args[0] === 'workspace' && args[1] === 'create')
+        return { workspace: { workspace_id: 'w9' } }
       throw new Error(`unexpected herdr call: ${args.join(' ')}`)
     })
     const lifecycle = createHerdrLifecycle(run)
 
-    await expect(lifecycle.launch('C:\\workspace', 60301, 'STORY-2'))
-      .rejects.toThrow('herdr workspace create did not return a root pane.')
+    await expect(lifecycle.launch('C:\\workspace', 60301, 'STORY-2')).rejects.toThrow(
+      'herdr workspace create did not return a root pane.',
+    )
   })
 
   it('rejects when process-info does not return a usable pid', async () => {
@@ -127,13 +135,15 @@ describe('createHerdrLifecycle launch', () => {
         return { root_pane: { pane_id: 'w9:p1' }, workspace: { workspace_id: 'w9' } }
       }
       if (args[0] === 'pane' && args[1] === 'run') return { type: 'ok' }
-      if (args[0] === 'pane' && args[1] === 'process-info') return { process_info: { shell_pid: 0 } }
+      if (args[0] === 'pane' && args[1] === 'process-info')
+        return { process_info: { shell_pid: 0 } }
       throw new Error(`unexpected herdr call: ${args.join(' ')}`)
     })
     const lifecycle = createHerdrLifecycle(run)
 
-    await expect(lifecycle.launch('C:\\workspace', 60302, 'STORY-3'))
-      .rejects.toThrow('herdr pane process-info did not return a usable shell pid.')
+    await expect(lifecycle.launch('C:\\workspace', 60302, 'STORY-3')).rejects.toThrow(
+      'herdr pane process-info did not return a usable shell pid.',
+    )
   })
 })
 
@@ -178,7 +188,9 @@ describe('createHerdrRunner', () => {
   it('treats non-JSON output as a failure', async () => {
     stubExecFile('unsupported interactive agent kind: codebuddy\n')
 
-    await expect(createHerdrRunner()(['agent', 'start'])).rejects.toThrow('returned non-JSON output')
+    await expect(createHerdrRunner()(['agent', 'start'])).rejects.toThrow(
+      'returned non-JSON output',
+    )
   })
 
   it('treats an error envelope as a failure', async () => {

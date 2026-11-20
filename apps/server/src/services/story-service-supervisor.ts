@@ -17,7 +17,8 @@ export interface StoryService {
   storyId: string
   port: number
   cwd: string
-  pid?: number
+  /** 进程句柄：内置/spawn 实现是数字 PID，herdr-app+hc 实现是终端 address 字符串 */
+  pid?: number | string
   status: StoryServiceStatus
   updatedAt: string
   error?: string
@@ -43,15 +44,15 @@ interface StoryServiceSupervisorOptions {
   dataDirectory?: string
   portStart?: number
   portEnd?: number
-  /** 启动实现；第三个参数为 Story 标识，供 herdr 等外部托管方式定位专属工作区 */
-  launch?: (cwd: string, port: number, storyId: string) => Promise<number>
+  /** 启动实现；第三个参数为 Story 标识，供 herdr / herdr-app 等外部托管方式定位专属工作区 */
+  launch?: (cwd: string, port: number, storyId: string) => Promise<number | string>
   isPortAvailable?: (port: number) => Promise<boolean>
   isHealthy?: (port: number) => Promise<boolean>
   wait?: (milliseconds: number) => Promise<void>
   retryWait?: (milliseconds: number) => Promise<void>
   startupTimeoutMs?: number
-  /** 结束进程树的实现；默认 Windows 用 taskkill /T /F，其它平台用负 PID 分组信号 */
-  killProcessTree?: (pid: number, storyId?: string) => Promise<void>
+  /** 结束进程树的实现；默认 Windows 用 taskkill /T /F，外部托管方式用字符串句柄终止终端 */
+  killProcessTree?: (pid: number | string, storyId?: string) => Promise<void>
   /** 停止后等待端口释放的超时时间 */
   stopTimeoutMs?: number
 }
@@ -60,12 +61,12 @@ export class StoryServiceSupervisor {
   private readonly filePath: string
   private readonly portStart: number
   private readonly portEnd: number
-  private readonly launch: (cwd: string, port: number, storyId: string) => Promise<number>
+  private readonly launch: (cwd: string, port: number, storyId: string) => Promise<number | string>
   private readonly isPortAvailable: (port: number) => Promise<boolean>
   private readonly isHealthy: (port: number) => Promise<boolean>
   private readonly wait: (milliseconds: number) => Promise<void>
   private readonly retryWait: (milliseconds: number) => Promise<void>
-  private readonly killProcessTree: (pid: number, storyId?: string) => Promise<void>
+  private readonly killProcessTree: (pid: number | string, storyId?: string) => Promise<void>
   private readonly startupTimeoutMs: number
   private readonly stopTimeoutMs: number
   private queue: Promise<void> = Promise.resolve()
@@ -75,11 +76,11 @@ export class StoryServiceSupervisor {
     this.portStart = options.portStart ?? 60200
     this.portEnd = options.portEnd ?? 65535
     if (
-      !Number.isInteger(this.portStart)
-      || !Number.isInteger(this.portEnd)
-      || this.portStart < 1
-      || this.portEnd > 65535
-      || this.portStart > this.portEnd
+      !Number.isInteger(this.portStart) ||
+      !Number.isInteger(this.portEnd) ||
+      this.portStart < 1 ||
+      this.portEnd > 65535 ||
+      this.portStart > this.portEnd
     ) {
       throw new Error('Story service port range must be valid and end at or below 65535.')
     }
@@ -88,7 +89,12 @@ export class StoryServiceSupervisor {
     this.isHealthy = options.isHealthy ?? checkHealth
     this.wait = options.wait ?? delay
     this.retryWait = options.retryWait ?? delay
-    this.killProcessTree = options.killProcessTree ?? killProcessTree
+    // 默认实现只处理数字 PID；字符串句柄属于外部 launcher，应由其注入自己的 stop 实现
+    this.killProcessTree =
+      options.killProcessTree ??
+      (async (pid) => {
+        if (typeof pid === 'number') await killProcessTree(pid)
+      })
     this.startupTimeoutMs = options.startupTimeoutMs ?? 60_000
     this.stopTimeoutMs = options.stopTimeoutMs ?? 10_000
   }
@@ -159,7 +165,9 @@ export class StoryServiceSupervisor {
       }
       const released = await this.waitUntilPortReleased(service.port)
       if (!released) {
-        throw new StoryServiceStopError(`Port ${service.port} was not released before the stop timeout.`)
+        throw new StoryServiceStopError(
+          `Port ${service.port} was not released before the stop timeout.`,
+        )
       }
 
       // 保留 pid：便于排查与「端口意外复活」时再次停止，避免丢失唯一可定位进程的线索
@@ -191,7 +199,9 @@ export class StoryServiceSupervisor {
         throw new StoryServiceRemoveError('Stop the Story service before removing its mapping.')
       }
       if (!(await this.isPortAvailable(service.port))) {
-        throw new StoryServiceRemoveError(`Port ${service.port} is still in use; keeping the mapping.`)
+        throw new StoryServiceRemoveError(
+          `Port ${service.port} is still in use; keeping the mapping.`,
+        )
       }
       const next = services.filter((item) => item.storyId !== storyId)
       const directory = dirname(this.filePath)
@@ -253,9 +263,14 @@ export class StoryServiceSupervisor {
       if (service && resolve(service.cwd).toLowerCase() !== workspace.toLowerCase()) {
         throw new Error(`Story ${storyId} is already mapped to a different workspace.`)
       }
-      if (service && await this.isHealthy(service.port)) {
+      if (service && (await this.isHealthy(service.port))) {
         if (service.status !== 'running') {
-          service = { ...service, status: 'running', updatedAt: new Date().toISOString(), error: undefined }
+          service = {
+            ...service,
+            status: 'running',
+            updatedAt: new Date().toISOString(),
+            error: undefined,
+          }
           await this.upsert(services, service)
         }
         return service
@@ -272,12 +287,17 @@ export class StoryServiceSupervisor {
         }
         await this.upsert(services, service)
       } else {
-        service = { ...service, status: 'starting', updatedAt: new Date().toISOString(), error: undefined }
+        service = {
+          ...service,
+          status: 'starting',
+          updatedAt: new Date().toISOString(),
+          error: undefined,
+        }
         await this.upsert(services, service)
       }
 
-      // 已启动进程的 PID 必须在失败分支可见：局部变量 service 永远不会带上 pid
-      let launchedPid: number | undefined
+      // 已启动进程的句柄必须在失败分支可见：局部变量 service 永远不会带上 pid
+      let launchedPid: number | string | undefined
       try {
         launchedPid = await this.launch(service.cwd, service.port, service.storyId)
         service = { ...service, pid: launchedPid, updatedAt: new Date().toISOString() }
@@ -301,9 +321,7 @@ export class StoryServiceSupervisor {
           ...(launchedPid !== undefined ? { pid: launchedPid } : {}),
           status: 'failed',
           updatedAt: new Date().toISOString(),
-          error: leftover
-            ? `${reason} 启动失败后进程清理未完成：${leftover}`
-            : reason,
+          error: leftover ? `${reason} 启动失败后进程清理未完成：${leftover}` : reason,
         }
         await this.upsert(services, failed)
         throw error
@@ -315,13 +333,13 @@ export class StoryServiceSupervisor {
    * 清理启动失败后遗留的进程树。
    * 端口已释放时直接跳过，避免误杀已被系统回收并复用的 PID。
    * @param port 服务端口
-   * @param pid 已启动的进程 PID；未启动成功时为 undefined
+   * @param pid 已启动的进程句柄（数字 PID 或终端 address）；未启动成功时为 undefined
    * @param storyId Story 标识，供外部托管实现定位专属工作区
    * @returns 清理失败时的原因；清理成功或无需清理时返回 undefined
    */
   private async cleanupFailedLaunch(
     port: number,
-    pid: number | undefined,
+    pid: number | string | undefined,
     storyId: string,
   ): Promise<string | undefined> {
     if (pid === undefined) return undefined
@@ -338,7 +356,7 @@ export class StoryServiceSupervisor {
   private async allocatePort(services: StoryService[]): Promise<number> {
     const reserved = new Set(services.map((service) => service.port))
     for (let port = this.portStart; port <= this.portEnd; port += 1) {
-      if (!reserved.has(port) && await this.isPortAvailable(port)) return port
+      if (!reserved.has(port) && (await this.isPortAvailable(port))) return port
     }
     throw new Error(`No free Story service port is available in ${this.portStart}-${this.portEnd}.`)
   }
@@ -349,7 +367,9 @@ export class StoryServiceSupervisor {
       if (await this.isHealthy(port)) return
       await this.wait(250)
     }
-    throw new Error(`CodeBuddy service on port ${port} did not become healthy before the startup timeout.`)
+    throw new Error(
+      `CodeBuddy service on port ${port} did not become healthy before the startup timeout.`,
+    )
   }
 
   private async readRegistry(): Promise<StoryService[]> {
@@ -378,8 +398,9 @@ export class StoryServiceSupervisor {
   }
 
   private async upsert(current: StoryService[], service: StoryService): Promise<void> {
-    const next = [...current.filter((item) => item.storyId !== service.storyId), service]
-      .sort((left, right) => left.storyId.localeCompare(right.storyId))
+    const next = [...current.filter((item) => item.storyId !== service.storyId), service].sort(
+      (left, right) => left.storyId.localeCompare(right.storyId),
+    )
     const directory = dirname(this.filePath)
     await mkdir(directory, { recursive: true })
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
@@ -421,16 +442,24 @@ export class StoryServiceSupervisor {
 }
 
 async function validateWorkspace(cwd: string, root: string): Promise<string> {
-  if (!isAbsolute(cwd) || !isAbsolute(root)) throw new Error('Workspace and root paths must be absolute.')
+  if (!isAbsolute(cwd) || !isAbsolute(root))
+    throw new Error('Workspace and root paths must be absolute.')
   assertWorkspaceContained(resolve(cwd), resolve(root))
-  const [resolvedRoot, resolvedCwd] = await Promise.all([realpath(resolve(root)), realpath(resolve(cwd))])
+  const [resolvedRoot, resolvedCwd] = await Promise.all([
+    realpath(resolve(root)),
+    realpath(resolve(cwd)),
+  ])
   assertWorkspaceContained(resolvedCwd, resolvedRoot)
   return resolvedCwd
 }
 
 function assertWorkspaceContained(cwd: string, root: string): void {
   const relativePath = relative(root, cwd)
-  if (relativePath === '..' || relativePath.split(/[\\/]/, 1)[0] === '..' || isAbsolute(relativePath)) {
+  if (
+    relativePath === '..' ||
+    relativePath.split(/[\\/]/, 1)[0] === '..' ||
+    isAbsolute(relativePath)
+  ) {
     throw new Error('Story workspace must be inside the configured workspaces root.')
   }
 }
@@ -451,10 +480,8 @@ function launchCodeBuddy(cwd: string, port: number): Promise<number> {
     ]
     try {
       const windows = process.platform === 'win32'
-      const command = windows ? process.env.ComSpec ?? 'cmd.exe' : 'codebuddy'
-      const commandArgs = windows
-        ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`]
-        : args
+      const command = windows ? (process.env.ComSpec ?? 'cmd.exe') : 'codebuddy'
+      const commandArgs = windows ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`] : args
       child = spawnProcess(command, commandArgs, {
         cwd,
         detached: true,
@@ -511,13 +538,18 @@ async function checkHealth(port: number): Promise<boolean> {
 function isStoryService(value: unknown): value is StoryService {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
-  return typeof item.storyId === 'string'
-    && Number.isInteger(item.port)
-    && typeof item.cwd === 'string'
-    && (item.pid === undefined || Number.isInteger(item.pid))
-    && (item.status === 'starting' || item.status === 'running' || item.status === 'failed' || item.status === 'stopped')
-    && typeof item.updatedAt === 'string'
-    && (item.error === undefined || typeof item.error === 'string')
+  return (
+    typeof item.storyId === 'string' &&
+    Number.isInteger(item.port) &&
+    typeof item.cwd === 'string' &&
+    (item.pid === undefined || Number.isInteger(item.pid) || typeof item.pid === 'string') &&
+    (item.status === 'starting' ||
+      item.status === 'running' ||
+      item.status === 'failed' ||
+      item.status === 'stopped') &&
+    typeof item.updatedAt === 'string' &&
+    (item.error === undefined || typeof item.error === 'string')
+  )
 }
 
 /**
@@ -530,7 +562,8 @@ function isStoryService(value: unknown): value is StoryService {
  * @returns Promise<void>
  */
 export async function killProcessTree(pid: number): Promise<void> {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid process ID for Story service stop.')
+  if (!Number.isInteger(pid) || pid <= 0)
+    throw new Error('Invalid process ID for Story service stop.')
   // Windows 下 taskkill 对不存在的 PID 只会返回非 0 退出码；Unix 下进程已退出会返回 ESRCH。
   // 两种情况都说明「目标进程已不在」，属于清理成功，不应让启动失败后的清理流程再抛错。
   await new Promise<void>((resolvePromise, reject) => {

@@ -98,19 +98,21 @@ export class ServiceMonitor {
     this.ticking = true
     try {
       const services = await this.supervisor.list()
-      await Promise.all(services.map(async (service) => {
-        if (service.status === 'stopped') return
-        const inspected = await this.supervisor.inspect(service.storyId)
-        if (!inspected) return
-        if (inspected.status === 'running') {
-          if ((this.failures.get(service.storyId) ?? 0) > 0) {
-            this.failures.delete(service.storyId)
-            this.push(service.storyId, 'info', 'recovered', '服务已恢复健康。')
+      await Promise.all(
+        services.map(async (service) => {
+          if (service.status === 'stopped') return
+          const inspected = await this.supervisor.inspect(service.storyId)
+          if (!inspected) return
+          if (inspected.status === 'running') {
+            if ((this.failures.get(service.storyId) ?? 0) > 0) {
+              this.failures.delete(service.storyId)
+              this.push(service.storyId, 'info', 'recovered', '服务已恢复健康。')
+            }
+            return
           }
-          return
-        }
-        await this.restart(service.storyId, service.cwd, service.pid)
-      }))
+          await this.restart(service.storyId, service.cwd, service.pid)
+        }),
+      )
     } finally {
       this.ticking = false
     }
@@ -125,7 +127,11 @@ export class ServiceMonitor {
    * @param previousPid 巡检前登记的进程号，用于判断是否真的换过进程
    * @returns Promise<void>
    */
-  private async restart(storyId: string, cwd: string, previousPid?: number): Promise<void> {
+  private async restart(
+    storyId: string,
+    cwd: string,
+    previousPid?: number | string,
+  ): Promise<void> {
     let lastError: unknown
     for (let attempt = 0; attempt <= this.retryDelays.length; attempt += 1) {
       const retryDelay = this.retryDelays[attempt - 1]
@@ -164,7 +170,12 @@ export class ServiceMonitor {
    * @param message 可读说明
    * @returns 无返回值
    */
-  private push(storyId: string, level: ServiceEvent['level'], kind: ServiceEvent['kind'], message: string): void {
+  private push(
+    storyId: string,
+    level: ServiceEvent['level'],
+    kind: ServiceEvent['kind'],
+    message: string,
+  ): void {
     this.events.push({
       id: randomUUID(),
       storyId,

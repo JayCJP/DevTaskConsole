@@ -41,7 +41,11 @@ import {
 } from './aggregator/snapshot.js'
 import { SnapshotCache } from './aggregator/snapshot-cache.js'
 import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
-import { BoardCache, createCachedBoardProvider, type BoardCacheStore } from './aggregator/board-cache.js'
+import {
+  BoardCache,
+  createCachedBoardProvider,
+  type BoardCacheStore,
+} from './aggregator/board-cache.js'
 import { DevOpsAdapter } from './integrations/devops.js'
 import { GitLabAdapter } from './integrations/gitlab.js'
 import { TapdAdapter } from './integrations/tapd.js'
@@ -71,8 +75,19 @@ import {
   WorkspaceBindingStore,
 } from './workspaces/bindings.js'
 import { StoryServiceSupervisor, type StoryService } from './services/story-service-supervisor.js'
-import { createHerdrLifecycle, createHerdrRunner, resolveStoryServiceLauncher } from './services/herdr-story-service.js'
-import { CodeBuddyApi, CodeBuddyApiError, extractJob, extractJobList, extractJobPrefs } from './services/codebuddy-api.js'
+import {
+  createHerdrLifecycle,
+  createHerdrRunner,
+  resolveStoryServiceLauncher,
+} from './services/herdr-story-service.js'
+import { createAppHcLifecycle, createCliRunner } from './services/app-hc-story-service.js'
+import {
+  CodeBuddyApi,
+  CodeBuddyApiError,
+  extractJob,
+  extractJobList,
+  extractJobPrefs,
+} from './services/codebuddy-api.js'
 import { ScheduledTaskClient } from './services/scheduled-tasks.js'
 import { CronExecutionReader } from './services/cron-executions.js'
 import { AuditLog } from './services/audit-log.js'
@@ -92,7 +107,11 @@ export interface ServerOptions {
   /** 快照磁盘缓存；测试可注入内存替身 */
   snapshotCache?: SnapshotCacheStore
   /** 看板 provider；注入后完全接管（不套文件缓存），测试可注入替身 */
-  boardProvider?: (owner: string, includeReleased: boolean, force?: boolean) => Promise<BoardResponse>
+  boardProvider?: (
+    owner: string,
+    includeReleased: boolean,
+    force?: boolean,
+  ) => Promise<BoardResponse>
   /** 看板文件缓存；测试可注入内存替身 */
   boardCache?: BoardCacheStore
   /** 只读定时任务事实的构建器，测试时可注入替身 */
@@ -122,14 +141,27 @@ export interface ServerOptions {
 
 /**
  * 构造 Story 服务监督器。
- * 默认由 herdr 的持久 pane 托管进程：服务不随启动它的终端窗口消失，
- * 也不会在 Windows 上弹出独立控制台窗口。
- * 设置 `DEVTASK_STORY_LAUNCHER=spawn` 可回退到内置的 detached 实现。
- * 两种实现共用同一套端口分配、健康检查、退避重启与注册表逻辑。
+ * 默认由 herdr-app 起终端、hc 查停：服务显示在桌面 tab 上，窗口关闭也不会带走服务。
+ * - `DEVTASK_STORY_LAUNCHER=herdr`：回退到老的 herdr 常驻 pane 实现。
+ * - `DEVTASK_STORY_LAUNCHER=spawn`：回退到内置的 detached 实现。
+ * 三种实现共用同一套端口分配、健康检查、退避重启与注册表逻辑。
+ * @param appSpaceFolder herdr-app+hc 实现里固定 space 的工作目录
  * @returns 已装配启动/停止实现的监督器
  */
-function createStoryServiceSupervisor(): StoryServiceSupervisor {
-  if (resolveStoryServiceLauncher() === 'spawn') return new StoryServiceSupervisor()
+function createStoryServiceSupervisor(appSpaceFolder: string): StoryServiceSupervisor {
+  const launcher = resolveStoryServiceLauncher()
+  if (launcher === 'spawn') return new StoryServiceSupervisor()
+  if (launcher === 'app-hc') {
+    const lifecycle = createAppHcLifecycle(
+      createCliRunner('herdr-app'),
+      createCliRunner('hc'),
+      appSpaceFolder,
+    )
+    return new StoryServiceSupervisor({
+      launch: lifecycle.launch,
+      killProcessTree: lifecycle.stop,
+    })
+  }
   const lifecycle = createHerdrLifecycle(createHerdrRunner())
   return new StoryServiceSupervisor({
     launch: lifecycle.launch,
@@ -138,12 +170,20 @@ function createStoryServiceSupervisor(): StoryServiceSupervisor {
 }
 
 const storyIdSchema = z.string().min(1).max(200)
-const jobIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/)
+const jobIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._:-]+$/)
 /**
  * 用于拼接上传目录的严格 Story ID：只允许字母、数字、点、下划线与连字符。
  * 拒绝 `..` 与任意路径分隔符，防止写入 `.docs/<storyId>/` 时发生路径穿越。
  */
-const uploadStoryIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/)
+const uploadStoryIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._-]+$/)
 /** 上传文件的扩展名安全规则：点 + 1~16 位字母数字，覆盖任意类型同时排除路径穿越字符 */
 const uploadExtensionPattern = /^\.[A-Za-z0-9]{1,16}$/
 
@@ -167,7 +207,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     } catch (error) {
       // 显式标记为 400：默认 parser 不带 statusCode 时会退化成 500，
       // 前端只能看到「Internal Server Error」，无法判断是请求体写错了。
-      const parseError = (error instanceof Error ? error : new Error('Invalid JSON body.')) as Error & {
+      const parseError = (
+        error instanceof Error ? error : new Error('Invalid JSON body.')
+      ) as Error & {
         statusCode?: number
         code?: string
       }
@@ -183,9 +225,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const workspaceBindings = options.workspaceBindingStore ?? new WorkspaceBindingStore()
   const tapd = options.tapdAdapter ?? new TapdAdapter()
   const workspaceInitializer = options.workspaceInitializer ?? new WorkspaceInitializer()
-  const storyServiceSupervisor = options.storyServiceSupervisor ?? createStoryServiceSupervisor()
-  const codeBuddyApi = options.codeBuddyApi ?? new CodeBuddyApi()
   const workspacesRoot = options.workspacesRoot ?? getWorkspacesRoot()
+  const storyServiceSupervisor =
+    options.storyServiceSupervisor ?? createStoryServiceSupervisor(workspacesRoot)
+  const codeBuddyApi = options.codeBuddyApi ?? new CodeBuddyApi()
   app.addHook('onClose', async () => {
     await workspaceInitializer.flush()
     await mcpClientRegistry.close()
@@ -193,8 +236,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // 多个页面/标签页可能同时请求快照：并发时共享同一次构建，避免重复打 TAPD/GitLab/DevOps。
   // 注入的 provider 直接单飞；默认 provider 先读写磁盘缓存再单飞，force/non-force 按参数分 key。
   const snapshotProvider = createSingleFlight(
-    options.snapshotProvider
-      ?? createCachedSnapshotProvider({
+    options.snapshotProvider ??
+      createCachedSnapshotProvider({
         workspacesRoot,
         cache: options.snapshotCache ?? new SnapshotCache(),
         logError: (message) => app.log.error({ code: 'SNAPSHOT_CACHE_WRITE_FAILED' }, message),
@@ -207,15 +250,21 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // 看板 provider：普通请求命中文件缓存直返（零 MCP），force 穿透；并发同 key 单飞去重。
   // 注入的 provider 直接单飞；默认 provider 先读写文件缓存再单飞，force/non-force 按参数分 key。
   const boardProvider = createSingleFlight(
-    options.boardProvider ?? createCachedBoardProvider({
-      cache: options.boardCache ?? new BoardCache(),
-      build: (owner, includeReleased) => buildBoard(owner, {
-        tapd,
-        bindings: workspaceBindings,
-        workspaces: () => listWorkspaces(workspacesRoot),
-      }, { includeReleased }),
-      logError: (message) => app.log.error({ code: 'BOARD_CACHE_WRITE_FAILED' }, message),
-    }),
+    options.boardProvider ??
+      createCachedBoardProvider({
+        cache: options.boardCache ?? new BoardCache(),
+        build: (owner, includeReleased) =>
+          buildBoard(
+            owner,
+            {
+              tapd,
+              bindings: workspaceBindings,
+              workspaces: () => listWorkspaces(workspacesRoot),
+            },
+            { includeReleased },
+          ),
+        logError: (message) => app.log.error({ code: 'BOARD_CACHE_WRITE_FAILED' }, message),
+      }),
   )
   const webDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
   const ensureStoryService = async (storyId: string): Promise<StoryService> => {
@@ -232,7 +281,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     )
   }
   const scheduledTasks = options.scheduledTaskClient ?? new ScheduledTaskClient(codeBuddyApi)
-  const cronExecutions = options.cronExecutionReader ?? new CronExecutionReader(workspacesRoot, scheduledTasks)
+  const cronExecutions =
+    options.cronExecutionReader ?? new CronExecutionReader(workspacesRoot, scheduledTasks)
   const auditLog = options.auditLog ?? new AuditLog()
   const cronDispatches = options.cronDispatchStore ?? new CronDispatchStore()
 
@@ -279,14 +329,20 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
     const candidate = request.headers['x-devtask-token']
     if (typeof candidate !== 'string' || !tokenMatches(candidate, options.token)) {
-      return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'A valid local access token is required.' } })
+      return reply
+        .code(401)
+        .send({
+          error: { code: 'UNAUTHORIZED', message: 'A valid local access token is required.' },
+        })
     }
   })
 
   app.post('/api/auth/login', async (request, reply) => {
     const parsed = loginRequestSchema.safeParse(request.body)
     if (!parsed.success || !tokenMatches(parsed.data.token, options.token)) {
-      return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'The access token is invalid.' } })
+      return reply
+        .code(401)
+        .send({ error: { code: 'UNAUTHORIZED', message: 'The access token is invalid.' } })
     }
     return { authenticated: true }
   })
@@ -301,9 +357,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await listRepositoryCandidates()
     } catch (error) {
-      const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : 'UNKNOWN'
+      const code =
+        error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : 'UNKNOWN'
       request.log.error({ code }, 'Unable to list repository candidates')
       return reply.code(503).send({
         error: {
@@ -367,7 +424,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await workspaceBindings.list()
     } catch (error) {
-      request.log.error({ code: 'WORKSPACE_BINDING_LIST_FAILED' }, 'Unable to list workspace bindings')
+      request.log.error(
+        { code: 'WORKSPACE_BINDING_LIST_FAILED' },
+        'Unable to list workspace bindings',
+      )
       return reply.code(503).send({
         error: {
           code: 'WORKSPACE_BINDING_LIST_FAILED',
@@ -384,9 +444,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       const normalizedId = normalizeTapdStoryId(body.data.tapdStoryId)
       // 工作区绑定统一挂在父需求上：粘贴子需求链接时解析为其父需求 ID
       const tapdStoryId = await tapd.resolveParentStoryId(normalizedId)
-      const tapdUrl = tapdStoryId === normalizedId
-        ? body.data.tapdUrl
-        : `https://www.tapd.cn/${defaultTapdWorkspaceId}/prong/stories/view/${tapdStoryId}`
+      const tapdUrl =
+        tapdStoryId === normalizedId
+          ? body.data.tapdUrl
+          : `https://www.tapd.cn/${defaultTapdWorkspaceId}/prong/stories/view/${tapdStoryId}`
       // 绑定目标必须是一个真实存在的工作区，避免保存指向空目录的映射
       const workspaces = await listWorkspaces(workspacesRoot)
       const target = workspaces.find((workspace) => workspace.name === body.data.workspaceName)
@@ -420,7 +481,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           error: { code: 'WORKSPACE_LIST_UNAVAILABLE', message: error.message },
         })
       }
-      request.log.error({ code: 'WORKSPACE_BINDING_SAVE_FAILED' }, 'Unable to save workspace binding')
+      request.log.error(
+        { code: 'WORKSPACE_BINDING_SAVE_FAILED' },
+        'Unable to save workspace binding',
+      )
       return reply.code(503).send({
         error: {
           code: 'WORKSPACE_BINDING_SAVE_FAILED',
@@ -436,7 +500,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await workspaceBindings.remove(params.data.tapdStoryId)
     } catch (error) {
-      request.log.error({ code: 'WORKSPACE_BINDING_DELETE_FAILED' }, 'Unable to remove workspace binding')
+      request.log.error(
+        { code: 'WORKSPACE_BINDING_DELETE_FAILED' },
+        'Unable to remove workspace binding',
+      )
       return reply.code(503).send({
         error: {
           code: 'WORKSPACE_BINDING_DELETE_FAILED',
@@ -447,13 +514,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/board/stories', async (request, reply) => {
-    const query = z.object({
-      owner: z.string().trim().min(1).max(100).optional(),
-      // 默认 0：排除“已发布”需求；传 1 才显示
-      includeReleased: z.enum(['0', '1']).optional(),
-      // refresh=1 时穿透文件缓存，强制回源重建
-      refresh: z.enum(['0', '1']).optional(),
-    }).safeParse(request.query)
+    const query = z
+      .object({
+        owner: z.string().trim().min(1).max(100).optional(),
+        // 默认 0：排除“已发布”需求；传 1 才显示
+        includeReleased: z.enum(['0', '1']).optional(),
+        // refresh=1 时穿透文件缓存，强制回源重建
+        refresh: z.enum(['0', '1']).optional(),
+      })
+      .safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
     const includeReleased = query.data.includeReleased === '1'
     const board = await boardProvider(
@@ -468,9 +537,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const params = z.object({ storyId: z.string().min(1).max(200) }).safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     const service = await storyServiceSupervisor.inspect(params.data.storyId)
-    if (!service) return reply.code(404).send({
-      error: { code: 'STORY_SERVICE_NOT_FOUND', message: 'No CodeBuddy service has been assigned to this Story.' },
-    })
+    if (!service)
+      return reply.code(404).send({
+        error: {
+          code: 'STORY_SERVICE_NOT_FOUND',
+          message: 'No CodeBuddy service has been assigned to this Story.',
+        },
+      })
     return publicStoryService(service)
   })
 
@@ -489,7 +562,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         return reply.code(409).send({
           error: {
             code: 'STORY_WORKSPACE_UNAVAILABLE',
-            message: 'This Story has no associated workspace; initialize and associate its workspace first.',
+            message:
+              'This Story has no associated workspace; initialize and associate its workspace first.',
           },
         })
       }
@@ -500,11 +574,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       )
       return reply.code(200).send(publicStoryService(service))
     } catch (error) {
-      request.log.error({ code: 'STORY_SERVICE_START_FAILED' }, 'Unable to start Story CodeBuddy service')
+      request.log.error(
+        { code: 'STORY_SERVICE_START_FAILED' },
+        'Unable to start Story CodeBuddy service',
+      )
       return reply.code(503).send({
         error: {
           code: 'STORY_SERVICE_START_FAILED',
-          message: error instanceof Error ? error.message : 'Unable to start the Story CodeBuddy service.',
+          message:
+            error instanceof Error ? error.message : 'Unable to start the Story CodeBuddy service.',
         },
       })
     }
@@ -608,10 +686,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       const normalized = (list ?? []).map((item) => {
         if (typeof item !== 'object' || item === null || Array.isArray(item)) return item
         const record = item as Record<string, unknown>
-        return { ...record, status: record.status ?? (record.state === 'working' ? 'busy' : 'idle') }
+        return {
+          ...record,
+          status: record.status ?? (record.state === 'working' ? 'busy' : 'idle'),
+        }
       })
       const parsed = jobSchema.array().safeParse(normalized)
-      if (!parsed.success) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid jobs response.')
+      if (!parsed.success)
+        throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid jobs response.')
       return parsed.data.map((job) => ({ ...job, storyId: params.data.storyId }))
     } catch (error) {
       return codeBuddyError(request, reply, error)
@@ -636,7 +718,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // 实例详情：比列表多出当前活动、等待原因与建议回复，用于多实例并排管理时看清每一个在做什么
   app.get('/api/v1/stories/:storyId/jobs/:jobId', async (request, reply) => {
-    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    const params = z
+      .object({ storyId: storyIdSchema, jobId: jobIdSchema })
+      .safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     try {
       const service = await ensureStoryService(params.data.storyId)
@@ -652,7 +736,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         status: job?.status ?? (job?.state === 'working' ? 'busy' : 'idle'),
         storyId: params.data.storyId,
       })
-      if (!parsed.success) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid job detail response.')
+      if (!parsed.success)
+        throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid job detail response.')
       return parsed.data
     } catch (error) {
       return codeBuddyError(request, reply, error)
@@ -689,7 +774,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/stories/:storyId/jobs/:jobId/transcript', async (request, reply) => {
-    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    const params = z
+      .object({ storyId: storyIdSchema, jobId: jobIdSchema })
+      .safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     try {
       const service = await ensureStoryService(params.data.storyId)
@@ -704,13 +791,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/stories/:storyId/jobs/:jobId/stream', async (request, reply) => {
-    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    const params = z
+      .object({ storyId: storyIdSchema, jobId: jobIdSchema })
+      .safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     const lastEventIdHeader = request.headers['last-event-id']
     if (
-      Array.isArray(lastEventIdHeader)
-      || (lastEventIdHeader !== undefined && (lastEventIdHeader.length > 500 || /[\r\n]/.test(lastEventIdHeader)))
-    ) return invalidParameters(reply)
+      Array.isArray(lastEventIdHeader) ||
+      (lastEventIdHeader !== undefined &&
+        (lastEventIdHeader.length > 500 || /[\r\n]/.test(lastEventIdHeader)))
+    )
+      return invalidParameters(reply)
     const controller = new AbortController()
     reply.raw.once('close', () => controller.abort())
     try {
@@ -721,7 +812,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         controller.signal,
         lastEventIdHeader,
       )
-      if (!upstream.body) throw new CodeBuddyApiError(502, 'CodeBuddy returned an empty event stream.')
+      if (!upstream.body)
+        throw new CodeBuddyApiError(502, 'CodeBuddy returned an empty event stream.')
       reply.hijack()
       reply.raw.writeHead(200, {
         'content-type': upstream.headers.get('content-type') ?? 'text/event-stream; charset=utf-8',
@@ -736,7 +828,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.post('/api/v1/stories/:storyId/jobs/:jobId/reply', async (request, reply) => {
-    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    const params = z
+      .object({ storyId: storyIdSchema, jobId: jobIdSchema })
+      .safeParse(request.params)
     const body = jobReplyRequestSchema.safeParse(request.body)
     if (!params.success || !body.success) return invalidParameters(reply)
     try {
@@ -753,31 +847,51 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.post('/api/v1/stories/:storyId/jobs/:jobId/stop', async (request, reply) => {
-    return relayCodeBuddyJob(request, reply, params => ({
-      serviceId: params.storyId,
-      path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}/stop`,
-      method: 'POST',
-    }), ensureStoryService, codeBuddyApi)
+    return relayCodeBuddyJob(
+      request,
+      reply,
+      (params) => ({
+        serviceId: params.storyId,
+        path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}/stop`,
+        method: 'POST',
+      }),
+      ensureStoryService,
+      codeBuddyApi,
+    )
   })
 
   app.post('/api/v1/stories/:storyId/jobs/:jobId/respawn', async (request, reply) => {
-    return relayCodeBuddyJob(request, reply, params => ({
-      serviceId: params.storyId,
-      path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}/respawn`,
-      method: 'POST',
-    }), ensureStoryService, codeBuddyApi)
+    return relayCodeBuddyJob(
+      request,
+      reply,
+      (params) => ({
+        serviceId: params.storyId,
+        path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}/respawn`,
+        method: 'POST',
+      }),
+      ensureStoryService,
+      codeBuddyApi,
+    )
   })
 
   app.delete('/api/v1/stories/:storyId/jobs/:jobId', async (request, reply) => {
-    return relayCodeBuddyJob(request, reply, params => ({
-      serviceId: params.storyId,
-      path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}`,
-      method: 'DELETE',
-    }), ensureStoryService, codeBuddyApi)
+    return relayCodeBuddyJob(
+      request,
+      reply,
+      (params) => ({
+        serviceId: params.storyId,
+        path: `/api/v1/jobs/${encodeURIComponent(params.jobId)}`,
+        method: 'DELETE',
+      }),
+      ensureStoryService,
+      codeBuddyApi,
+    )
   })
 
   app.patch('/api/v1/stories/:storyId/jobs/:jobId/name', async (request, reply) => {
-    const params = z.object({ storyId: storyIdSchema, jobId: jobIdSchema }).safeParse(request.params)
+    const params = z
+      .object({ storyId: storyIdSchema, jobId: jobIdSchema })
+      .safeParse(request.params)
     const body = jobRenameRequestSchema.safeParse(request.body)
     if (!params.success || !body.success) return invalidParameters(reply)
     try {
@@ -799,9 +913,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       const service = await ensureStoryService(params.data.storyId)
       const query = new URLSearchParams({ cwd: service.cwd })
-      const result = await codeBuddyApi.request(service.port, `/api/v1/jobs/resumable?${query}`, 'GET')
+      const result = await codeBuddyApi.request(
+        service.port,
+        `/api/v1/jobs/resumable?${query}`,
+        'GET',
+      )
       const parsed = resumableSessionSchema.array().safeParse(result)
-      if (!parsed.success) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid resumable sessions response.')
+      if (!parsed.success)
+        throw new CodeBuddyApiError(
+          502,
+          'CodeBuddy returned an invalid resumable sessions response.',
+        )
       return parsed.data
     } catch (error) {
       return codeBuddyError(request, reply, error)
@@ -815,7 +937,11 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       const service = await ensureStoryService(params.data.storyId)
       const query = new URLSearchParams({ cwd: service.cwd })
-      const resumable = await codeBuddyApi.request(service.port, `/api/v1/jobs/resumable?${query}`, 'GET')
+      const resumable = await codeBuddyApi.request(
+        service.port,
+        `/api/v1/jobs/resumable?${query}`,
+        'GET',
+      )
       if (!isResumableSession(resumable, body.data.sessionId)) {
         return reply.code(409).send({
           error: {
@@ -824,12 +950,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           },
         })
       }
-      return reply.code(201).send(await codeBuddyApi.request(
-        service.port,
-        '/api/v1/jobs/resume',
-        'POST',
-        body.data,
-      ))
+      return reply
+        .code(201)
+        .send(await codeBuddyApi.request(service.port, '/api/v1/jobs/resume', 'POST', body.data))
     } catch (error) {
       return codeBuddyError(request, reply, error)
     }
@@ -839,7 +962,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await applicationMappings.list()
     } catch (error) {
-      request.log.error({ code: 'APPLICATION_MAPPING_READ_FAILED' }, 'Unable to read application mappings')
+      request.log.error(
+        { code: 'APPLICATION_MAPPING_READ_FAILED' },
+        'Unable to read application mappings',
+      )
       return reply.code(503).send({
         error: {
           code: 'APPLICATION_MAPPING_READ_FAILED',
@@ -855,7 +981,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await applicationMappings.upsert(parsed.data)
     } catch (error) {
-      request.log.error({ code: 'APPLICATION_MAPPING_WRITE_FAILED' }, 'Unable to save application mapping')
+      request.log.error(
+        { code: 'APPLICATION_MAPPING_WRITE_FAILED' },
+        'Unable to save application mapping',
+      )
       return reply.code(503).send({
         error: {
           code: 'APPLICATION_MAPPING_WRITE_FAILED',
@@ -871,7 +1000,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     try {
       return await applicationMappings.remove(params.data.repoName)
     } catch (error) {
-      request.log.error({ code: 'APPLICATION_MAPPING_DELETE_FAILED' }, 'Unable to remove application mapping')
+      request.log.error(
+        { code: 'APPLICATION_MAPPING_DELETE_FAILED' },
+        'Unable to remove application mapping',
+      )
       return reply.code(503).send({
         error: {
           code: 'APPLICATION_MAPPING_DELETE_FAILED',
@@ -902,9 +1034,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const params = z.object({ jobId: z.string().uuid() }).safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     const job = await workspaceInitializer.getJob(params.data.jobId)
-    if (!job) return reply.code(404).send({
-      error: { code: 'WORKSPACE_JOB_NOT_FOUND', message: 'Workspace initialization job was not found.' },
-    })
+    if (!job)
+      return reply.code(404).send({
+        error: {
+          code: 'WORKSPACE_JOB_NOT_FOUND',
+          message: 'Workspace initialization job was not found.',
+        },
+      })
     return job
   })
 
@@ -924,7 +1060,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return await workspaceInitializer.resume(params.data.jobId)
     } catch (error) {
       if (error instanceof WorkspaceJobNotFoundError) {
-        return reply.code(404).send({ error: { code: 'WORKSPACE_JOB_NOT_FOUND', message: error.message } })
+        return reply
+          .code(404)
+          .send({ error: { code: 'WORKSPACE_JOB_NOT_FOUND', message: error.message } })
       }
       return workspaceInitializationError(request, reply, error)
     }
@@ -943,9 +1081,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       })
     } catch (error) {
       if (error instanceof WorkspaceNotFoundError) {
-        return reply.code(404).send({ error: { code: 'WORKSPACE_NOT_FOUND', message: error.message } })
+        return reply
+          .code(404)
+          .send({ error: { code: 'WORKSPACE_NOT_FOUND', message: error.message } })
       }
-      request.log.error({ code: 'WORKSPACE_MERGE_REQUEST_FAILED' }, 'Unable to create workspace merge requests')
+      request.log.error(
+        { code: 'WORKSPACE_MERGE_REQUEST_FAILED' },
+        'Unable to create workspace merge requests',
+      )
       return reply.code(502).send({
         error: {
           code: 'WORKSPACE_MERGE_REQUEST_UNAVAILABLE',
@@ -973,13 +1116,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/v1/devops/apps/:app/builds', async (request, reply) => {
     const params = z.object({ app: z.string().min(1).max(200) }).safeParse(request.params)
-    const query = z.object({
-      pageNo: z.coerce.number().int().min(1).default(1),
-      pageSize: z.coerce.number().int().min(1).max(100).default(20),
-    }).safeParse(request.query)
+    const query = z
+      .object({
+        pageNo: z.coerce.number().int().min(1).default(1),
+        pageSize: z.coerce.number().int().min(1).max(100).default(20),
+      })
+      .safeParse(request.query)
     if (!params.success || !query.success) return invalidParameters(reply)
     return relayRead(request, reply, 'DevOps', () =>
-      devOps.getBuildRecords(params.data.app, query.data.pageNo, query.data.pageSize))
+      devOps.getBuildRecords(params.data.app, query.data.pageNo, query.data.pageSize),
+    )
   })
 
   /**
@@ -1002,7 +1148,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     } catch (error) {
       request.log.error({ err: error }, 'Failed to read harness gate before build')
       return reply.code(502).send({
-        error: { code: 'GATE_CHECK_FAILED', message: '无法确认 Harness 流程阶段，已拒绝触发构建以避免竞态。' },
+        error: {
+          code: 'GATE_CHECK_FAILED',
+          message: '无法确认 Harness 流程阶段，已拒绝触发构建以避免竞态。',
+        },
       })
     }
     if (gatePhase !== undefined) {
@@ -1041,20 +1190,27 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         target: `${input.group}/${input.app}`,
         reversible: false,
         result: 'succeeded',
-        after: { branch: spec.branch, env: input.env, buildOther: spec.buildOther, ...(number ? { number } : {}) },
+        after: {
+          branch: spec.branch,
+          env: input.env,
+          buildOther: spec.buildOther,
+          ...(number ? { number } : {}),
+        },
       })
       return result
     } catch (error) {
       const message = error instanceof Error ? error.message : '触发构建失败。'
       const expiredSession = message.includes('session expired')
-      await auditLog.record({
-        action: 'build.trigger',
-        target: `${input.group}/${input.app}`,
-        reversible: false,
-        result: 'failed',
-        error: message,
-        after: { branch: spec.branch, env: input.env, buildOther: spec.buildOther },
-      }).catch(() => undefined)
+      await auditLog
+        .record({
+          action: 'build.trigger',
+          target: `${input.group}/${input.app}`,
+          reversible: false,
+          result: 'failed',
+          error: message,
+          after: { branch: spec.branch, env: input.env, buildOther: spec.buildOther },
+        })
+        .catch(() => undefined)
       request.log.error({ channel: 'DevOps', err: error }, 'Trigger build failed')
       return reply.code(expiredSession ? 403 : 502).send({
         error: {
@@ -1072,32 +1228,44 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   })
 
   app.get('/api/v1/gitlab/projects/:projectId/merge-requests', async (request, reply) => {
-    const params = z.object({ projectId: z.coerce.number().int().positive() }).safeParse(request.params)
+    const params = z
+      .object({ projectId: z.coerce.number().int().positive() })
+      .safeParse(request.params)
     const query = z.object({ sourceBranch: z.string().min(1).max(250) }).safeParse(request.query)
     if (!params.success || !query.success) return invalidParameters(reply)
     return relayRead(request, reply, 'GitLab', () =>
-      gitLab.listMergeRequests(params.data.projectId, query.data.sourceBranch))
+      gitLab.listMergeRequests(params.data.projectId, query.data.sourceBranch),
+    )
   })
 
   app.get('/api/v1/gitlab/projects/:projectId/merge-requests/:iid', async (request, reply) => {
-    const params = z.object({
-      projectId: z.coerce.number().int().positive(),
-      iid: z.string().min(1).max(100),
-    }).safeParse(request.params)
+    const params = z
+      .object({
+        projectId: z.coerce.number().int().positive(),
+        iid: z.string().min(1).max(100),
+      })
+      .safeParse(request.params)
     if (!params.success) return invalidParameters(reply)
     return relayRead(request, reply, 'GitLab', () =>
-      gitLab.getMergeRequestDetails(params.data.projectId, params.data.iid))
+      gitLab.getMergeRequestDetails(params.data.projectId, params.data.iid),
+    )
   })
 
-  app.get('/api/v1/gitlab/projects/:projectId/merge-requests/:iid/diff-summary', async (request, reply) => {
-    const params = z.object({
-      projectId: z.coerce.number().int().positive(),
-      iid: z.string().min(1).max(100),
-    }).safeParse(request.params)
-    if (!params.success) return invalidParameters(reply)
-    return relayRead(request, reply, 'GitLab', () =>
-      gitLab.getMergeRequestDiffSummary(params.data.projectId, params.data.iid))
-  })
+  app.get(
+    '/api/v1/gitlab/projects/:projectId/merge-requests/:iid/diff-summary',
+    async (request, reply) => {
+      const params = z
+        .object({
+          projectId: z.coerce.number().int().positive(),
+          iid: z.string().min(1).max(100),
+        })
+        .safeParse(request.params)
+      if (!params.success) return invalidParameters(reply)
+      return relayRead(request, reply, 'GitLab', () =>
+        gitLab.getMergeRequestDiffSummary(params.data.projectId, params.data.iid),
+      )
+    },
+  )
 
   app.get('/api/v1/release/facts', async (request, reply) => {
     const query = z.object({ app: z.string().trim().min(1).max(200) }).safeParse(request.query)
@@ -1109,16 +1277,19 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     // refresh=1：用户手动刷新，重建全部缓存段并刷新连通性。
     // segments=local[,tapd]：按段定向失效，仅重建指定段、其余复用缓存；
     // pipeline/inbox 的数据只依赖 local+runtime，刷新它们时传 segments=local 即可避开 TAPD 远端请求。
-    const query = z.object({
-      refresh: z.enum(['0', '1', 'true', 'false']).optional(),
-      segments: z.string().trim().optional(),
-    }).safeParse(request.query)
+    const query = z
+      .object({
+        refresh: z.enum(['0', '1', 'true', 'false']).optional(),
+        segments: z.string().trim().optional(),
+      })
+      .safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
     // segments 白名单校验：仅接受 local/tapd，去重后传入 provider
     const segments = query.data.segments
       ? [...new Set(query.data.segments.split(',').map((s) => s.trim()))]
       : undefined
-    if (segments && segments.some((s) => s !== 'local' && s !== 'tapd')) return invalidParameters(reply)
+    if (segments && segments.some((s) => s !== 'local' && s !== 'tapd'))
+      return invalidParameters(reply)
     const force = query.data.refresh === '1' || query.data.refresh === 'true'
     // 仅在按段刷新时传第二参数，保持普通刷新调用形态不变（兼容注入的 provider 测试替身）
     const snapshot = segments
@@ -1128,9 +1299,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     if (!parsed.success) {
       request.log.error({ issues: parsed.error.issues }, 'Snapshot validation failed')
       // 只回传字段路径，便于定位上游格式问题，不回传任何字段值
-      const fieldPaths = [...new Set(parsed.error.issues
-        .map((issue) => issue.path.join('.'))
-        .filter((path) => path.length > 0))].slice(0, 8)
+      const fieldPaths = [
+        ...new Set(
+          parsed.error.issues
+            .map((issue) => issue.path.join('.'))
+            .filter((path) => path.length > 0),
+        ),
+      ].slice(0, 8)
       return reply.code(500).send({
         error: {
           code: 'INVALID_SNAPSHOT',
@@ -1147,7 +1322,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     app.register(fastifyStatic, { root: webDist, wildcard: false })
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith('/api/')) {
-        return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'API route not found.' } })
+        return reply
+          .code(404)
+          .send({ error: { code: 'NOT_FOUND', message: 'API route not found.' } })
       }
       return reply.type('text/html').sendFile('index.html')
     })
@@ -1209,10 +1386,13 @@ function codeBuddyError(
   }
   const isUpstream = error instanceof CodeBuddyApiError
   const status = isUpstream ? 502 : 503
-  request.log.error({
-    code: isUpstream ? 'CODEBUDDY_UPSTREAM_ERROR' : 'STORY_SERVICE_UNAVAILABLE',
-    ...(isUpstream ? { upstreamStatus: error.status } : {}),
-  }, 'CodeBuddy API request failed')
+  request.log.error(
+    {
+      code: isUpstream ? 'CODEBUDDY_UPSTREAM_ERROR' : 'STORY_SERVICE_UNAVAILABLE',
+      ...(isUpstream ? { upstreamStatus: error.status } : {}),
+    },
+    'CodeBuddy API request failed',
+  )
   return reply.code(status).send({
     error: {
       code: isUpstream ? 'CODEBUDDY_UPSTREAM_ERROR' : 'STORY_SERVICE_UNAVAILABLE',
@@ -1222,12 +1402,17 @@ function codeBuddyError(
 }
 
 function isResumableSession(value: unknown, sessionId: string): boolean {
-  return Array.isArray(value) && value.some((entry) =>
-    typeof entry === 'object'
-    && entry !== null
-    && !Array.isArray(entry)
-    && 'sessionId' in entry
-    && entry.sessionId === sessionId)
+  return (
+    Array.isArray(value) &&
+    value.some(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        'sessionId' in entry &&
+        entry.sessionId === sessionId,
+    )
+  )
 }
 
 class StoryWorkspaceUnavailableError extends Error {
@@ -1248,11 +1433,16 @@ async function relayRead(
   } catch (error) {
     const message = error instanceof Error ? error.message : `${channel} request failed.`
     const expiredSession = channel === 'DevOps' && message.includes('session expired')
-    request.log.error({ channel, code: expiredSession ? 'SESSION_EXPIRED' : 'UPSTREAM_ERROR' }, 'Read-only upstream request failed')
+    request.log.error(
+      { channel, code: expiredSession ? 'SESSION_EXPIRED' : 'UPSTREAM_ERROR' },
+      'Read-only upstream request failed',
+    )
     return reply.code(expiredSession ? 403 : 502).send({
       error: {
         code: expiredSession ? 'DEVOPS_SESSION_EXPIRED' : 'UPSTREAM_ERROR',
-        message: expiredSession ? message : `${channel} request failed. Check the connection status and server logs.`,
+        message: expiredSession
+          ? message
+          : `${channel} request failed. Check the connection status and server logs.`,
       },
     })
   }
@@ -1312,13 +1502,19 @@ function workspaceInitializationError(
   error: unknown,
 ): FastifyReply {
   if (error instanceof WorkspaceInputError) {
-    return reply.code(400).send({ error: { code: 'INVALID_WORKSPACE_REQUEST', message: error.message } })
+    return reply
+      .code(400)
+      .send({ error: { code: 'INVALID_WORKSPACE_REQUEST', message: error.message } })
   }
   if (error instanceof WorkspaceConflictError) {
-    return reply.code(409).send({ error: { code: 'WORKSPACE_JOB_CONFLICT', message: error.message } })
+    return reply
+      .code(409)
+      .send({ error: { code: 'WORKSPACE_JOB_CONFLICT', message: error.message } })
   }
   const dependency = error instanceof WorkspaceDependencyError
-  const code = dependency ? 'WORKSPACE_DEPENDENCY_UNAVAILABLE' : 'WORKSPACE_INITIALIZATION_UNAVAILABLE'
+  const code = dependency
+    ? 'WORKSPACE_DEPENDENCY_UNAVAILABLE'
+    : 'WORKSPACE_INITIALIZATION_UNAVAILABLE'
   const message = error instanceof Error ? error.message : 'Workspace initialization failed.'
   request.log.error({ code }, 'Workspace initialization request failed')
   return reply.code(503).send({ error: { code, message } })
@@ -1326,8 +1522,8 @@ function workspaceInitializationError(
 
 export async function startServer(): Promise<void> {
   const token = await loadOrCreateToken()
-  const storyServiceSupervisor = createStoryServiceSupervisor()
   const workspacesRoot = getWorkspacesRoot()
+  const storyServiceSupervisor = createStoryServiceSupervisor(workspacesRoot)
   const cronMappings = new CronMappingStore()
   const scheduledTasks = new ScheduledTaskClient()
   const auditLog = new AuditLog()
@@ -1372,7 +1568,11 @@ export async function startServer(): Promise<void> {
       })
       if (result.restored.length || result.failed.length) {
         app.log.info(
-          { restored: result.restored.length, skipped: result.skipped.length, failed: result.failed.length },
+          {
+            restored: result.restored.length,
+            skipped: result.skipped.length,
+            failed: result.failed.length,
+          },
           'Cron owner recovery finished',
         )
       }

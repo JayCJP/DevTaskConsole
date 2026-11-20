@@ -10,11 +10,11 @@ const DEFAULT_TIMEOUT_MS = 15_000
 /** herdr workspace 标签前缀，用于把一个 Story 的服务反查到它专属的托管工作区 */
 const WORKSPACE_LABEL_PREFIX = 'devtask-story:'
 
-/** 环境变量开关名：默认走 herdr，显式设为 `spawn` 时回退内置实现 */
+/** 环境变量开关名：默认走 app-hc，显式设为 herdr / spawn 时回退老实现 */
 export const HERDR_LAUNCHER_ENV = 'DEVTASK_STORY_LAUNCHER'
 
 /** Story 服务的进程托管方式 */
-export type StoryServiceLauncher = 'herdr' | 'spawn'
+export type StoryServiceLauncher = 'herdr' | 'spawn' | 'app-hc'
 
 /** 调用 herdr CLI 并返回响应信封的 `result` 字段；测试可注入替身 */
 export type HerdrRunner = (args: string[]) => Promise<unknown>
@@ -48,11 +48,11 @@ export interface HerdrStoryLifecycle {
   launch: (cwd: string, port: number, storyId: string) => Promise<number>
   /**
    * 停止 Story 的服务实例。
-   * @param pid 注册表登记的 pane shell 进程号
+   * @param pid 注册表登记的 pane shell 进程号；字符串句柄（其它 launcher 产生）则忽略
    * @param storyId Story 标识；缺省时退化为按进程号杀进程树
    * @returns Promise<void>
    */
-  stop: (pid: number, storyId?: string) => Promise<void>
+  stop: (pid: number | string, storyId?: string) => Promise<void>
 }
 
 /**
@@ -87,8 +87,8 @@ export function createHerdrRunner(binary = 'herdr', timeoutMs = DEFAULT_TIMEOUT_
     } catch (error) {
       // 默认托管方式依赖 herdr，失败信息必须直接给出可执行的补救动作
       throw new Error(
-        `无法调用 herdr（${messageOf(error)}）。请确认 herdr 已安装并在运行，`
-          + `或设置 ${HERDR_LAUNCHER_ENV}=spawn 回退到内置启动方式。`,
+        `无法调用 herdr（${messageOf(error)}）。请确认 herdr 已安装并在运行，` +
+          `或设置 ${HERDR_LAUNCHER_ENV}=spawn 回退到内置启动方式。`,
         { cause: error },
       )
     }
@@ -138,7 +138,8 @@ function serveCommand(port: number): string {
  * @returns 至少关闭了一个 workspace 时返回 true
  */
 async function closeWorkspaceByLabel(runner: HerdrRunner, label: string): Promise<boolean> {
-  const listed = (await runner(['workspace', 'list'])) as { workspaces?: HerdrWorkspaceSummary[] } | undefined
+  const listed = (await runner(['workspace', 'list'])) as
+    { workspaces?: HerdrWorkspaceSummary[] } | undefined
   const matches = (listed?.workspaces ?? []).filter((item) => item.label === label)
   for (const workspace of matches) {
     await runner(['workspace', 'close', workspace.workspace_id])
@@ -177,7 +178,12 @@ export function createHerdrLifecycle(runner: HerdrRunner): HerdrStoryLifecycle {
       if (!paneId) throw new Error('herdr workspace create did not return a root pane.')
       // pane run 只保证命令被投递，不保证已开始执行；就绪性由 waitUntilHealthy 兜底
       await runner(['pane', 'run', paneId, serveCommand(port)])
-      const info = (await runner(['pane', 'process-info', '--pane', paneId])) as HerdrPaneProcessInfo
+      const info = (await runner([
+        'pane',
+        'process-info',
+        '--pane',
+        paneId,
+      ])) as HerdrPaneProcessInfo
       const pid = info?.process_info?.shell_pid
       if (!Number.isInteger(pid) || pid <= 0) {
         throw new Error('herdr pane process-info did not return a usable shell pid.')
@@ -185,13 +191,14 @@ export function createHerdrLifecycle(runner: HerdrRunner): HerdrStoryLifecycle {
       return pid
     },
 
-    async stop(pid: number, storyId?: string): Promise<void> {
+    async stop(pid: number | string, storyId?: string): Promise<void> {
       if (storyId) {
         const closed = await closeWorkspaceByLabel(runner, storyServiceWorkspaceLabel(storyId))
         if (closed) return
       }
       // workspace 已不存在（例如被手工关闭）或调用方未提供 storyId：按进程树兜底
-      await killProcessTree(pid)
+      // 字符串句柄属于其它 launcher，herdr 实现无法据此杀进程树
+      if (typeof pid === 'number') await killProcessTree(pid)
     },
   }
 }
@@ -199,14 +206,17 @@ export function createHerdrLifecycle(runner: HerdrRunner): HerdrStoryLifecycle {
 /**
  * 解析 Story 服务的进程托管方式。
  *
- * 默认 `herdr`：进程挂在 herdr 常驻 server 的 pane 上，既不会因为关闭终端窗口被带走，
- * 也不会像 Windows 上的 detached 子进程那样弹出独立控制台窗口。
- * 只有显式设置 `DEVTASK_STORY_LAUNCHER=spawn` 才回退到内置的 detached 实现。
+ * 默认 `app-hc`：由 herdr-app 起终端、hc 查停，服务显示在桌面 tab 上（见 app-hc-story-service.ts）。
+ * 显式设置 `DEVTASK_STORY_LAUNCHER=herdr` 回退到老的 herdr 常驻 pane 实现；
+ * 设为 `spawn` 则回退到内置的 detached 实现。
  * @param env 环境变量表，测试可注入
  * @returns 选定的托管方式
  */
-export function resolveStoryServiceLauncher(env: NodeJS.ProcessEnv = process.env): StoryServiceLauncher {
-  return (env[HERDR_LAUNCHER_ENV] ?? '').trim().toLowerCase() === 'spawn' ? 'spawn' : 'herdr'
+export function resolveStoryServiceLauncher(
+  env: NodeJS.ProcessEnv = process.env,
+): StoryServiceLauncher {
+  const value = (env[HERDR_LAUNCHER_ENV] ?? '').trim().toLowerCase()
+  return value === 'herdr' ? 'herdr' : value === 'spawn' ? 'spawn' : 'app-hc'
 }
 
 /**

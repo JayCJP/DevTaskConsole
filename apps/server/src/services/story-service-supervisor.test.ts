@@ -41,12 +41,15 @@ describe('StoryServiceSupervisor', () => {
 
     expect(first).toMatchObject({ storyId: 'STORY-1', port: 60250, status: 'running', pid: 1234 })
     expect(second).toMatchObject({ storyId: 'STORY-2', port: 60251, status: 'running' })
-    await expect(afterRestart.ensureRunning('STORY-1', workspacesRoot, workspacesRoot))
-      .resolves.toMatchObject({ port: first.port, status: 'running' })
+    await expect(
+      afterRestart.ensureRunning('STORY-1', workspacesRoot, workspacesRoot),
+    ).resolves.toMatchObject({ port: first.port, status: 'running' })
     expect(launch).toHaveBeenCalledTimes(2)
     healthyPorts.delete(first.port)
-    await expect(afterRestart.inspect('STORY-1'))
-      .resolves.toMatchObject({ status: 'failed', error: 'CodeBuddy service is not responding to health checks.' })
+    await expect(afterRestart.inspect('STORY-1')).resolves.toMatchObject({
+      status: 'failed',
+      error: 'CodeBuddy service is not responding to health checks.',
+    })
     await expect(afterRestart.list()).resolves.toHaveLength(2)
   })
 
@@ -57,26 +60,37 @@ describe('StoryServiceSupervisor', () => {
       dataDirectory,
       portStart: 60260,
       portEnd: 60260,
-      launch: async () => { throw new Error('spawn failed') },
+      launch: async () => {
+        throw new Error('spawn failed')
+      },
       isPortAvailable: async () => true,
       isHealthy: async () => false,
       startupTimeoutMs: 1,
       wait: async () => {},
     })
 
-    await expect(supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow('spawn failed')
-    await expect(supervisor.ensureRunning('STORY-2', workspacesRoot, workspacesRoot))
-      .rejects.toThrow('No free Story service port')
-    await expect(supervisor.ensureRunning('STORY-3', join(workspacesRoot, '..', 'outside'), workspacesRoot))
-      .rejects.toThrow('inside the configured workspaces root')
-    await expect(supervisor.get('STORY-1')).resolves.toMatchObject({ status: 'failed', port: 60260 })
+    await expect(
+      supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot),
+    ).rejects.toThrow('spawn failed')
+    await expect(
+      supervisor.ensureRunning('STORY-2', workspacesRoot, workspacesRoot),
+    ).rejects.toThrow('No free Story service port')
+    await expect(
+      supervisor.ensureRunning('STORY-3', join(workspacesRoot, '..', 'outside'), workspacesRoot),
+    ).rejects.toThrow('inside the configured workspaces root')
+    await expect(supervisor.get('STORY-1')).resolves.toMatchObject({
+      status: 'failed',
+      port: 60260,
+    })
   })
 
   it('启动后健康检查超时时结束进程并保留 PID', async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), 'devtask-story-services-'))
     workspacesRoot = await mkdtemp(join(tmpdir(), 'devtask-workspaces-'))
     let portBusy = false
-    const killProcessTree = vi.fn(async () => { portBusy = false })
+    const killProcessTree = vi.fn(async () => {
+      portBusy = false
+    })
     const supervisor = new StoryServiceSupervisor({
       dataDirectory,
       portStart: 60280,
@@ -92,7 +106,9 @@ describe('StoryServiceSupervisor', () => {
       killProcessTree,
     })
 
-    await expect(supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow('startup timeout')
+    await expect(
+      supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot),
+    ).rejects.toThrow('startup timeout')
     // 已拉起的进程必须被结束，否则端口一直被占用、停止与重启都无从下手
     expect(killProcessTree).toHaveBeenCalledWith(5678, 'STORY-1')
     await expect(supervisor.get('STORY-1')).resolves.toMatchObject({
@@ -110,7 +126,10 @@ describe('StoryServiceSupervisor', () => {
       dataDirectory,
       portStart: 60290,
       portEnd: 60290,
-      launch: async () => { portBusy = true; return 6789 },
+      launch: async () => {
+        portBusy = true
+        return 6789
+      },
       isPortAvailable: async () => !portBusy,
       isHealthy: async () => false,
       wait: async () => {},
@@ -119,7 +138,9 @@ describe('StoryServiceSupervisor', () => {
       killProcessTree: async () => {},
     })
 
-    await expect(supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot)).rejects.toThrow('startup timeout')
+    await expect(
+      supervisor.ensureRunning('STORY-1', workspacesRoot, workspacesRoot),
+    ).rejects.toThrow('startup timeout')
     await expect(supervisor.get('STORY-1')).resolves.toMatchObject({
       status: 'failed',
       pid: 6789,
@@ -135,7 +156,10 @@ describe('StoryServiceSupervisor', () => {
       dataDirectory,
       portStart: 60300,
       portEnd: 60300,
-      launch: async () => { portBusy = true; return 7890 },
+      launch: async () => {
+        portBusy = true
+        return 7890
+      },
       isPortAvailable: async () => !portBusy,
       isHealthy: async () => false,
       wait: async () => {},
@@ -154,7 +178,7 @@ describe('StoryServiceSupervisor', () => {
       isHealthy: async () => false,
       wait: async () => {},
       stopTimeoutMs: 1,
-      killProcessTree: async (pid: number) => {
+      killProcessTree: async (pid: number | string) => {
         expect(pid).toBe(7890)
         portBusy = false
       },
