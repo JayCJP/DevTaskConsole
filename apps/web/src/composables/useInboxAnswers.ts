@@ -43,26 +43,50 @@ function readAllAnswers(): Record<string, InboxAnswer> {
  * @param groups 已分组的收件箱数据（每组含 stories，每个 story 含 items）
  * @returns 按渲染顺序排列的事项列表
  */
-export function flattenInboxGroups<T extends { stories: Array<{ items: InboxItem[] }> }>(groups: T[]): InboxItem[] {
+export function flattenInboxGroups<T extends { stories: Array<{ items: InboxItem[] }> }>(
+  groups: T[],
+): InboxItem[] {
   return groups.flatMap((group) => group.stories.flatMap((story) => story.items))
 }
 
-/** 建议稿分段：marker 为圈号（如 ①），text 为该标记后的正文；首段 marker 为空表示没有圈号的引导语 */
+/** 建议稿分段：marker 为编号标记（如 ① 或 (1)），text 为该标记后的正文；首段 marker 为空表示没有编号的引导语 */
 export interface SuggestionSegment {
-  /** 圈号标记；空字符串表示这段是没有标记的引导语 */
+  /** 编号标记；空字符串表示这段是没有编号的引导语 */
   marker: string
   /** 该段的正文，保留原始换行 */
   text: string
 }
 
+/** 正文里需要加粗的字眼片段：bold 为 true 时加粗渲染 */
+export interface EmphasisPart {
+  /** 片段文字 */
+  text: string
+  /** 是否加粗 */
+  bold: boolean
+}
+
 /** 建议稿里可能出现的圈号标记，按此切分把一长段文字变成可扫读的编号列表 */
-const suggestionMarkers = '①②③④⑤⑥⑦⑧⑨⑩'
+const circleMarkers = '①②③④⑤⑥⑦⑧⑨⑩'
+
+/** 括号数字编号，兼容半角 (1) 与全角 （1）；作为整体捕获，避免只抓到单个括号 */
+const parenMarkerPattern = '[（(]\\d+[)）]'
+
+/** 编号标记统一匹配：圈号单个字符，或括号数字整体；用捕获组保留分隔符 */
+const markerPattern = new RegExp(`((?:[${circleMarkers}]|${parenMarkerPattern}))`)
+
+/** 正文中需要 inline 加粗的字眼（不含冒号），连同冒号一起高亮 */
+const boldWords = ['理由', '不确定点', '说明', '注意', '备注', '依据', '风险', '背景']
+
+/** 加粗字眼匹配：词 + 可选冒号，供 split 保留分隔符 */
+const boldWordPattern = new RegExp(`((?:${boldWords.join('|')})[:：]?)`, 'g')
 
 /**
- * 把建议稿原文按圈号切成若干段，用于分行展示。
+ * 把建议稿原文按编号切成若干段，用于分行展示。
  *
- * 不改写正文，只识别圈号作为视觉分隔：没有圈号时返回单段（marker 为空）；
- * 有圈号时，第一段通常是引导语，其后每段对应一个圈号。换行由 CSS 的 pre-wrap 保留。
+ * 不改写正文，只识别编号作为视觉分隔：圈号（①…⑩）与括号数字（(1)/（1)）均支持；
+ * 没有编号时返回单段（marker 为空）；有编号时，第一段通常是引导语，其后每段对应一个编号。
+ * 「理由：」「不确定点：」等字眼不作为分隔，保留在正文内，由 boldPartsOf 负责加粗。
+ * 换行由 CSS 的 pre-wrap 保留。
  *
  * @param text 建议稿原文
  * @returns 按顺序排列的分段；空文本返回空数组
@@ -70,7 +94,8 @@ const suggestionMarkers = '①②③④⑤⑥⑦⑧⑨⑩'
 export function splitSuggestion(text: string): SuggestionSegment[] {
   const clean = text.trim()
   if (!clean) return []
-  const parts = clean.split(new RegExp(`([${suggestionMarkers}])`))
+
+  const parts = clean.split(markerPattern)
   const segments: SuggestionSegment[] = []
   if (parts[0]?.trim()) segments.push({ marker: '', text: parts[0].trim() })
   for (let index = 1; index < parts.length; index += 2) {
@@ -79,6 +104,28 @@ export function splitSuggestion(text: string): SuggestionSegment[] {
     segments.push({ marker, text: body })
   }
   return segments
+}
+
+/**
+ * 把正文按需要加粗的字眼拆成片段，供模板 inline 渲染加粗。
+ *
+ * 只拆分「理由：」「不确定点：」等字眼（连同冒号），其余文字原样保留；
+ * 字眼出现在句中任意位置均可加粗，不要求位于段首。这是纯函数，便于单测。
+ *
+ * @param text 正文原文
+ * @returns 按顺序排列的片段，bold 为 true 的片段需加粗渲染
+ */
+export function boldPartsOf(text: string): EmphasisPart[] {
+  if (!text) return []
+  const parts = text.split(boldWordPattern)
+  return parts
+    .filter((part) => part.length > 0)
+    .map((part) => ({
+      text: part,
+      bold: boldWords.some(
+        (word) => part === word || part.startsWith(word + '：') || part.startsWith(word + ':'),
+      ),
+    }))
 }
 
 /**
@@ -91,7 +138,10 @@ export function splitSuggestion(text: string): SuggestionSegment[] {
  * @param answers 以事项 ID 为键的答案映射
  * @returns 汇总文本，每行一条 `Qn:答案`；无答案时返回空字符串
  */
-export function buildInboxAnswerText(items: InboxItem[], answers: Record<string, InboxAnswer>): string {
+export function buildInboxAnswerText(
+  items: InboxItem[],
+  answers: Record<string, InboxAnswer>,
+): string {
   const lines: string[] = []
   for (const item of items) {
     const answer = answers[item.id]
@@ -158,10 +208,13 @@ export function useInboxAnswers() {
     }
     const pending = debounceTimers.get(id)
     if (pending) clearTimeout(pending)
-    debounceTimers.set(id, setTimeout(() => {
-      writeAnswer(id)
-      debounceTimers.delete(id)
-    }, 300))
+    debounceTimers.set(
+      id,
+      setTimeout(() => {
+        writeAnswer(id)
+        debounceTimers.delete(id)
+      }, 300),
+    )
   }
 
   /**

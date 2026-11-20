@@ -4,6 +4,7 @@
  * 从 ConsolePage.vue 拆分而来，共享状态由 ConsoleShell 通过 provide 下发。
  */
 import { useConsoleContext } from '../composables/useConsoleContext'
+import { boldPartsOf } from '../composables/useInboxAnswers'
 
 const {
   inbox,
@@ -97,8 +98,9 @@ const {
                 }}</span>
                 <div class="inbox-copy">
                   <div class="inbox-title-line">
-                    <strong>{{ item.title }}</strong
-                    ><span class="kind-label">{{ item.kind.replaceAll('_', ' ') }}</span>
+                    <strong>{{ item.title }}</strong><span class="kind-label">{{
+                      item.kind.replaceAll('_', ' ')
+                    }}</span>
                   </div>
                   <p v-if="inboxReasonOf(item)">{{ inboxReasonOf(item) }}</p>
                 </div>
@@ -136,7 +138,14 @@ const {
                       <span v-if="segment.marker" class="suggestion-marker">{{
                         segment.marker
                       }}</span>
-                      <span class="suggestion-text">{{ segment.text }}</span>
+                      <span class="suggestion-text"
+                        ><template
+                          v-for="(part, partIndex) in boldPartsOf(segment.text)"
+                          :key="partIndex"
+                          ><strong v-if="part.bold" class="suggestion-bold">{{ part.text }}</strong
+                          ><template v-else>{{ part.text }}</template></template
+                        ></span
+                      >
                     </div>
                   </div>
                 </div>

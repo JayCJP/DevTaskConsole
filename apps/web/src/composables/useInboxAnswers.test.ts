@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InboxItem } from '@devtask/shared'
 import {
+  boldPartsOf,
   buildInboxAnswerText,
   flattenInboxGroups,
   splitSuggestion,
@@ -83,9 +84,57 @@ describe('splitSuggestion', () => {
     expect(segments[1]).toEqual({ marker: '②', text: '另一条' })
   })
 
+  it('按括号数字 (1)(2) 切分，marker 为完整括号编号', () => {
+    const segments = splitSuggestion('建议如下：(1) 第一条；(2) 第二条。')
+    expect(segments.map((s) => s.marker)).toEqual(['', '(1)', '(2)'])
+    expect(segments.map((s) => s.text)).toEqual(['建议如下：', '第一条；', '第二条。'])
+  })
+
+  it('兼容全角括号编号 （1）', () => {
+    const segments = splitSuggestion('（1）第一条（2）第二条')
+    expect(segments.map((s) => s.marker)).toEqual(['（1）', '（2）'])
+    expect(segments.map((s) => s.text)).toEqual(['第一条', '第二条'])
+  })
+
+  it('「理由：」「不确定点：」不拆段，保留在同一段正文里', () => {
+    const segments = splitSuggestion(
+      '建议：(1) 接入；(2) 恢复入口。理由：语义不同。不确定点：待确认。',
+    )
+    expect(segments.map((s) => s.marker)).toEqual(['', '(1)', '(2)'])
+    expect(segments[2].text).toBe('恢复入口。理由：语义不同。不确定点：待确认。')
+  })
+
   it('空文本返回空数组', () => {
     expect(splitSuggestion('')).toEqual([])
     expect(splitSuggestion('   ')).toEqual([])
+  })
+})
+
+describe('boldPartsOf', () => {
+  it('无关键字眼时原样返回单段，不标记加粗', () => {
+    expect(boldPartsOf('普通正文')).toEqual([{ text: '普通正文', bold: false }])
+  })
+
+  it('把「理由：」「不确定点：」连同冒号拆为加粗片段', () => {
+    expect(boldPartsOf('前文。理由：语义不同。不确定点：待确认。')).toEqual([
+      { text: '前文。', bold: false },
+      { text: '理由：', bold: true },
+      { text: '语义不同。', bold: false },
+      { text: '不确定点：', bold: true },
+      { text: '待确认。', bold: false },
+    ])
+  })
+
+  it('句中出现的关键字眼也能加粗，不要求段首', () => {
+    expect(boldPartsOf('这里说明：语义不同。')).toEqual([
+      { text: '这里', bold: false },
+      { text: '说明：', bold: true },
+      { text: '语义不同。', bold: false },
+    ])
+  })
+
+  it('空文本返回空数组', () => {
+    expect(boldPartsOf('')).toEqual([])
   })
 })
 
