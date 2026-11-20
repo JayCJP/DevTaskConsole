@@ -3,7 +3,10 @@
  * instances 页面视图。
  * 从 ConsolePage.vue 拆分而来，共享状态由 ConsoleShell 通过 provide 下发。
  */
+import { computed, nextTick, ref, watch } from 'vue'
 import { useConsoleContext } from '../composables/useConsoleContext'
+import { parseJobOutput } from '../utils/job-output'
+import { renderMarkdown } from '../utils/markdown'
 import InstanceStoryCard from '../components/InstanceStoryCard.vue'
 import JobDetailPanel from '../components/JobDetailPanel.vue'
 const {
@@ -19,7 +22,6 @@ const {
   currentJobLabel,
   currentJobSession,
   jobPrefsError,
-  jobTranscript,
   jobOutput,
   storyTargetWorkspace,
   storyDraft,
@@ -82,6 +84,37 @@ const {
   storyCreating,
   submitStoryCreate,
 } = useConsoleContext()
+
+/** 实时输出区域的 DOM 引用，用于内容更新后滚动到底部 */
+const outputRef = ref<HTMLDivElement | null>(null)
+
+/** 从原始 SSE 输出中解析出用户/助手对话列表 */
+const parsedOutput = computed(() => parseJobOutput(jobOutput.value))
+
+/**
+ * 把消息时间戳格式化为 HH:mm:ss；无时间戳时返回空串。
+ * @param timestamp 毫秒时间戳，或 null
+ * @returns 形如 "15:19:11" 的时间字符串，或空串
+ */
+function formatMessageTime(timestamp: number | null): string {
+  if (timestamp === null) return ''
+  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+/**
+ * 实时输出内容变化时自动滚动到底部。
+ * 仅当用户原本就停留在底部附近（距底部 40px 内）时才滚动，避免打断用户主动上翻查看历史。
+ * 使用 nextTick 等待 DOM 完成文本更新后再读取滚动高度。
+ */
+watch(jobOutput, async () => {
+  await nextTick()
+  const el = outputRef.value
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distanceToBottom <= 40) {
+    el.scrollTop = el.scrollHeight
+  }
+})
 </script>
 
 <template>
@@ -366,8 +399,21 @@ const {
           @use-suggestion="useSuggestedReply"
         />
         <p v-if="jobPrefsError" class="mapping-error" role="alert">{{ jobPrefsError }}</p>
-        <pre class="job-transcript">{{ jobTranscript || '暂无历史对话' }}</pre>
-        <pre class="job-output">{{ jobOutput || '等待实时输出…' }}</pre>
+        <div ref="outputRef" class="job-output">
+          <p v-if="!parsedOutput.length" class="job-output-empty">等待实时输出…</p>
+          <div
+            v-for="(msg, index) in parsedOutput"
+            :key="index"
+            class="job-output-msg"
+            :class="msg.role === 'user' ? 'is-user' : 'is-assistant'"
+          >
+            <div class="job-output-msg-head">
+              <span class="job-output-role">{{ msg.role === 'user' ? '你' : '助手' }}</span>
+              <span class="job-output-time">{{ formatMessageTime(msg.timestamp) }}</span>
+            </div>
+            <div class="job-output-text" v-html="renderMarkdown(msg.text)"></div>
+          </div>
+        </div>
         <div class="instance-reply">
           <el-input
             v-model="jobReply"
@@ -442,8 +488,8 @@ const {
         <p class="eyebrow">SESSION OUTPUT</p>
         <h2>选择一个实例</h2>
         <p class="muted">
-          从左侧点选某个 Story 下的实例即可查看它的对话与实时输出；同一 Story
-          共用一台服务与端口，每轮 run/fixbugs 是独立 Job/session。
+          从左侧点选某个 Story 下的实例即可查看它的实时输出；同一 Story 共用一台服务与端口，每轮
+          run/fixbugs 是独立 Job/session。
         </p>
         <div class="terminal-placeholder">等待实例选择<span>_</span></div>
       </template>

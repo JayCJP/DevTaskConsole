@@ -42,7 +42,7 @@ import {
 import { z } from 'zod'
 import { useRoute, useRouter } from 'vue-router'
 import type { UploadFile } from 'element-plus'
-import { ApiError, apiRequest } from '../api/client'
+import { ApiError, apiRequest, readConsoleToken } from '../api/client'
 import { useAuditTrail } from '../composables/useAuditTrail'
 import { useBoardStories } from '../composables/useBoardStories'
 import { useCronActions } from '../composables/useCronActions'
@@ -409,7 +409,6 @@ export function useConsole() {
   const jobReply = ref('')
   /** 文件上传：供新建轮次与回复实例两个输入框共用 */
   const { uploading: imageUploading, error: uploadError, uploadImage } = useStoryUpload()
-  const jobTranscript = ref('')
   const jobOutput = ref('')
   const jobError = ref('')
   const jobActionLoading = ref(false)
@@ -1590,7 +1589,6 @@ export function useConsole() {
     jobStreamController?.abort()
     selectedJob.value = null
     jobExtras.clearDetail()
-    jobTranscript.value = ''
     jobOutput.value = ''
   }
 
@@ -1978,28 +1976,24 @@ export function useConsole() {
       void jobExtras.loadPrefs(job.storyId)
     }
     renameDraft.value = job.name
-    jobTranscript.value = ''
     jobOutput.value = ''
     jobError.value = ''
     const controller = new AbortController()
     jobStreamController = controller
+    // 直接接入实时输出流，不再请求历史 transcript：历史记录体积大，串行加载会阻塞首屏并造成卡顿。
     try {
-      const transcript = await apiRequest<unknown>(
-        `/api/v1/stories/${encodeURIComponent(job.storyId ?? '')}/jobs/${encodeURIComponent(job.id)}/transcript`,
-      )
-      jobTranscript.value =
-        typeof transcript === 'string' ? transcript : JSON.stringify(transcript, null, 2)
       await streamJobOutput(job, controller)
     } catch (cause) {
       if (!controller.signal.aborted) {
-        jobError.value =
-          cause instanceof Error ? cause.message : 'Unable to load Job transcript or stream.'
+        jobError.value = cause instanceof Error ? cause.message : 'Unable to open Job stream.'
       }
     }
   }
 
   async function streamJobOutput(job: Job, controller: AbortController): Promise<void> {
-    const token = sessionStorage.getItem('devtask-console-token')
+    // 复用统一的令牌读取（localStorage 优先、兼容 sessionStorage），与 apiRequest 保持一致；
+    // 之前只读 sessionStorage 会在 token 存于 localStorage 时漏带请求头，导致 stream 返回 401。
+    const token = readConsoleToken()
     let lastEventId = ''
     for (let attempt = 0; attempt < 5 && !controller.signal.aborted; attempt += 1) {
       try {
@@ -2105,7 +2099,6 @@ export function useConsole() {
           body: JSON.stringify({ text: jobReply.value.trim(), bash: false }),
         },
       )
-      jobTranscript.value += `\n\nYou: ${jobReply.value.trim()}`
       jobReply.value = ''
       actionToasts.notify(replyNoticeOf(result) ?? '回复已提交。', 'success')
     } catch (cause) {
@@ -3199,7 +3192,6 @@ export function useConsole() {
     renameDraft,
     jobPrompt,
     jobReply,
-    jobTranscript,
     jobOutput,
     jobError,
     jobActionLoading,

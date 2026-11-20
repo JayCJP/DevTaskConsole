@@ -1434,23 +1434,161 @@
 .instance-workspace {
   position: relative;
 }
-.job-transcript,
+/* 实时输出：Data Inset 签名组件——更深的凹陷底 + 1px 发丝描边 + 内部滚动 */
 .job-output {
-  max-height: 220px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  min-height: 90px;
+  overflow-y: auto;
   margin: 12px 0;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-subtle);
   border-radius: var(--radius-sm);
-  background: var(--page);
-  color: var(--muted);
-  font: 11px/1.6 monospace;
-  white-space: pre-wrap;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: var(--text-base);
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.job-output {
-  min-height: 90px;
-  color: var(--text);
+.job-output::selection,
+.job-output ::selection {
+  background: var(--brand-soft);
+  color: var(--text-strong);
+}
+.job-output::-webkit-scrollbar {
+  width: 8px;
+}
+.job-output::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bg-inset);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+}
+.job-output-empty {
+  margin: auto 0;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+/* 角色区分：1px 同色描边 + 浅底，不用彩色粗左边框；文字标签承担非颜色线索 */
+.job-output-msg {
+  padding: 10px 12px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.job-output-msg.is-user {
+  background: var(--bg-raised);
+}
+.job-output-msg-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.job-output-role {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.is-user .job-output-role {
+  color: var(--brand);
+}
+.job-output-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.job-output-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+/* Markdown 渲染：正文保持正文阶梯，代码与数据才用等宽 */
+.job-output-text > :first-child {
+  margin-top: 0;
+}
+.job-output-text > :last-child {
+  margin-bottom: 0;
+}
+.job-output-text p {
+  margin: 0 0 8px;
+}
+.job-output-text h1,
+.job-output-text h2,
+.job-output-text h3,
+.job-output-text h4,
+.job-output-text h5,
+.job-output-text h6 {
+  margin: 12px 0 6px;
+  font-size: var(--text-base);
+  font-weight: 620;
+  line-height: 1.4;
+  color: var(--text-strong);
+}
+.job-output-text ul,
+.job-output-text ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.job-output-text li {
+  margin: 2px 0;
+}
+.job-output-text a {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.job-output-text a:hover {
+  color: var(--brand-hover);
+}
+.job-output-text code {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.job-output-text pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.job-output-text pre code {
+  padding: 0;
+  background: none;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+.job-output-text blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  color: var(--text-muted);
+}
+.job-output-text table {
+  margin: 8px 0;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+.job-output-text th,
+.job-output-text td {
+  padding: 4px 8px;
+  border: 1px solid var(--line-subtle);
+  text-align: left;
+}
+.job-output-text th {
+  background: var(--bg-raised);
+  color: var(--text-strong);
+  font-weight: 620;
+}
+.job-output-text hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--line-subtle);
 }
 .job-actions {
   display: flex;
@@ -3092,7 +3230,6 @@
 }
 
 /* 终端 / 输出块：内嵌表面，加内阴影表达「凹陷」 */
-.job-transcript,
 .job-output,
 .terminal-placeholder,
 .workspace-output pre,
