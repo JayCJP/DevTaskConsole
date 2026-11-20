@@ -319,6 +319,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     audit: auditLog,
   })
 
+  // 允许本站被工作台等本地页面以 iframe 嵌入：
+  // 移除可能存在的 X-Frame-Options，并用 CSP frame-ancestors 显式放开回环来源。
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.removeHeader('X-Frame-Options')
+    reply.header(
+      'Content-Security-Policy',
+      "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*;",
+    )
+    return payload
+  })
+
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/api/auth/login') {
       return
@@ -329,11 +340,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
     const candidate = request.headers['x-devtask-token']
     if (typeof candidate !== 'string' || !tokenMatches(candidate, options.token)) {
-      return reply
-        .code(401)
-        .send({
-          error: { code: 'UNAUTHORIZED', message: 'A valid local access token is required.' },
-        })
+      return reply.code(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'A valid local access token is required.' },
+      })
     }
   })
 
