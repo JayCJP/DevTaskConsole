@@ -12,6 +12,10 @@ import {
   buildEnvironmentSpecs,
   buildTriggerRequestSchema,
   buildTriggerResultSchema,
+  consoleSettingsUpdateSchema,
+  deployMultipleRequestSchema,
+  deployMultipleResultSchema,
+  defaultTapdOwner,
   defaultTapdWorkspaceId,
   jobCreateRequestSchema,
   jobDetailSchema,
@@ -40,7 +44,7 @@ import {
   type SnapshotSegment,
 } from './aggregator/snapshot.js'
 import { SnapshotCache } from './aggregator/snapshot-cache.js'
-import { buildBoard, defaultBoardOwner } from './aggregator/board.js'
+import { buildBoard } from './aggregator/board.js'
 import {
   BoardCache,
   createCachedBoardProvider,
@@ -53,7 +57,13 @@ import { ApplicationMappingStore } from './integrations/application-mappings.js'
 import { CronMappingStore } from './aggregator/cron-data.js'
 import { mcpClientRegistry } from './integrations/mcp-client.js'
 import { getDataDirectory, loadOrCreateToken, tokenMatches } from './security/token-store.js'
-import { listRepositoryCandidates } from './workspaces/repository-candidates.js'
+import { SettingsStore } from './settings/settings-store.js'
+import { resolveCacheDirectory } from './settings/cache-directory.js'
+import {
+  createCachedCandidateProvider,
+  RepositoryCandidatesCache,
+} from './workspaces/repository-candidates-cache.js'
+import { listRepositoryCandidates, resolveSourceRoot } from './workspaces/repository-candidates.js'
 import {
   deleteWorkspace,
   listWorkspaces,
@@ -137,6 +147,10 @@ export interface ServerOptions {
   cronExecutionReader?: CronExecutionReader
   /** CodeBuddy 原始 API；测试可注入桩，用于派发轮次等直连调用 */
   codeBuddyApi?: CodeBuddyApi
+  /** 控制台可编辑配置存储；测试可注入临时目录 */
+  settingsStore?: SettingsStore
+  /** 工作区候选项目缓存；测试可注入内存替身 */
+  candidateCache?: import('./workspaces/repository-candidates-cache.js').CandidateCacheStore
 }
 
 /**
@@ -223,8 +237,12 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const applicationMappings = options.applicationMappingStore ?? new ApplicationMappingStore()
   const cronMappings = options.cronMappingStore ?? new CronMappingStore()
   const workspaceBindings = options.workspaceBindingStore ?? new WorkspaceBindingStore()
+  const settings = options.settingsStore ?? new SettingsStore()
+  // 缓存实例在启动时固定目录：改 cacheDirectory 后需重启才生效
+  const cacheDirectory = resolveCacheDirectory(settings.getSync())
   const tapd = options.tapdAdapter ?? new TapdAdapter()
-  const workspaceInitializer = options.workspaceInitializer ?? new WorkspaceInitializer()
+  const workspaceInitializer =
+    options.workspaceInitializer ?? new WorkspaceInitializer({ settingsStore: settings })
   const workspacesRoot = options.workspacesRoot ?? getWorkspacesRoot()
   const storyServiceSupervisor =
     options.storyServiceSupervisor ?? createStoryServiceSupervisor(workspacesRoot)
@@ -239,7 +257,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     options.snapshotProvider ??
       createCachedSnapshotProvider({
         workspacesRoot,
-        cache: options.snapshotCache ?? new SnapshotCache(),
+        cache: options.snapshotCache ?? new SnapshotCache(cacheDirectory),
         logError: (message) => app.log.error({ code: 'SNAPSHOT_CACHE_WRITE_FAILED' }, message),
       }),
   )
@@ -252,7 +270,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const boardProvider = createSingleFlight(
     options.boardProvider ??
       createCachedBoardProvider({
-        cache: options.boardCache ?? new BoardCache(),
+        cache: options.boardCache ?? new BoardCache(cacheDirectory),
         build: (owner, includeReleased) =>
           buildBoard(
             owner,
@@ -265,6 +283,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           ),
         logError: (message) => app.log.error({ code: 'BOARD_CACHE_WRITE_FAILED' }, message),
       }),
+  )
+  // 工作区候选项目 provider：普通请求命中文件缓存直返（零 readdir），force 穿透；并发同 root 单飞去重。
+  const candidateProvider = createSingleFlight(
+    createCachedCandidateProvider({
+      cache: options.candidateCache ?? new RepositoryCandidatesCache(cacheDirectory),
+      scan: (sourceRoot) => listRepositoryCandidates(sourceRoot),
+      logError: (message) =>
+        app.log.error({ code: 'REPOSITORY_CANDIDATES_CACHE_WRITE_FAILED' }, message),
+    }),
   )
   const webDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
   const ensureStoryService = async (storyId: string): Promise<StoryService> => {
@@ -362,9 +389,44 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     timestamp: new Date().toISOString(),
   }))
 
+  // 控制台可编辑配置：GET 读取、PUT 合并更新。配置文件固定留在数据目录，
+  // 缓存目录等配置只影响下一次相关请求；cacheDirectory 变更需重启服务生效。
+  app.get('/api/v1/settings', async (_request, reply) => {
+    try {
+      return await settings.get()
+    } catch (error) {
+      _request.log.error(
+        { code: 'SETTINGS_READ_FAILED' },
+        `Unable to read console settings: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return reply.code(500).send({
+        error: { code: 'SETTINGS_READ_FAILED', message: 'Unable to read console settings.' },
+      })
+    }
+  })
+
+  app.put('/api/v1/settings', async (request, reply) => {
+    const parsed = consoleSettingsUpdateSchema.safeParse(request.body)
+    if (!parsed.success) return invalidParameters(reply)
+    try {
+      return await settings.update(parsed.data)
+    } catch (error) {
+      request.log.error(
+        { code: 'SETTINGS_WRITE_FAILED' },
+        `Unable to write console settings: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return reply.code(500).send({
+        error: { code: 'SETTINGS_WRITE_FAILED', message: 'Unable to write console settings.' },
+      })
+    }
+  })
+
   app.get('/api/v1/workspaces/candidates', async (request, reply) => {
     try {
-      return await listRepositoryCandidates()
+      const query = z.object({ refresh: z.enum(['0', '1']).optional() }).safeParse(request.query)
+      if (!query.success) return invalidParameters(reply)
+      const sourceRoot = await resolveSourceRoot(await settings.get())
+      return await candidateProvider(sourceRoot, query.data.refresh === '1')
     } catch (error) {
       const code =
         error instanceof Error && 'code' in error && typeof error.code === 'string'
@@ -534,11 +596,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       .safeParse(request.query)
     if (!query.success) return invalidParameters(reply)
     const includeReleased = query.data.includeReleased === '1'
-    const board = await boardProvider(
-      query.data.owner ?? defaultBoardOwner,
-      includeReleased,
-      query.data.refresh === '1',
-    )
+    // 缺省处理人从配置读取，解析成非空值再传给 provider，避免缓存 key 分裂。
+    const configuredOwner = (await settings.get()).tapdOwner?.trim()
+    const effectiveOwner = query.data.owner || configuredOwner || defaultTapdOwner
+    const board = await boardProvider(effectiveOwner, includeReleased, query.data.refresh === '1')
     return board
   })
 
@@ -1224,6 +1285,88 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return reply.code(expiredSession ? 403 : 502).send({
         error: {
           code: expiredSession ? 'DEVOPS_SESSION_EXPIRED' : 'BUILD_TRIGGER_FAILED',
+          message,
+        },
+      })
+    }
+  })
+
+  /**
+   * 批量发布制品（发布页 M6-11 写操作兜底）。
+   * 仅放行 dev / pre / pre-txnj（由 zod schema 的环境白名单保证），env 原样透传；
+   * Harness Phase 4-6 期间一律拒绝，必须等 DevOps 真实回执并写审计，不伪装成"已上线"。
+   */
+  app.post('/api/v1/devops/deploy-multiple', async (request, reply) => {
+    const parsed = deployMultipleRequestSchema.safeParse(request.body)
+    if (!parsed.success) return invalidParameters(reply)
+    const input = parsed.data
+
+    // 门控 1：Harness Phase 4-6 期间由发布助手负责，站点一律拒绝写操作
+    let gatePhase: number | undefined
+    try {
+      const snapshot = await snapshotProvider(false)
+      gatePhase = snapshot.harnessActive
+        .map((active) => active.phase)
+        .find((phase): phase is number => typeof phase === 'number' && phase >= 4 && phase <= 6)
+    } catch (error) {
+      request.log.error({ err: error }, 'Failed to read harness gate before deploy')
+      return reply.code(502).send({
+        error: {
+          code: 'GATE_CHECK_FAILED',
+          message: '无法确认 Harness 流程阶段，已拒绝批量发布以避免竞态。',
+        },
+      })
+    }
+    if (gatePhase !== undefined) {
+      return reply.code(409).send({
+        error: {
+          code: 'HARNESS_PHASE_GATE',
+          message: `Harness 正在执行 Phase ${gatePhase}，由发布助手负责；该阶段站点禁止批量发布。`,
+          phase: gatePhase,
+        },
+      })
+    }
+
+    try {
+      const raw = await devOps.deployMultiple({
+        urls: input.urls,
+        env: input.env,
+        force: input.force,
+        timeout: input.timeout,
+      })
+      const result = deployMultipleResultSchema.parse({
+        env: input.env,
+        urls: input.urls,
+        force: input.force,
+        timeout: input.timeout,
+        ...(raw !== undefined ? { raw } : {}),
+        deployedAt: new Date().toISOString(),
+      })
+      await auditLog.record({
+        action: 'deploy.multiple',
+        target: input.env,
+        reversible: false,
+        result: 'succeeded',
+        after: { urls: input.urls, env: input.env, force: input.force, timeout: input.timeout },
+      })
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '批量发布失败。'
+      const expiredSession = message.includes('session expired')
+      await auditLog
+        .record({
+          action: 'deploy.multiple',
+          target: input.env,
+          reversible: false,
+          result: 'failed',
+          error: message,
+          after: { urls: input.urls, env: input.env, force: input.force, timeout: input.timeout },
+        })
+        .catch(() => undefined)
+      request.log.error({ channel: 'DevOps', err: error }, 'Batch deploy failed')
+      return reply.code(expiredSession ? 403 : 502).send({
+        error: {
+          code: expiredSession ? 'DEVOPS_SESSION_EXPIRED' : 'DEPLOY_MULTIPLE_FAILED',
           message,
         },
       })

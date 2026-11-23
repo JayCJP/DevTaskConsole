@@ -10,15 +10,25 @@ import {
   type WorkspaceInitializationJob,
   type WorkspaceInitializationRequest,
 } from '@devtask/shared'
-import { getSourceRoot, listRepositoryCandidates } from './repository-candidates.js'
+import { listRepositoryCandidates, resolveSourceRoot } from './repository-candidates.js'
 import { getWorkspacesRoot } from '../aggregator/snapshot.js'
 import { getDataDirectory } from '../security/token-store.js'
+import type { SettingsStore } from '../settings/settings-store.js'
 
-const scriptPath = join(homedir(), '.codebuddy', 'skills', 'create-workspace', 'scripts', 'create-workspace.ps1')
+const scriptPath = join(
+  homedir(),
+  '.codebuddy',
+  'skills',
+  'create-workspace',
+  'scripts',
+  'create-workspace.ps1',
+)
 const maximumLogLines = 5000
 
 interface WorkspaceInitializerOptions {
   dataDirectory?: string
+  /** 控制台配置存储；用于解析源仓库根目录，未注入时使用环境变量/默认值 */
+  settingsStore?: SettingsStore
 }
 
 export interface WorkspacePreview {
@@ -40,28 +50,41 @@ export class WorkspaceJobNotFoundError extends Error {
 export class WorkspaceInitializer {
   private readonly jobs = new Map<string, WorkspaceInitializationJob>()
   private readonly jobsFilePath: string
+  private readonly settings?: SettingsStore
   private readonly ready: Promise<void>
   private persistenceQueue: Promise<void> = Promise.resolve()
   private persistenceTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(options: WorkspaceInitializerOptions = {}) {
-    this.jobsFilePath = join(options.dataDirectory ?? getDataDirectory(), 'workspace-initialization-jobs.json')
+    this.jobsFilePath = join(
+      options.dataDirectory ?? getDataDirectory(),
+      'workspace-initialization-jobs.json',
+    )
+    this.settings = options.settingsStore
     this.ready = this.loadPersistedJobs()
   }
 
   async preview(input: unknown): Promise<WorkspacePreview> {
-    const request = await this.validate(input)
+    const { request, sourceRoot } = await this.validate(input)
     const logs: string[] = []
-    const exitCode = await this.runPowerShell(buildPowerShellArguments(request, true), (line) => logs.push(line))
+    const exitCode = await this.runPowerShell(
+      buildPowerShellArguments(request, true, sourceRoot),
+      (line) => logs.push(line),
+    )
     return { logs, exitCode }
   }
 
   async start(input: unknown): Promise<WorkspaceInitializationJob> {
     await this.ready
-    const request = await this.validate(input)
-    if ([...this.jobs.values()].some((job) =>
-      job.workspaceName === request.workspaceName && job.status === 'running')) {
-      throw new WorkspaceConflictError(`Workspace ${request.workspaceName} already has an active initialization job.`)
+    const { request, sourceRoot } = await this.validate(input)
+    if (
+      [...this.jobs.values()].some(
+        (job) => job.workspaceName === request.workspaceName && job.status === 'running',
+      )
+    ) {
+      throw new WorkspaceConflictError(
+        `Workspace ${request.workspaceName} already has an active initialization job.`,
+      )
     }
     const now = new Date().toISOString()
     const job = workspaceInitializationJobSchema.parse({
@@ -87,13 +110,18 @@ export class WorkspaceInitializer {
 
     try {
       await access(scriptPath)
-      const child = spawn('pwsh', buildPowerShellArguments(request, false), {
+      const child = spawn('pwsh', buildPowerShellArguments(request, false, sourceRoot), {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       })
       this.consumeChild(job, child)
     } catch (error) {
-      this.finish(job, 'failed', null, error instanceof Error ? error.message : 'Unable to start PowerShell.')
+      this.finish(
+        job,
+        'failed',
+        null,
+        error instanceof Error ? error.message : 'Unable to start PowerShell.',
+      )
     }
 
     return copyJob(job)
@@ -129,7 +157,7 @@ export class WorkspaceInitializer {
       throw new WorkspaceConflictError('该任务没有保存原始参数，无法续跑。')
     }
     // 与首次启动相同的前置校验：脚本仍存在、仓库仍可用
-    const request = await this.validate(job.request)
+    const { request, sourceRoot } = await this.validate(job.request)
     const stageBefore = job.stage
     job.resumeCount = (job.resumeCount ?? 0) + 1
     job.status = 'running'
@@ -140,13 +168,18 @@ export class WorkspaceInitializer {
       `从阶段 ${stageBefore} 开始第 ${job.resumeCount} 次续跑；脚本为幂等执行，已完成的步骤会被跳过。`,
     )
     try {
-      const child = spawn('pwsh', buildPowerShellArguments(request, false), {
+      const child = spawn('pwsh', buildPowerShellArguments(request, false, sourceRoot), {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       })
       this.consumeChild(job, child)
     } catch (error) {
-      this.finish(job, 'failed', null, error instanceof Error ? error.message : 'Unable to start PowerShell.')
+      this.finish(
+        job,
+        'failed',
+        null,
+        error instanceof Error ? error.message : 'Unable to start PowerShell.',
+      )
     }
     await this.persistJobs()
     return copyJob(job)
@@ -175,10 +208,13 @@ export class WorkspaceInitializer {
     try {
       value = JSON.parse(contents) as unknown
     } catch (error) {
-      throw new Error('Workspace initialization job registry contains invalid JSON.', { cause: error })
+      throw new Error('Workspace initialization job registry contains invalid JSON.', {
+        cause: error,
+      })
     }
     const parsed = workspaceInitializationJobSchema.array().safeParse(value)
-    if (!parsed.success) throw new Error('Workspace initialization job registry has an invalid shape.')
+    if (!parsed.success)
+      throw new Error('Workspace initialization job registry has an invalid shape.')
     let changed = false
     for (const job of parsed.data) {
       if (job.status === 'running') {
@@ -188,15 +224,18 @@ export class WorkspaceInitializer {
           job.updatedAt = new Date().toISOString()
           addLog(
             job,
-            `The server restarted while this job was running; process ${job.pid} is still alive but detached. `
-            + 'Its output can no longer be captured, so this job is shown as an external process.',
+            `The server restarted while this job was running; process ${job.pid} is still alive but detached. ` +
+              'Its output can no longer be captured, so this job is shown as an external process.',
           )
         } else {
           job.status = 'interrupted'
           job.stage = 'failed'
           job.exitCode = null
           job.updatedAt = new Date().toISOString()
-          addLog(job, 'The server restarted while this job was running and its process is gone; the job can be resumed.')
+          addLog(
+            job,
+            'The server restarted while this job was running and its process is gone; the job can be resumed.',
+          )
         }
         changed = true
       }
@@ -210,7 +249,9 @@ export class WorkspaceInitializer {
     const snapshot = [...this.jobs.values()].map(copyJob)
     const previous = this.persistenceQueue
     let release: () => void = () => {}
-    this.persistenceQueue = new Promise((resolveQueue) => { release = resolveQueue })
+    this.persistenceQueue = new Promise((resolveQueue) => {
+      release = resolveQueue
+    })
     await previous
     try {
       await mkdir(dirname(this.jobsFilePath), { recursive: true })
@@ -230,7 +271,10 @@ export class WorkspaceInitializer {
     this.persistenceTimer = setTimeout(() => {
       this.persistenceTimer = undefined
       void this.persistJobs().catch((error: unknown) => {
-        addLog(job, `Unable to persist initialization progress: ${error instanceof Error ? error.message : 'unknown error'}`)
+        addLog(
+          job,
+          `Unable to persist initialization progress: ${error instanceof Error ? error.message : 'unknown error'}`,
+        )
         console.error('Unable to persist workspace initialization progress.', error)
       })
     }, 150)
@@ -247,7 +291,15 @@ export class WorkspaceInitializer {
     }
   }
 
-  private async validate(input: unknown): Promise<WorkspaceInitializationRequest> {
+  /**
+   * 校验初始化参数并解析本次要使用的源仓库根目录。
+   * 源根目录优先取持久化配置，确保“候选展示 / 初始化校验 / 实际建 worktree”三处一致。
+   * @param input 原始初始化参数
+   * @returns 校验后的请求与解析出的源根目录
+   */
+  private async validate(
+    input: unknown,
+  ): Promise<{ request: WorkspaceInitializationRequest; sourceRoot: string }> {
     const parsed = workspaceInitializationRequestSchema.safeParse(input)
     if (!parsed.success) {
       const details = parsed.error.issues
@@ -259,18 +311,24 @@ export class WorkspaceInitializer {
     if (branch?.startsWith('-') || baseBranch?.startsWith('-')) {
       throw new WorkspaceInputError('Branch names must not start with a hyphen.')
     }
-    const candidates = await listRepositoryCandidates(getSourceRoot())
+    const sourceRoot = await resolveSourceRoot(await this.settings?.get())
+    const candidates = await listRepositoryCandidates(sourceRoot)
     const availableNames = new Set(candidates.map((candidate) => candidate.name))
     const unselectedCandidates = repositoryNames.filter((name) => !availableNames.has(name))
     if (unselectedCandidates.length) {
-      throw new WorkspaceInputError(`Selected repositories are no longer available: ${unselectedCandidates.join(', ')}.`)
+      throw new WorkspaceInputError(
+        `Selected repositories are no longer available: ${unselectedCandidates.join(', ')}.`,
+      )
     }
     try {
       await access(scriptPath)
     } catch (error) {
-      throw new WorkspaceDependencyError(`Workspace initialization script is unavailable: ${scriptPath}`, { cause: error })
+      throw new WorkspaceDependencyError(
+        `Workspace initialization script is unavailable: ${scriptPath}`,
+        { cause: error },
+      )
     }
-    return { ...parsed.data, workspaceName }
+    return { request: { ...parsed.data, workspaceName }, sourceRoot }
   }
 
   private runPowerShell(args: string[], onLine: (line: string) => void): Promise<number> {
@@ -296,7 +354,10 @@ export class WorkspaceInitializer {
     })
   }
 
-  private consumeChild(job: WorkspaceInitializationJob, child: ChildProcessByStdio<null, Readable, Readable>): void {
+  private consumeChild(
+    job: WorkspaceInitializationJob,
+    child: ChildProcessByStdio<null, Readable, Readable>,
+  ): void {
     // 记录 PID 并立即持久化：服务重启后据此判断子进程是否仍存活
     if (child.pid !== undefined) {
       job.pid = child.pid
@@ -336,11 +397,22 @@ export class WorkspaceInitializer {
   }
 }
 
-function buildPowerShellArguments(request: WorkspaceInitializationRequest, dryRun: boolean): string[] {
+/**
+ * 构造 create-workspace.ps1 的 PowerShell 参数（EncodedCommand）。
+ * @param request 校验后的初始化请求
+ * @param dryRun 是否只做预演（-DryRun）
+ * @param sourceRoot 本次使用的源仓库根目录，由 validate 解析（配置优先）
+ * @returns pwsh 进程参数数组
+ */
+function buildPowerShellArguments(
+  request: WorkspaceInitializationRequest,
+  dryRun: boolean,
+  sourceRoot: string,
+): string[] {
   const parameters = [
     `-Workspace ${quotePowerShell(request.workspaceName)}`,
     `-Repos ${quotePowerShell(request.repositoryNames.join(','))}`,
-    `-SourceRoot ${quotePowerShell(getSourceRoot())}`,
+    `-SourceRoot ${quotePowerShell(sourceRoot)}`,
     `-TargetRoot ${quotePowerShell(getWorkspacesRoot())}`,
   ]
   if (request.branch) parameters.push(`-Branch ${quotePowerShell(request.branch)}`)

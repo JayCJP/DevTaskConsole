@@ -1,9 +1,14 @@
 import { computed, ref } from 'vue'
-import { boardResponseSchema, type BoardStory, type WorkspaceSummary } from '@devtask/shared'
+import {
+  boardResponseSchema,
+  defaultTapdOwner,
+  type BoardStory,
+  type WorkspaceSummary,
+} from '@devtask/shared'
 import { apiRequest } from '../api/client'
 
-/** 看板默认查询的 TAPD 处理人 */
-export const defaultBoardOwner = '蔡杰鹏'
+/** 看板默认查询的 TAPD 处理人；值来自共享常量，保留导出名以兼容既有引用 */
+export const defaultBoardOwner = defaultTapdOwner
 
 /** 手动添加需求时的表单草稿 */
 interface ManualDraft {
@@ -48,9 +53,10 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
   const manualSaving = ref(false)
 
   /** 已被其它父需求绑定的工作区名，用于下拉去重（工作区只绑定在父需求上） */
-  const boundWorkspaceNames = computed(() => new Set(
-    stories.value.flatMap((story) => story.workspaceName ? [story.workspaceName] : []),
-  ))
+  const boundWorkspaceNames = computed(
+    () =>
+      new Set(stories.value.flatMap((story) => (story.workspaceName ? [story.workspaceName] : []))),
+  )
 
   /**
    * 判断某个父需求行是否处于展开状态。
@@ -86,9 +92,13 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
    * @param story 看板父行（工作区只绑定在父需求上）
    * @returns 可选项工作区列表
    */
-  function workspaceOptionsFor(story: Pick<BoardStory, 'storyId' | 'workspaceName'>): WorkspaceSummary[] {
-    return workspaces.value.filter((workspace) =>
-      workspace.name === story.workspaceName || !boundWorkspaceNames.value.has(workspace.name))
+  function workspaceOptionsFor(
+    story: Pick<BoardStory, 'storyId' | 'workspaceName'>,
+  ): WorkspaceSummary[] {
+    return workspaces.value.filter(
+      (workspace) =>
+        workspace.name === story.workspaceName || !boundWorkspaceNames.value.has(workspace.name),
+    )
   }
 
   /**
@@ -114,9 +124,9 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
       hiddenReleased.value = parsed.hiddenReleased
       // 刷新后把父行下拉重置为服务端已保存的绑定，避免残留未保存的编辑
       // 工作区只绑定在父需求上，子需求不参与绑定
-      workspaceDraft.value = Object.fromEntries(parsed.stories.map((story) => [
-        story.storyId, story.workspaceName ?? '',
-      ]))
+      workspaceDraft.value = Object.fromEntries(
+        parsed.stories.map((story) => [story.storyId, story.workspaceName ?? '']),
+      )
       if (parsed.error) error.value = parsed.error
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : '看板数据加载失败。'
@@ -173,7 +183,9 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
    * @param story 看板父行（工作区只绑定在父需求上）
    * @returns Promise<void>
    */
-  async function bindSelected(story: Pick<BoardStory, 'storyId' | 'workspaceName' | 'title' | 'tapdUrl'>): Promise<void> {
+  async function bindSelected(
+    story: Pick<BoardStory, 'storyId' | 'workspaceName' | 'title' | 'tapdUrl'>,
+  ): Promise<void> {
     const workspaceName = workspaceDraft.value[story.storyId] ?? ''
     if (!workspaceName) {
       if (story.workspaceName) await unbindWorkspace(story.storyId)
@@ -196,7 +208,9 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
     unbindingStoryId.value = storyId
     rowErrors.value = { ...rowErrors.value, [storyId]: '' }
     try {
-      await apiRequest(`/api/v1/workspace-bindings/${encodeURIComponent(storyId)}`, { method: 'DELETE' })
+      await apiRequest(`/api/v1/workspace-bindings/${encodeURIComponent(storyId)}`, {
+        method: 'DELETE',
+      })
       // 解绑改变了绑定关系，穿透文件缓存强制回源
       await load(true)
     } catch (cause) {

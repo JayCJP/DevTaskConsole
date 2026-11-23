@@ -8,10 +8,15 @@ import {
   applicationMappingSchema,
   buildEnvironmentSpecs,
   buildTriggerResultSchema,
+  deployMultipleRequestSchema,
+  deployMultipleResultSchema,
+  deployEnvironments,
   defaultDevOpsGroup,
   type BuildEnvironment,
   type BuildEnvironmentSpec,
+  type ConsoleSettings,
   defaultMergeRequestTargetBranch,
+  defaultTapdOwner,
   defaultTapdWorkspaceId,
   jobSchema,
   mergeRequestTargetBranches,
@@ -44,11 +49,12 @@ import { useRoute, useRouter } from 'vue-router'
 import type { UploadFile } from 'element-plus'
 import { ApiError, apiRequest, readConsoleToken } from '../api/client'
 import { useAuditTrail } from '../composables/useAuditTrail'
-import { useBoardStories } from '../composables/useBoardStories'
+import { defaultBoardOwner, useBoardStories } from '../composables/useBoardStories'
 import { useCronActions } from '../composables/useCronActions'
 import { useCronDispatches, type DispatchOutcome } from '../composables/useCronDispatches'
 import { useCronExecutions } from '../composables/useCronExecutions'
 import { useActionToasts } from '../composables/useActionToasts'
+import { useConsoleSettings } from '../composables/useConsoleSettings'
 import {
   buildInboxAnswerText,
   splitSuggestion,
@@ -70,6 +76,8 @@ export function useConsole() {
   const route = useRoute()
   const router = useRouter()
   const store = useConsoleStore()
+  /** 控制台可编辑配置（源根目录 / TAPD 处理人 / 缓存目录） */
+  const consoleSettings = useConsoleSettings()
   /** 看板：TAPD 需求 × 本地工作区绑定 */
   const board = reactive(useBoardStories())
   const selectedRequirement = ref<Requirement | null>(null)
@@ -152,7 +160,7 @@ export function useConsole() {
       return
     }
     if (current === 'tools') {
-      await refreshSnapshot(true)
+      await Promise.all([refreshSnapshot(true), consoleSettings.load()])
     }
   }
   const gitLabProjectSchema = z.object({
@@ -1544,6 +1552,16 @@ export function useConsole() {
   // 刷新页面或直接进入深链接时，确保快照至少拉取一次，避免首屏空数据
   onMounted(() => {
     void store.ensureLoaded()
+    // 加载可编辑配置并同步默认处理人到看板。
+    // 配置是异步的，看板首次请求可能已用默认 owner 发出；值变化时重新拉取，保证展示与配置一致。
+    void consoleSettings.load().then(() => {
+      const configured = consoleSettings.settings.value.tapdOwner?.trim()
+      if (configured && configured !== board.owner) {
+        board.owner = configured
+        // 配置为默认值时首次请求口径已一致，无需重复拉取
+        if (configured !== defaultBoardOwner) void board.load(true)
+      }
+    })
     // 派发轮次决定能否再次派发，进入页面就要拿到
     void cronDispatches.refresh()
     // 运行期监督事件由后端巡检产生，页面按固定间隔拉取
@@ -1872,9 +1890,14 @@ export function useConsole() {
     storyJobs.value = jobLists.flat()
   }
 
-  /** Bug 修复轮次的补充口径：限定处理人与缺陷状态，并要求按查询+修复流程执行 */
-  const bugFixPromptSuffix =
-    '处理人蔡杰鹏，缺陷状态待解决和重新打开，根据结果使用查询+修复按流程修复bug'
+  /**
+   * Bug 修复轮次的补充口径：限定处理人与缺陷状态，并要求按查询+修复流程执行。
+   * 处理人取自可编辑配置，未配置时回落到共享默认常量。
+   */
+  const bugFixPromptSuffix = computed(
+    () =>
+      `处理人${consoleSettings.settings.value.tapdOwner?.trim() || defaultTapdOwner}，缺陷状态待解决和重新打开，根据结果使用查询+修复按流程修复bug`,
+  )
 
   function prepareJob(requirement: Requirement, mode: 'run' | 'fixbugs'): void {
     selectedStoryId.value = requirement.storyId
@@ -1885,7 +1908,7 @@ export function useConsole() {
     jobPrompt.value =
       mode === 'run'
         ? `/start ${requirement.storyId}`
-        : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix}`
+        : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix.value}`
     jobError.value = ''
   }
 
@@ -2199,11 +2222,18 @@ export function useConsole() {
     }
   }
 
-  async function refreshRepositoryCandidates(): Promise<void> {
+  /**
+   * 刷新工作区候选项目列表。
+   * @param force 是否穿透服务端候选缓存（保存源目录配置后为 true）
+   * @returns Promise<void>，错误写入 candidatesError
+   */
+  async function refreshRepositoryCandidates(force = false): Promise<void> {
     candidatesLoading.value = true
     candidatesError.value = ''
     try {
-      const result: unknown = await apiRequest('/api/v1/workspaces/candidates')
+      const result: unknown = await apiRequest(
+        `/api/v1/workspaces/candidates${force ? '?refresh=1' : ''}`,
+      )
       repositoryCandidates.value = repositoryCandidateSchema.array().parse(result)
       const availableNames = new Set(repositoryCandidates.value.map((candidate) => candidate.name))
       selectedRepositoryNames.value = selectedRepositoryNames.value.filter((name) =>
@@ -2969,6 +2999,115 @@ export function useConsole() {
     return buildingApps.value.includes(app)
   }
 
+  /* ------------------------- 发布页：批量发布 ------------------------- */
+
+  /** textarea 中原始输入的制品链接文本（每行一个） */
+  const deployText = ref('')
+  /** 二次确认弹窗开关 */
+  const deployConfirmOpen = ref(false)
+  /** 解析后待发布的制品链接（已校验、去重） */
+  const deployParsedUrls = ref<string[]>([])
+  /** 发布提交中标记（真实回执前禁用重复点击） */
+  const deploySubmitting = ref(false)
+  /** 最近一次发布回执，供结果区展示；不宣称"已上线" */
+  const deployOutcome = ref<{
+    env: string
+    urls: string[]
+    ok: boolean
+    message: string
+    raw?: unknown
+  } | null>(null)
+
+  /**
+   * 当前是否允许批量发布：顶部所选环境在白名单内，且未处于 Harness 发布写操作锁定。
+   * 环境白名单与后端 deployMultipleRequestSchema 共用同一份口径。
+   */
+  const deployAllowed = computed(
+    () =>
+      buildAllowed.value &&
+      (deployEnvironments as readonly string[]).includes(selectedBuildEnv.value),
+  )
+
+  /**
+   * 解析 textarea 文本：按换行/逗号/空白拆分，过滤空项，仅保留 http(s) URL，按首次出现去重。
+   * @param text 用户输入的原始文本
+   * @returns 合法且去重的制品链接列表
+   */
+  function parseDeployUrls(text: string): string[] {
+    const parts = text
+      .split(/[\r\n,，\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const part of parts) {
+      let parsed: URL
+      try {
+        parsed = new URL(part)
+      } catch {
+        continue
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue
+      if (seen.has(part)) continue
+      seen.add(part)
+      result.push(part)
+    }
+    return result
+  }
+
+  /**
+   * 点击「发布」：先解析校验链接，合法则打开二次确认弹窗逐条列出制品。
+   * @returns void
+   */
+  function requestDeploy(): void {
+    if (!deployAllowed.value) return
+    const urls = parseDeployUrls(deployText.value)
+    if (!urls.length) {
+      actionToasts.notify('请至少输入一个合法的 http(s) 制品链接。', 'error')
+      return
+    }
+    deployParsedUrls.value = urls
+    deployOutcome.value = null
+    deployConfirmOpen.value = true
+  }
+
+  /**
+   * 真正提交批量发布：调用后端一次发布全部制品，等待 DevOps 真实回执。
+   * 请求体只带 urls 与 env，force/timeout 由后端用 schema 默认值补齐。
+   * @returns Promise<void>
+   */
+  async function submitDeploy(): Promise<void> {
+    if (deploySubmitting.value || !deployAllowed.value || !deployParsedUrls.value.length) return
+    const env = selectedBuildEnv.value
+    const urls = [...deployParsedUrls.value]
+    deploySubmitting.value = true
+    try {
+      // 前端预校验与后端 schema 保持同一口径，提前拦截异常环境
+      deployMultipleRequestSchema.parse({ urls, env })
+      const result = deployMultipleResultSchema.parse(
+        await apiRequest<unknown>('/api/v1/devops/deploy-multiple', {
+          method: 'POST',
+          body: JSON.stringify({ urls, env }),
+        }),
+      )
+      deployOutcome.value = {
+        env: result.env,
+        urls: result.urls,
+        ok: true,
+        message: '发布请求已被 DevOps 接受（异步执行，非已上线）。',
+        ...(result.raw !== undefined ? { raw: result.raw } : {}),
+      }
+      actionToasts.notify(`已提交 ${urls.length} 个制品到 ${env} 环境发布。`, 'success')
+      deployConfirmOpen.value = false
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : '批量发布失败。'
+      deployOutcome.value = { env, urls, ok: false, message }
+      actionToasts.notify(message, 'error')
+    } finally {
+      deploySubmitting.value = false
+    }
+  }
+
   /* ------------------------- 发布页：创建 MR ------------------------- */
 
   /** 当前正在创建 MR 的「工作区/项目」键集合 */
@@ -3082,6 +3221,34 @@ export function useConsole() {
   function formatWorkspaceTime(value?: string): string {
     return formatTime(value)
   }
+
+  /**
+   * 保存控制台配置，并按字段实际变化联动刷新相关页面数据。
+   * - devtaskSourceRoot：穿透候选缓存重新拉取项目列表
+   * - tapdOwner：同步看板处理人并强制刷新；清空时回退默认处理人
+   * - cacheDirectory：缓存实例在启动时固定，需重启服务（提示由调用方统一给出）
+   * @param patch 要保存的配置字段
+   * @returns 是否保存成功
+   */
+  async function saveSettings(patch: ConsoleSettings): Promise<boolean> {
+    const before = consoleSettings.settings.value
+    const ok = await consoleSettings.update(patch)
+    if (!ok) return false
+
+    if (
+      patch.devtaskSourceRoot !== undefined &&
+      patch.devtaskSourceRoot !== before.devtaskSourceRoot
+    ) {
+      await refreshRepositoryCandidates(true)
+    }
+    if (patch.tapdOwner !== undefined && patch.tapdOwner !== before.tapdOwner) {
+      // 空串表示清空配置：看板回退到默认处理人，与后端取值保持一致
+      board.owner = patch.tapdOwner.trim() || defaultTapdOwner
+      await board.load(true)
+    }
+    return true
+  }
+
   return {
     route,
     defaultDevOpsGroup,
@@ -3388,6 +3555,15 @@ export function useConsole() {
     canSubmitBuild,
     submitBuilds,
     isAppBuilding,
+    deployText,
+    deployConfirmOpen,
+    deployParsedUrls,
+    deploySubmitting,
+    deployOutcome,
+    deployAllowed,
+    parseDeployUrls,
+    requestDeploy,
+    submitDeploy,
     releaseMrCreating,
     releaseMrError,
     releaseMrDialogOpen,
@@ -3398,5 +3574,10 @@ export function useConsole() {
     releaseMrStatusClass,
     prepareReleasePage,
     formatWorkspaceTime,
+    settings: consoleSettings.settings,
+    settingsLoading: consoleSettings.loading,
+    settingsSaving: consoleSettings.saving,
+    settingsError: consoleSettings.error,
+    saveSettings,
   }
 }

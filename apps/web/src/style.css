@@ -1680,17 +1680,39 @@
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+/* 工具页是单列任务流：通道监控 → 配置编辑 → 安全边界。
+   三个区块等宽排列，避免右侧空列造成的空间浪费与宽度跳变。 */
 .tool-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .tool-grid .surface {
-  min-height: 200px;
+  min-height: 0;
 }
 .tool-grid .surface > .muted {
   margin-top: 12px;
   line-height: 1.8;
+}
+/* 三个配置项等权：宽屏一排、窄屏自动折行，保持舒适阅读宽度 */
+.settings-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px 20px;
+  margin-top: 18px;
+}
+.settings-field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.settings-field > span {
+  color: var(--text);
+  font-weight: 600;
+}
+.settings-field small {
+  color: var(--muted);
+  line-height: 1.6;
 }
 .detail-grid {
   display: grid;
@@ -3783,4 +3805,85 @@
   .release-env-facts {
     gap: 6px 12px;
   }
+}
+
+/* 批量发布：textarea + 发布按钮 + 结果回执区 */
+.release-batch-deploy {
+  padding: 18px 20px;
+}
+.deploy-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.deploy-input-wrap {
+  position: relative;
+}
+.deploy-textarea textarea {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  padding-bottom: 44px;
+}
+.deploy-inner-button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+}
+.deploy-outcome {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+.deploy-outcome-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.deploy-outcome p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.deploy-url-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+.deploy-url-list li {
+  margin: 4px 0;
+  word-break: break-all;
+}
+.deploy-url-list code,
+.deploy-confirm-list code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.deploy-confirm-list {
+  margin: 0;
+  padding-left: 18px;
+}
+.deploy-confirm-list li {
+  margin: 6px 0;
+}
+.deploy-raw {
+  margin-top: 12px;
+  font-size: 12px;
+}
+.deploy-raw summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.deploy-raw pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--bg-base, var(--bg-inset));
+  border-radius: var(--radius-sm, var(--radius-md));
+  white-space: pre-wrap;
+  word-break: break-all;
 }

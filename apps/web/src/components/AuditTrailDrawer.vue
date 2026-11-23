@@ -43,6 +43,7 @@ function actionLabel(action: AuditEntry['action']): string {
     'service.remove': '删除服务映射',
     'workspace.initialize.resume': '续跑初始化',
     'build.trigger': '触发构建',
+    'deploy.multiple': '批量发布制品',
     'story.create': '新建 Story 骨架',
   }
   return labels[action]
@@ -84,7 +85,12 @@ function undoHint(entry: AuditEntry): string {
     <p v-if="props.error" class="mapping-error" role="alert">{{ props.error }}</p>
     <div v-if="props.loading && !props.entries.length" class="empty-compact">正在读取审计流水…</div>
     <ol v-else-if="props.entries.length" class="audit-list">
-      <li v-for="entry in props.entries" :key="entry.id" class="audit-item" :class="{ 'is-undone': entry.undone }">
+      <li
+        v-for="entry in props.entries"
+        :key="entry.id"
+        class="audit-item"
+        :class="{ 'is-undone': entry.undone }"
+      >
         <div class="audit-line">
           <span class="tag" :class="entry.result === 'failed' ? 'tag-danger' : 'tag-success'">
             {{ entry.result === 'failed' ? '失败' : '成功' }}
@@ -106,7 +112,9 @@ function undoHint(entry: AuditEntry): string {
         </div>
         <small v-if="entry.storyId" class="muted">Story {{ entry.storyId }}</small>
         <p v-if="entry.error" class="audit-error">{{ entry.error }}</p>
-        <p v-if="entry.after" class="audit-diff"><code>{{ JSON.stringify(entry.after) }}</code></p>
+        <p v-if="entry.after" class="audit-diff">
+          <code>{{ JSON.stringify(entry.after) }}</code>
+        </p>
       </li>
     </ol>
     <div v-else class="empty-compact">还没有审计记录。</div>

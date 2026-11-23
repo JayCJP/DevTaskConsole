@@ -26,30 +26,55 @@ export const defaultDevOpsGroup = 'JenkinsFrontweb'
  */
 export const upstreamDateTimeSchema = z.string().datetime({ offset: true })
 
-export const applicationMappingSchema = z.object({
-  repoName: z.string().min(1).max(200),
-  gitlabProjectId: z.number().int().positive().optional(),
-  devopsApp: z.string().min(1).max(200).optional(),
-  devopsGroup: z.string().min(1).max(200).optional(),
-}).refine(
-  (mapping) => mapping.gitlabProjectId !== undefined || mapping.devopsApp !== undefined,
-  'At least one integration mapping is required.',
-).refine(
-  (mapping) => (mapping.devopsApp === undefined) === (mapping.devopsGroup === undefined),
-  'DevOps app and group must be configured together.',
-)
+export const applicationMappingSchema = z
+  .object({
+    repoName: z.string().min(1).max(200),
+    gitlabProjectId: z.number().int().positive().optional(),
+    devopsApp: z.string().min(1).max(200).optional(),
+    devopsGroup: z.string().min(1).max(200).optional(),
+  })
+  .refine(
+    (mapping) => mapping.gitlabProjectId !== undefined || mapping.devopsApp !== undefined,
+    'At least one integration mapping is required.',
+  )
+  .refine(
+    (mapping) => (mapping.devopsApp === undefined) === (mapping.devopsGroup === undefined),
+    'DevOps app and group must be configured together.',
+  )
 
 export const workspaceInitializationRequestSchema = z.object({
-  workspaceName: z.string().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/).refine(
-    (name) => name !== '.' && name !== '..' && !name.endsWith('.'),
-    'Workspace name cannot be a relative path segment or end with a period.',
-  ),
-  repositoryNames: z.array(z.string().min(1).max(200).regex(/^[^,\r\n]+$/)).min(1).max(100).refine(
-    (names) => new Set(names).size === names.length,
-    'Repository names must be unique.',
-  ),
-  branch: z.string().min(1).max(250).regex(/^[A-Za-z0-9._/-]+$/).optional(),
-  baseBranch: z.string().min(1).max(250).regex(/^[A-Za-z0-9._/-]+$/).optional(),
+  workspaceName: z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[A-Za-z0-9._-]+$/)
+    .refine(
+      (name) => name !== '.' && name !== '..' && !name.endsWith('.'),
+      'Workspace name cannot be a relative path segment or end with a period.',
+    ),
+  repositoryNames: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(200)
+        .regex(/^[^,\r\n]+$/),
+    )
+    .min(1)
+    .max(100)
+    .refine((names) => new Set(names).size === names.length, 'Repository names must be unique.'),
+  branch: z
+    .string()
+    .min(1)
+    .max(250)
+    .regex(/^[A-Za-z0-9._/-]+$/)
+    .optional(),
+  baseBranch: z
+    .string()
+    .min(1)
+    .max(250)
+    .regex(/^[A-Za-z0-9._/-]+$/)
+    .optional(),
   skipInstall: z.boolean().default(false),
   skipGraphify: z.boolean().default(false),
 })
@@ -63,7 +88,15 @@ export const workspaceInitializationJobSchema = z.object({
    * 子进程仍在运行但已被本服务脱离，控制台只能观察、不能接管其 stdio。
    */
   status: z.enum(['running', 'succeeded', 'failed', 'interrupted', 'orphaned']),
-  stage: z.enum(['worktree', 'workspace_file', 'install', 'graphify', 'verify', 'complete', 'failed']),
+  stage: z.enum([
+    'worktree',
+    'workspace_file',
+    'install',
+    'graphify',
+    'verify',
+    'complete',
+    'failed',
+  ]),
   logs: z.array(z.string()),
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -131,7 +164,14 @@ export const workspaceDeleteResultSchema = z.object({
  * 工作区创建合并请求时可选的基线目标分支。
  * 顺序即前端下拉的展示顺序，第一个 `test` 为默认值。
  */
-export const mergeRequestTargetBranches = ['dev', 'test', 'pre', 'pre-txnj', 'master', 'prod-txnj'] as const
+export const mergeRequestTargetBranches = [
+  'dev',
+  'test',
+  'pre',
+  'pre-txnj',
+  'master',
+  'prod-txnj',
+] as const
 
 /** 目标分支的默认值（前端下拉默认选中） */
 export const defaultMergeRequestTargetBranch = 'test'
@@ -248,6 +288,31 @@ export const workspaceBindingRequestSchema = z.object({
 /** 当前控制台使用的默认 TAPD 项目；与看板及 TAPD 聚合器保持一致 */
 export const defaultTapdWorkspaceId = 38260062
 
+/** 控制台默认 TAPD 处理人；未配置时的兜底值，与各端历史硬编码保持一致 */
+export const defaultTapdOwner = '蔡杰鹏'
+
+/**
+ * 控制台可编辑配置的 zod schema。
+ * 全部字段可选，空字符串表示“未设置”，服务端读取时按优先级回退。
+ * - devtaskSourceRoot：工作区候选项目的扫描根目录
+ * - tapdOwner：看板与缺陷巡检口径的默认 TAPD 处理人
+ * - cacheDirectory：缓存文件（候选/看板/快照）的存放目录，为空时回退数据目录
+ */
+export const consoleSettingsSchema = z.object({
+  devtaskSourceRoot: z.string().trim().max(1000).optional(),
+  tapdOwner: z.string().trim().max(100).optional(),
+  cacheDirectory: z.string().trim().max(1000).optional(),
+})
+
+/** PUT 配置请求体：与 consoleSettingsSchema 相同，允许前端只提交部分字段 */
+export const consoleSettingsUpdateSchema = consoleSettingsSchema
+
+/**
+ * 配置文件读写专用 schema：在已知字段之外保留未知键。
+ * 这样旧版本服务读写配置时不会抹掉新版本写入的字段，支持多版本共存滚动升级。
+ */
+export const consoleSettingsFileSchema = consoleSettingsSchema.passthrough()
+
 export const requirementSchema = z.object({
   storyId: z.string(),
   tapdStoryId: z.string().optional(),
@@ -285,11 +350,13 @@ export const harnessBugSchema = z.object({
   category: z.enum(['frontend', 'backend', 'collab']).optional(),
   commentCount: z.number().int().nonnegative().optional(),
   commentDigest: z.string().optional(),
-  writeback: z.object({
-    commentedAt: z.string(),
-    statusChangedAt: z.string().optional(),
-    commentKind: z.enum(['fixed', 'to_backend', 'to_collab', 'manual']),
-  }).optional(),
+  writeback: z
+    .object({
+      commentedAt: z.string(),
+      statusChangedAt: z.string().optional(),
+      commentKind: z.enum(['fixed', 'to_backend', 'to_collab', 'manual']),
+    })
+    .optional(),
 })
 
 export const openQuestionSchema = z.object({
@@ -312,7 +379,14 @@ export const harnessActiveSchema = z.object({
 
 export const inboxItemSchema = z.object({
   id: z.string(),
-  kind: z.enum(['blocked_job', 'open_question', 'reopened_bug', 'merge_request', 'failed_build', 'credential_warning']),
+  kind: z.enum([
+    'blocked_job',
+    'open_question',
+    'reopened_bug',
+    'merge_request',
+    'failed_build',
+    'credential_warning',
+  ]),
   title: z.string(),
   reason: z.string(),
   requirementId: z.string().optional(),
@@ -486,19 +560,18 @@ export const cronCreateRequestSchema = z.object({
 })
 
 /** 更新定时任务请求：所有字段可选，至少需要一项 */
-export const cronUpdateRequestSchema = z.object({
-  cron: z.string().trim().min(1).max(200).optional(),
-  prompt: z.string().trim().min(1).max(40_000).optional(),
-  recurring: z.boolean().optional(),
-  durable: z.boolean().optional(),
-  enabled: z.boolean().optional(),
-  expiryDays: z.number().int().min(1).max(365).nullable().optional(),
-  mode: cronModeSchema.optional(),
-  ownerSessionId: z.string().trim().min(1).max(200).optional(),
-}).refine(
-  (value) => Object.keys(value).length > 0,
-  '至少需要提供一个待更新字段。',
-)
+export const cronUpdateRequestSchema = z
+  .object({
+    cron: z.string().trim().min(1).max(200).optional(),
+    prompt: z.string().trim().min(1).max(40_000).optional(),
+    recurring: z.boolean().optional(),
+    durable: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+    expiryDays: z.number().int().min(1).max(365).nullable().optional(),
+    mode: cronModeSchema.optional(),
+    ownerSessionId: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, '至少需要提供一个待更新字段。')
 
 /** 保存 owner 映射请求：verify 为 true 时先校验 session 归属再落库 */
 export const cronOwnerRequestSchema = z.object({
@@ -561,6 +634,7 @@ export const auditActionSchema = z.enum([
   'service.remove',
   'workspace.initialize.resume',
   'build.trigger',
+  'deploy.multiple',
   'story.create',
 ])
 
@@ -658,7 +732,14 @@ export const branchSchema = z.object({
  * 构建环境标识。前端分段器与后端共用同一口径。
  * 6 档环境各有固定的 build_other 与分支映射，见下方 buildEnvironmentSpecs。
  */
-export const buildEnvironmentSchema = z.enum(['dev', 'test', 'pre', 'pre-txnj', 'prod-txnj', 'prod'])
+export const buildEnvironmentSchema = z.enum([
+  'dev',
+  'test',
+  'pre',
+  'pre-txnj',
+  'prod-txnj',
+  'prod',
+])
 export type BuildEnvironment = z.infer<typeof buildEnvironmentSchema>
 
 /**
@@ -684,8 +765,18 @@ export const buildEnvironmentSpecs: Record<BuildEnvironment, BuildEnvironmentSpe
   dev: { buildOther: 'dev', branch: 'origin/dev', sendEnv: true, mrTargetBranch: 'dev' },
   test: { buildOther: 'test', branch: 'origin/test', sendEnv: false, mrTargetBranch: 'test' },
   pre: { buildOther: 'pre', branch: 'origin/pre', sendEnv: false, mrTargetBranch: 'pre' },
-  'pre-txnj': { buildOther: 'pre-txnj', branch: 'origin/pre-txnj', sendEnv: false, mrTargetBranch: 'pre-txnj' },
-  'prod-txnj': { buildOther: 'prod-txnj', branch: 'origin/prod-txnj', sendEnv: false, mrTargetBranch: 'prod-txnj' },
+  'pre-txnj': {
+    buildOther: 'pre-txnj',
+    branch: 'origin/pre-txnj',
+    sendEnv: false,
+    mrTargetBranch: 'pre-txnj',
+  },
+  'prod-txnj': {
+    buildOther: 'prod-txnj',
+    branch: 'origin/prod-txnj',
+    sendEnv: false,
+    mrTargetBranch: 'prod-txnj',
+  },
   prod: { buildOther: 'build', branch: 'origin/master', sendEnv: false, mrTargetBranch: 'master' },
 }
 
@@ -715,6 +806,45 @@ export const buildTriggerResultSchema = z.object({
   triggeredAt: z.string(),
 })
 export type BuildTriggerResult = z.infer<typeof buildTriggerResultSchema>
+
+/**
+ * 批量发布允许的目标环境（前后端唯一口径）。
+ * 仅 dev / pre / pre-txnj 开放，env 值原样传给 DevOps，不做映射。
+ */
+export const deployEnvironments = ['dev', 'pre', 'pre-txnj'] as const
+export type DeployEnvironment = (typeof deployEnvironments)[number]
+
+/**
+ * 批量发布请求体：制品 URL 列表 + 目标环境 + 可选强制/超时参数。
+ * urls 至少一项，且每项必须是合法 http(s) URL。
+ */
+export const deployMultipleRequestSchema = z.object({
+  urls: z.array(z.string().url()).min(1),
+  env: z.enum(deployEnvironments),
+  /** 是否强制覆盖发布，"0" 不强制、"1" 跳过冲突检查 */
+  force: z
+    .string()
+    .regex(/^[01]$/)
+    .default('0'),
+  /** 发布超时秒数 */
+  timeout: z.number().int().positive().max(3600).default(300),
+})
+export type DeployMultipleRequest = z.infer<typeof deployMultipleRequestSchema>
+
+/**
+ * 批量发布回执：仅透传 DevOps 原始响应与本次参数，不宣称"已上线"。
+ * 发布是异步写操作，成功仅代表请求已被 DevOps 接受。
+ */
+export const deployMultipleResultSchema = z.object({
+  env: z.enum(deployEnvironments),
+  urls: z.array(z.string()),
+  force: z.string(),
+  timeout: z.number(),
+  /** DevOps 原始响应，便于追溯（空体时为 undefined） */
+  raw: z.unknown().optional(),
+  deployedAt: z.string(),
+})
+export type DeployMultipleResult = z.infer<typeof deployMultipleResultSchema>
 
 export const mergeRequestSchema = z.object({
   projectId: z.number().int().positive(),
@@ -888,15 +1018,41 @@ export const BOARD_CACHE_VERSION = 1
  */
 export const boardCacheSchema = z.object({
   version: z.literal(BOARD_CACHE_VERSION),
-  entries: z.record(z.string(), z.object({
-    /** 数据抓取时间（ISO），用于 TTL 判定与陈旧提示 */
-    fetchedAt: z.string().datetime(),
-    response: boardResponseSchema,
-  })),
+  entries: z.record(
+    z.string(),
+    z.object({
+      /** 数据抓取时间（ISO），用于 TTL 判定与陈旧提示 */
+      fetchedAt: z.string().datetime(),
+      response: boardResponseSchema,
+    }),
+  ),
 })
 
 /** 看板文件缓存完整结构 */
 export type BoardCacheFile = z.infer<typeof boardCacheSchema>
+
+/** 工作区候选项目缓存格式版本；结构变更时递增，读取时版本不匹配即丢弃重建 */
+export const REPOSITORY_CANDIDATES_CACHE_VERSION = 1
+
+/**
+ * 工作区候选项目缓存的 zod schema。
+ * 与看板缓存同构：外层 version + entries（key 为归一化后的源根目录），
+ * 内部 candidates 复用 repositoryCandidateSchema，避免字段与接口响应漂移。
+ */
+export const repositoryCandidatesCacheSchema = z.object({
+  version: z.literal(REPOSITORY_CANDIDATES_CACHE_VERSION),
+  entries: z.record(
+    z.string(),
+    z.object({
+      /** 数据抓取时间（ISO），便于排障 */
+      fetchedAt: z.string().datetime(),
+      candidates: z.array(repositoryCandidateSchema),
+    }),
+  ),
+})
+
+/** 工作区候选项目缓存完整结构 */
+export type RepositoryCandidatesCacheFile = z.infer<typeof repositoryCandidatesCacheSchema>
 
 export const loginRequestSchema = z.object({
   token: z.string().min(1),
@@ -904,18 +1060,27 @@ export const loginRequestSchema = z.object({
 
 export type ChannelState = z.infer<typeof channelStateSchema>
 export type RepositoryCandidate = z.infer<typeof repositoryCandidateSchema>
+export type ConsoleSettings = z.infer<typeof consoleSettingsSchema>
+export type ConsoleSettingsUpdate = z.infer<typeof consoleSettingsUpdateSchema>
+export type ConsoleSettingsFile = z.infer<typeof consoleSettingsFileSchema>
 export type ApplicationMapping = z.infer<typeof applicationMappingSchema>
 export type WorkspaceInitializationRequest = z.infer<typeof workspaceInitializationRequestSchema>
 export type WorkspaceInitializationJob = z.infer<typeof workspaceInitializationJobSchema>
-export type WorkspaceInitializationResumeRequest = z.infer<typeof workspaceInitializationResumeRequestSchema>
+export type WorkspaceInitializationResumeRequest = z.infer<
+  typeof workspaceInitializationResumeRequestSchema
+>
 export type WorkspacePreview = z.infer<typeof workspacePreviewSchema>
 export type WorkspaceProject = z.infer<typeof workspaceProjectSchema>
 export type WorkspaceSummary = z.infer<typeof workspaceSummarySchema>
 export type WorkspaceDeleteResult = z.infer<typeof workspaceDeleteResultSchema>
 export type MergeRequestTargetBranch = z.infer<typeof mergeRequestTargetBranchSchema>
-export type WorkspaceMergeRequestCreateRequest = z.infer<typeof workspaceMergeRequestCreateRequestSchema>
+export type WorkspaceMergeRequestCreateRequest = z.infer<
+  typeof workspaceMergeRequestCreateRequestSchema
+>
 export type WorkspaceMergeRequestCreateItem = z.infer<typeof workspaceMergeRequestCreateItemSchema>
-export type WorkspaceMergeRequestCreateResult = z.infer<typeof workspaceMergeRequestCreateResultSchema>
+export type WorkspaceMergeRequestCreateResult = z.infer<
+  typeof workspaceMergeRequestCreateResultSchema
+>
 export type Requirement = z.infer<typeof requirementSchema>
 export type Bug = z.infer<typeof bugSchema>
 export type HarnessBug = z.infer<typeof harnessBugSchema>
@@ -1068,7 +1233,9 @@ function expandCronField(field: string, range: CronFieldRange): number[] | undef
 export function parseCron(expression: string): ParsedCron | undefined {
   const fields = expression.trim().split(/\s+/)
   if (fields.length !== 5) return undefined
-  const expanded = fields.map((field, index) => expandCronField(field, cronFieldRanges[index] as CronFieldRange))
+  const expanded = fields.map((field, index) =>
+    expandCronField(field, cronFieldRanges[index] as CronFieldRange),
+  )
   if (expanded.some((value) => value === undefined)) return undefined
   const [minutes, hours, daysOfMonth, months, daysOfWeek] = expanded as number[][]
   return {
@@ -1090,7 +1257,9 @@ export function parseCron(expression: string): ParsedCron | undefined {
 export function forbiddenMinutesOf(expression: string): number[] {
   const parsed = parseCron(expression)
   if (!parsed) return []
-  return parsed.minutes.filter((minute) => (forbiddenCronMinutes as readonly number[]).includes(minute))
+  return parsed.minutes.filter((minute) =>
+    (forbiddenCronMinutes as readonly number[]).includes(minute),
+  )
 }
 
 /**
@@ -1133,8 +1302,9 @@ function cronMatches(parsed: ParsedCron, date: Date): boolean {
   if (!parsed.months.includes(date.getMonth() + 1)) return false
   const dayOfMonthHit = parsed.daysOfMonth.includes(date.getDate())
   const rawDayOfWeek = date.getDay()
-  const dayOfWeekHit = parsed.daysOfWeek.includes(rawDayOfWeek)
-    || (rawDayOfWeek === 0 && parsed.daysOfWeek.includes(7))
+  const dayOfWeekHit =
+    parsed.daysOfWeek.includes(rawDayOfWeek) ||
+    (rawDayOfWeek === 0 && parsed.daysOfWeek.includes(7))
   // 标准 cron 语义：日与周都被限定时取「或」，其中一个为 * 时取「与」
   if (parsed.dayOfMonthWildcard && parsed.dayOfWeekWildcard) return true
   if (parsed.dayOfMonthWildcard) return dayOfWeekHit

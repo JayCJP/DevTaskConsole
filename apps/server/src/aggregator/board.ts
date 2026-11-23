@@ -1,8 +1,17 @@
-import { releasedStoryStatusLabels, type BoardChildStory, type BoardResponse, type BoardStory, type TapdStory, type WorkspaceBinding, type WorkspaceSummary } from '@devtask/shared'
+import {
+  defaultTapdOwner,
+  releasedStoryStatusLabels,
+  type BoardChildStory,
+  type BoardResponse,
+  type BoardStory,
+  type TapdStory,
+  type WorkspaceBinding,
+  type WorkspaceSummary,
+} from '@devtask/shared'
 import type { TapdParentStory } from '../integrations/tapd.js'
 
-/** 看板默认查询的 TAPD 处理人 */
-export const defaultBoardOwner = '蔡杰鹏'
+/** 看板默认查询的 TAPD 处理人；值来自共享常量，保留导出名以兼容既有引用 */
+export const defaultBoardOwner = defaultTapdOwner
 
 /** 看板筛选选项 */
 export interface BoardOptions {
@@ -85,9 +94,7 @@ export async function buildBoard(
 
   // 父行模式：每个父需求一行，子需求折叠。已发布过滤以子需求为准：
   // 父行下只要有一个子需求未发布就显示父行；全部子都发布才隐藏。
-  const rows = parentStories?.length
-    ? parentStories
-    : toFallbackParents(tapdStories, urlTemplate)
+  const rows = parentStories?.length ? parentStories : toFallbackParents(tapdStories, urlTemplate)
   // 已展示为父行/子行的 ID 不再作为「本地手动添加」的幽灵行重复出现；
   // 被「已发布」筛选隐藏的父需求，其绑定仍需在兜底列表中露出，便于解绑/查看。
   const visibleStoryIds = new Set<string>()
@@ -142,16 +149,18 @@ export async function buildBoard(
   // 若该需求被“已发布”筛选隐藏，则遵循筛选结果不展示。
   for (const binding of bindings) {
     if (visibleStoryIds.has(binding.tapdStoryId)) continue
-    stories.push(toBoardStory(
-      {
-        storyId: binding.tapdStoryId,
-        title: binding.storyTitle ?? binding.tapdStoryId,
-        tapdUrl: binding.tapdUrl ?? urlTemplate.replace('{id}', binding.tapdStoryId),
-      },
-      binding,
-      workspaceByName,
-      false,
-    ))
+    stories.push(
+      toBoardStory(
+        {
+          storyId: binding.tapdStoryId,
+          title: binding.storyTitle ?? binding.tapdStoryId,
+          tapdUrl: binding.tapdUrl ?? urlTemplate.replace('{id}', binding.tapdStoryId),
+        },
+        binding,
+        workspaceByName,
+        false,
+      ),
+    )
   }
 
   return {

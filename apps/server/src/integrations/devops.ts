@@ -37,13 +37,13 @@ export class DevOpsAdapter {
         : undefined
     if (!records) throw new Error('DevOps returned an invalid branches response.')
     return records.map((record) => {
-      if (typeof record === 'string' && record) return { app, ...(group ? { group } : {}), name: record }
+      if (typeof record === 'string' && record)
+        return { app, ...(group ? { group } : {}), name: record }
       if (!isRecord(record) || typeof record.name !== 'string' || !record.name) {
         throw new Error('DevOps returned a branch with an invalid shape.')
       }
-      const lastCommitTime = record.last_commit_time === undefined
-        ? undefined
-        : toIsoDate(record.last_commit_time)
+      const lastCommitTime =
+        record.last_commit_time === undefined ? undefined : toIsoDate(record.last_commit_time)
       if (record.last_commit_time !== undefined && !lastCommitTime) {
         throw new Error('DevOps returned a branch with an invalid last commit time.')
       }
@@ -61,7 +61,13 @@ export class DevOpsAdapter {
   }
 
   async getBuildRecords(app: string, pageNo = 1, pageSize = 20): Promise<Build[]> {
-    if (!Number.isInteger(pageNo) || pageNo < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    if (
+      !Number.isInteger(pageNo) ||
+      pageNo < 1 ||
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    ) {
       throw new Error('DevOps build pagination parameters are invalid.')
     }
     const credentials = await this.requireCredentials()
@@ -94,7 +100,8 @@ export class DevOpsAdapter {
       },
       environment: {
         fact: 'unknown',
-        statement: 'dev 与 test 环境的关系尚未确认，发布链按钮口径不可靠，因此触发构建、部署等写操作保持禁用。',
+        statement:
+          'dev 与 test 环境的关系尚未确认，发布链按钮口径不可靠，因此触发构建、部署等写操作保持禁用。',
       },
     }
   }
@@ -113,27 +120,40 @@ export class DevOpsAdapter {
   private async getCredentials(): Promise<DevOpsCredentials | null> {
     const config = await loadMcpServerConfig('Devops_MCP')
     if (!config) return null
-    const { HOST: host, login_id: loginId, user, csrftoken: csrfToken, sessionid: sessionId } = config.env ?? {}
+    const {
+      HOST: host,
+      login_id: loginId,
+      user,
+      csrftoken: csrfToken,
+      sessionid: sessionId,
+    } = config.env ?? {}
     if (![host, loginId, user, csrfToken, sessionId].some(Boolean)) return null
     if (
-      typeof host !== 'string' || !host
-      || typeof loginId !== 'string' || !loginId
-      || typeof user !== 'string' || !user
-      || typeof csrfToken !== 'string' || !csrfToken
-      || typeof sessionId !== 'string' || !sessionId
+      typeof host !== 'string' ||
+      !host ||
+      typeof loginId !== 'string' ||
+      !loginId ||
+      typeof user !== 'string' ||
+      !user ||
+      typeof csrfToken !== 'string' ||
+      !csrfToken ||
+      typeof sessionId !== 'string' ||
+      !sessionId
     ) {
       throw new Error('DevOps configuration requires HOST and all four session values.')
     }
     const hostUrl = new URL(host)
     if (
-      !['http:', 'https:'].includes(hostUrl.protocol)
-      || (hostUrl.protocol === 'http:' && !isLoopbackHost(hostUrl.hostname))
-      || hostUrl.username !== ''
-      || hostUrl.password !== ''
-      || hostUrl.search !== ''
-      || hostUrl.hash !== ''
+      !['http:', 'https:'].includes(hostUrl.protocol) ||
+      (hostUrl.protocol === 'http:' && !isLoopbackHost(hostUrl.hostname)) ||
+      hostUrl.username !== '' ||
+      hostUrl.password !== '' ||
+      hostUrl.search !== '' ||
+      hostUrl.hash !== ''
     ) {
-      throw new Error('DevOps HOST must be a credential-free HTTPS URL, or HTTP on loopback for local testing.')
+      throw new Error(
+        'DevOps HOST must be a credential-free HTTPS URL, or HTTP on loopback for local testing.',
+      )
     }
     return {
       host: hostUrl.toString().replace(/\/+$/, ''),
@@ -187,7 +207,38 @@ export class DevOpsAdapter {
     })
   }
 
-  private async request(credentials: DevOpsCredentials, path: string, init?: RequestInit): Promise<unknown> {
+  /**
+   * 批量发布制品到指定环境（POST /deploy/deploy_multiple）。
+   * 仅把调用方给定且已通过环境白名单校验的 urls/env 透传给 DevOps，
+   * 不自行猜测环境，也不宣称发布即代表已上线（DevOps 为异步写操作）。
+   * @param input 发布参数（制品 URL 列表、目标环境、强制标记、超时秒数）
+   * @returns DevOps 原始响应；无法解析为 JSON 时返回 undefined（以 HTTP 状态为准）
+   */
+  async deployMultiple(input: {
+    urls: string[]
+    env: string
+    force?: string
+    timeout?: number
+  }): Promise<unknown> {
+    const credentials = await this.requireCredentials()
+    const payload: Record<string, unknown> = {
+      urls: input.urls,
+      env: input.env,
+      force: input.force ?? '0',
+      timeout: input.timeout ?? 300,
+    }
+    return this.request(credentials, '/deploy/deploy_multiple', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  }
+
+  private async request(
+    credentials: DevOpsCredentials,
+    path: string,
+    init?: RequestInit,
+  ): Promise<unknown> {
     const response = await fetch(new URL(path.replace(/^\/+/, ''), `${credentials.host}/`), {
       method: init?.method ?? 'GET',
       ...(init?.body !== undefined ? { body: init.body } : {}),
@@ -206,7 +257,7 @@ export class DevOpsAdapter {
     }
     if (!response.ok) throw new Error(`DevOps request failed with HTTP ${response.status}.`)
     try {
-      return await response.json() as unknown
+      return (await response.json()) as unknown
     } catch {
       // 写操作（触发构建）常返回 200/201 空体，此时以 HTTP 状态为准，不判失败。
       return undefined
@@ -220,18 +271,21 @@ function parseBuild(value: unknown, requestedApp: string): Build {
   if (typeof identifier !== 'string' && typeof identifier !== 'number') {
     throw new Error('DevOps returned a build record without an identifier.')
   }
-  const succeed = value.succeed === 1 || value.succeed === '1'
-    ? true
-    : value.succeed === 0 || value.succeed === '0'
-      ? false
-      : null
+  const succeed =
+    value.succeed === 1 || value.succeed === '1'
+      ? true
+      : value.succeed === 0 || value.succeed === '0'
+        ? false
+        : null
   const buildDate = toIsoDate(value.build_date)
   const durationTime = toNonNegativeNumber(value.duration_time)
   const fileUrl = isValidUrl(value.file_url) ? value.file_url : undefined
   return {
     id: String(identifier),
     app: typeof value.alias === 'string' && value.alias ? value.alias : requestedApp,
-    ...(typeof value.number === 'string' || typeof value.number === 'number' ? { number: String(value.number) } : {}),
+    ...(typeof value.number === 'string' || typeof value.number === 'number'
+      ? { number: String(value.number) }
+      : {}),
     ...(typeof value.branch === 'string' ? { branch: value.branch } : {}),
     ...(typeof value.commit_id === 'string' ? { commitId: value.commit_id } : {}),
     succeed,

@@ -4,6 +4,7 @@
  * 合并了原工作区页的全部能力：工作区管理、详情抽屉、源系统映射、新建/删除工作区。
  * 共享状态由 ConsoleShell 通过 provide 下发。
  */
+import { computed } from 'vue'
 import { useConsoleContext } from '../composables/useConsoleContext'
 
 const {
@@ -30,6 +31,15 @@ const {
   requestWorkspaceBuild,
   requestSingleBuild,
   isAppBuilding,
+  // 批量发布
+  deployText,
+  deployConfirmOpen,
+  deployParsedUrls,
+  deploySubmitting,
+  deployOutcome,
+  deployAllowed,
+  requestDeploy,
+  submitDeploy,
   buildConfirmOpen,
   canSubmitBuild,
   submitBuilds,
@@ -120,6 +130,22 @@ const {
 } = useConsoleContext()
 
 /**
+ * 批量发布 textarea 的占位提示：一行说明，多个链接换行输入。
+ */
+const deployPlaceholder = '每行输入一个制品链接'
+
+/**
+ * 批量发布卡片副标题：合并输入说明、当前环境与不支持提示。
+ * @returns 副标题文案
+ */
+const deployHint = computed(() => {
+  const base = `每行一个制品链接，发布到 ${selectedBuildEnv.value} 环境`
+  return deployAllowed.value
+    ? `${base}。`
+    : `${base}；当前环境不支持批量发布，仅 dev / pre / pre-txnj 支持。`
+})
+
+/**
  * 刷新发布页数据：工作区列表与仓库候选一起重取，口径与原工作区页刷新按钮一致。
  * @returns Promise<void>
  */
@@ -182,6 +208,77 @@ async function refreshAll(): Promise<void> {
       </div>
     </div>
   </section>
+
+  <!-- 批量发布：textarea 输入多个制品链接，复用顶部所选环境 -->
+  <section class="surface release-batch-deploy">
+    <div class="section-heading">
+      <div>
+        <h2>批量发布</h2>
+        <p class="deploy-hint">{{ deployHint }}</p>
+      </div>
+    </div>
+    <div class="deploy-input-wrap">
+      <el-input
+        v-model="deployText"
+        type="textarea"
+        :rows="5"
+        class="deploy-textarea"
+        :placeholder="deployPlaceholder"
+      />
+      <el-button
+        class="deploy-inner-button"
+        type="primary"
+        :loading="deploySubmitting"
+        :disabled="!deployAllowed || deploySubmitting"
+        @click="requestDeploy"
+        >发布</el-button
+      >
+    </div>
+    <section v-if="deployOutcome" class="deploy-outcome">
+      <div class="deploy-outcome-head">
+        <strong>发布回执</strong>
+        <span class="tag" :class="deployOutcome.ok ? 'tag-success' : 'tag-danger'">{{
+          deployOutcome.ok ? '已提交' : '失败'
+        }}</span>
+        <span class="muted">环境 {{ deployOutcome.env }}</span>
+      </div>
+      <p>{{ deployOutcome.message }}</p>
+      <ul class="deploy-url-list">
+        <li v-for="url in deployOutcome.urls" :key="url">
+          <code>{{ url }}</code>
+        </li>
+      </ul>
+      <details v-if="deployOutcome.raw !== undefined" class="deploy-raw">
+        <summary>查看 DevOps 原始回执</summary>
+        <pre>{{ JSON.stringify(deployOutcome.raw, null, 2) }}</pre>
+      </details>
+    </section>
+  </section>
+
+  <!-- 批量发布二次确认：逐条列出待发布制品 -->
+  <el-dialog
+    v-model="deployConfirmOpen"
+    title="确认批量发布"
+    width="min(640px, 94vw)"
+    :close-on-click-modal="false"
+  >
+    <p class="release-confirm-intro">
+      将把下列 {{ deployParsedUrls.length }} 个制品发布到
+      <code>{{ selectedBuildEnv }}</code> 环境。发布为不可逆写操作，提交后等待 DevOps
+      真实回执；请求被接受不代表已上线。
+    </p>
+    <ul class="deploy-confirm-list">
+      <li v-for="url in deployParsedUrls" :key="url">
+        <code>{{ url }}</code>
+      </li>
+    </ul>
+    <template #footer>
+      <el-button :disabled="deploySubmitting" @click="deployConfirmOpen = false">取消</el-button>
+      <el-button type="primary" :loading="deploySubmitting" @click="submitDeploy"
+        >确认发布</el-button
+      >
+    </template>
+  </el-dialog>
 
   <!-- 工作区管理：新建 / 刷新 / 项目清单，工作区维度带删除入口 -->
   <section class="surface">
@@ -521,6 +618,10 @@ async function refreshAll(): Promise<void> {
             <small class="option-hint">{{ candidate.path }}</small>
           </el-option>
         </el-select>
+        <p v-if="showNoRepositoryHint" class="workspace-form-tapd-hint">
+          未发现可选项目：请到「连接与配置」检查「源仓库根目录」，确认该目录含 .git
+          的子项目后点「保存配置」。
+        </p>
       </label>
       <div class="workspace-form-tapd">
         <label

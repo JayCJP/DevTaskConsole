@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-11-15T14:57:48.934Z",
+  "generatedAt": "2026-11-20T10:25:48.486Z",
   "title": "Design System: DevTask Console",
   "extensions": {
     "colorMeta": {
@@ -17,6 +17,66 @@
           "oklch(72% 0.14 255)",
           "oklch(84% 0.07 255)",
           "oklch(94% 0.03 255)"
+        ]
+      },
+      "instrument-blue-hover": {
+        "role": "primary",
+        "displayName": "Instrument Blue Hover · 悬停档",
+        "canonical": "oklch(77% 0.14 255)",
+        "tonalRamp": [
+          "oklch(18% 0.07 255)",
+          "oklch(28% 0.083 255)",
+          "oklch(40% 0.097 255)",
+          "oklch(52% 0.111 255)",
+          "oklch(64% 0.125 255)",
+          "oklch(74% 0.137 255)",
+          "oklch(84% 0.132 255)",
+          "oklch(94% 0.042 255)"
+        ]
+      },
+      "instrument-blue-strong": {
+        "role": "primary",
+        "displayName": "Instrument Blue Strong · 按压档",
+        "canonical": "oklch(58% 0.17 258)",
+        "tonalRamp": [
+          "oklch(18% 0.085 258)",
+          "oklch(28% 0.128 258)",
+          "oklch(40% 0.145 258)",
+          "oklch(52% 0.162 258)",
+          "oklch(64% 0.162 258)",
+          "oklch(74% 0.147 258)",
+          "oklch(84% 0.133 258)",
+          "oklch(94% 0.051 258)"
+        ]
+      },
+      "instrument-blue-soft": {
+        "role": "primary",
+        "displayName": "Instrument Blue Soft · 软化档",
+        "canonical": "oklch(30% 0.06 255)",
+        "tonalRamp": [
+          "oklch(18% 0.03 255)",
+          "oklch(28% 0.059 255)",
+          "oklch(40% 0.055 255)",
+          "oklch(52% 0.049 255)",
+          "oklch(64% 0.043 255)",
+          "oklch(74% 0.038 255)",
+          "oklch(84% 0.033 255)",
+          "oklch(94% 0.018 255)"
+        ]
+      },
+      "instrument-blue-contrast": {
+        "role": "primary",
+        "displayName": "Instrument Blue Contrast · 反色文字",
+        "canonical": "oklch(98% 0.01 255)",
+        "tonalRamp": [
+          "oklch(18% 0.005 255)",
+          "oklch(28% 0.005 255)",
+          "oklch(40% 0.005 255)",
+          "oklch(52% 0.006 255)",
+          "oklch(64% 0.007 255)",
+          "oklch(74% 0.008 255)",
+          "oklch(84% 0.009 255)",
+          "oklch(94% 0.003 255)"
         ]
       },
       "signal-success": {
@@ -94,6 +154,66 @@
           "oklch(96% 0.008 250)"
         ]
       },
+      "ghost-slate-panel": {
+        "role": "neutral",
+        "displayName": "Ghost Slate · 面板",
+        "canonical": "oklch(22.5% 0.014 252)",
+        "tonalRamp": [
+          "oklch(18% 0.007 252)",
+          "oklch(28% 0.013 252)",
+          "oklch(40% 0.012 252)",
+          "oklch(52% 0.011 252)",
+          "oklch(64% 0.009 252)",
+          "oklch(74% 0.008 252)",
+          "oklch(84% 0.007 252)",
+          "oklch(94% 0.004 252)"
+        ]
+      },
+      "ghost-slate-raised": {
+        "role": "neutral",
+        "displayName": "Ghost Slate · 内嵌块",
+        "canonical": "oklch(26% 0.016 252)",
+        "tonalRamp": [
+          "oklch(18% 0.008 252)",
+          "oklch(28% 0.016 252)",
+          "oklch(40% 0.014 252)",
+          "oklch(52% 0.013 252)",
+          "oklch(64% 0.011 252)",
+          "oklch(74% 0.01 252)",
+          "oklch(84% 0.008 252)",
+          "oklch(94% 0.005 252)"
+        ]
+      },
+      "ghost-slate-hover": {
+        "role": "neutral",
+        "displayName": "Ghost Slate · 悬停",
+        "canonical": "oklch(30% 0.018 252)",
+        "tonalRamp": [
+          "oklch(18% 0.009 252)",
+          "oklch(28% 0.018 252)",
+          "oklch(40% 0.016 252)",
+          "oklch(52% 0.015 252)",
+          "oklch(64% 0.013 252)",
+          "oklch(74% 0.011 252)",
+          "oklch(84% 0.01 252)",
+          "oklch(94% 0.005 252)"
+        ]
+      },
+      "ghost-slate-inset": {
+        "role": "neutral",
+        "displayName": "Slate Inset · 凹陷色",
+        "canonical": "oklch(16% 0.012 252)",
+        "tonalRamp": [
+          "oklch(18% 0.006 252)",
+          "oklch(28% 0.011 252)",
+          "oklch(40% 0.01 252)",
+          "oklch(52% 0.008 252)",
+          "oklch(64% 0.007 252)",
+          "oklch(74% 0.006 252)",
+          "oklch(84% 0.005 252)",
+          "oklch(94% 0.004 252)"
+        ]
+      },
       "hairline": {
         "role": "neutral",
         "displayName": "Hairline · 发丝线",
@@ -109,6 +229,36 @@
           "oklch(90% 0.012 250)"
         ]
       },
+      "hairline-subtle": {
+        "role": "neutral",
+        "displayName": "Hairline Subtle · 卡片描边",
+        "canonical": "oklch(27% 0.014 252)",
+        "tonalRamp": [
+          "oklch(18% 0.007 252)",
+          "oklch(28% 0.014 252)",
+          "oklch(40% 0.012 252)",
+          "oklch(52% 0.011 252)",
+          "oklch(64% 0.01 252)",
+          "oklch(74% 0.009 252)",
+          "oklch(84% 0.007 252)",
+          "oklch(94% 0.004 252)"
+        ]
+      },
+      "text-strong": {
+        "role": "neutral",
+        "displayName": "Ink · 标题",
+        "canonical": "oklch(96% 0.008 250)",
+        "tonalRamp": [
+          "oklch(18% 0.004 250)",
+          "oklch(28% 0.004 250)",
+          "oklch(40% 0.004 250)",
+          "oklch(52% 0.005 250)",
+          "oklch(64% 0.006 250)",
+          "oklch(74% 0.007 250)",
+          "oklch(84% 0.007 250)",
+          "oklch(94% 0.002 250)"
+        ]
+      },
       "text-body": {
         "role": "neutral",
         "displayName": "Ink · 正文",
@@ -122,6 +272,36 @@
           "oklch(90% 0.012 250)",
           "oklch(96% 0.008 250)",
           "oklch(99% 0.005 255)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Ink · 元信息",
+        "canonical": "oklch(70% 0.018 252)",
+        "tonalRamp": [
+          "oklch(18% 0.009 252)",
+          "oklch(28% 0.012 252)",
+          "oklch(40% 0.013 252)",
+          "oklch(52% 0.015 252)",
+          "oklch(64% 0.017 252)",
+          "oklch(74% 0.017 252)",
+          "oklch(84% 0.016 252)",
+          "oklch(94% 0.005 252)"
+        ]
+      },
+      "text-faint": {
+        "role": "neutral",
+        "displayName": "Ink · 极弱信息",
+        "canonical": "oklch(56% 0.018 252)",
+        "tonalRamp": [
+          "oklch(18% 0.009 252)",
+          "oklch(28% 0.014 252)",
+          "oklch(40% 0.016 252)",
+          "oklch(52% 0.017 252)",
+          "oklch(64% 0.017 252)",
+          "oklch(74% 0.015 252)",
+          "oklch(84% 0.014 252)",
+          "oklch(94% 0.005 252)"
         ]
       }
     },
@@ -286,11 +466,18 @@
       "description": "机器输出区：凹陷底色 + 等宽字体，与内容卡片明确区分。",
       "html": "<pre class=\"ds-inset\">[22:19:59] snapshot refreshed\n[22:20:04] cron dispatched → round-3</pre>",
       "css": ".ds-inset { max-height: 160px; overflow: auto; margin: 0; padding: 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-md); background: var(--bg-inset); color: var(--text); font: 11px/1.6 var(--font-mono); white-space: pre-wrap; } .ds-inset::selection { background: color-mix(in oklch, var(--brand) 35%, transparent); }"
+    },
+    {
+      "name": "Loading Placeholder",
+      "kind": "custom",
+      "description": "加载态：与内容同构的静态占位，不允许塌成空白或整屏转圈。",
+      "html": "<div class=\"ds-loading\"><span class=\"ds-loading-line\"></span><span class=\"ds-loading-line\"></span><span class=\"ds-loading-block\"></span></div>",
+      "css": ".ds-loading { display: grid; gap: 8px; padding: 16px; border-radius: var(--radius-md); background: var(--bg-surface); font-family: var(--font-sans); } .ds-loading-line { height: 12px; border-radius: var(--radius-xs); background: var(--bg-raised); } .ds-loading-block { height: 64px; border-radius: var(--radius-sm); background: var(--bg-raised); }"
     }
   ],
   "narrative": {
     "northStar": "The Instrument Deck · 仪表台",
-    "overview": "DevTask Console 长得像一块校准好的仪表台，而不是一个产品页面。每个读数都标着来源和时刻，每个开关按下去就执行。界面上没有装饰性的解说：一屏之内，你既能看清当前状态，也能立刻动手。精密度来自一致：同一套刻度、同一套语义色、同一处圆角；重复使用不会让人疲劳，反而让眼睛不必每次都重新学习。配色走冷调：仪器蓝承担主操作与当前选中，幽灵石板灰铺出页面、面板与内嵌区的层次，四种状态色只在它们真正表达状态时出现。手感克制：按钮与输入框只有颜色与 1px 描边的变化，没有位移、没有缩放、没有玻璃模糊。",
+    "overview": "DevTask Console 长得像一块校准好的仪表台，而不是一个产品页面。每个读数都标着来源和时刻，每个开关按下去就执行。界面上没有装饰性的解说：一屏之内，你既能看清当前状态，也能立刻动手。精密度来自一致：同一套刻度、同一套语义色、同一处圆角；重复使用不会让人疲劳，反而让眼睛不必每次都重新学习。\n\n配色走冷调：仪器蓝承担主操作与当前选中，幽灵石板灰铺出页面、面板与内嵌区的层次，四种状态色只在它们真正表达状态时出现。两套主题（暗色默认 / 亮色可选）共用同一组 OKLCH 亮度刻度，因此同一状态在两种主题下的观感等级一致，不会在亮色下突然变刺眼。\n\n手感克制：按钮与输入框只有颜色与 1px 描边的变化，没有位移、没有缩放、没有玻璃模糊。空间留给数据本身；密度高于观感。",
     "keyCharacteristics": [
       "冷调仪器蓝 + 幽灵石墨板灰，四种状态色只用于状态",
       "13px 正文、10–24px 的紧凑字号刻度；数字一律等宽（tabular-nums）",
@@ -299,6 +486,11 @@
       "暗色默认，两种主题共用同一套亮度刻度"
     ],
     "rules": [
+      {
+        "name": "The Pill Exception",
+        "body": "border-radius: 999px 只允许出现在状态标签（.tag）、计数胶囊（.count-pill、.kind-label）与状态点；其余任何元素一律走五级圆角阶梯，胶囊形不是通用容器形状。",
+        "section": "colors"
+      },
       {
         "name": "The One Voice Rule",
         "body": "仪器蓝在任何一屏的面积占比不超过 10%：它标主操作与当前位置，不做装饰背景。需要强调时用字重或字号，不用颜色面积。",
@@ -311,22 +503,22 @@
       },
       {
         "name": "The Semantic Parity Rule",
-        "body": "同一状态在暗色与亮色下共用同一亮度刻度，不为某一主题单独调深或调浅。",
+        "body": "同一状态在暗色与亮色下共用同一亮度刻度，不为某一主题单独调深或调浅。frontmatter 记录的是暗色（默认主题）取值；亮色在 [data-theme=\"light\"] 下重映射同一组令牌，色相与色度不变，只调整亮度（例如仪器蓝 72% → 52%、signal-danger 70% → 53%）。",
         "section": "colors"
       },
       {
         "name": "The Two-Step Rule",
-        "body": "字号刻度只走 10 / 11 / 12.5 / 13 / 15 / 22 / 24 七级（--text-2xs … --text-xl）；任何新文本必须落到其中一级。",
+        "body": "字号刻度只走 10 / 11 / 12.5 / 13 / 15 / 22 / 24 七级（对应 --text-2xs … --text-xl）；任何新文本必须落到其中一级，不允许 12.3px 这类中间值。",
         "section": "typography"
       },
       {
         "name": "The Numbers Stand Still Rule",
-        "body": "所有会变化的数字使用 tabular-nums；变动的数字不允许引起布局位移。",
+        "body": "所有会变化的数字（统计、计数、时长、次数）使用 tabular-nums；变动的数字不允许引起布局位移。",
         "section": "typography"
       },
       {
         "name": "The Hairline Rule",
-        "body": "卡片边界永远用 1px --line-subtle 描边表达；禁止用 2px 以上的彩色左边框标记告警或选中。",
+        "body": "卡片边界永远用 1px --line-subtle 描边表达；禁止用 2px 以上的彩色左边框（border-left）标记告警或选中，改用整圈 1px 同色描边 + 淡色底。",
         "section": "elevation"
       },
       {
@@ -337,19 +529,19 @@
     ],
     "dos": [
       "Do 让仪器蓝只出现在主操作、当前选中、可点链接与焦点环上，单屏面积 ≤ 10%。",
-      "Do 给每个状态同时配颜色与文字/图标线索。",
+      "Do 给每个状态同时配颜色与文字/图标线索（tag 的圆点、.status-dot 的文字标签）。",
       "Do 用 --bg-inset 区分机器输出与内容；用 --bg-raised 区分卡片内次级块。",
       "Do 让所有变化的数字使用 tabular-nums。",
       "Do 在加载时用与内容同构的静态占位（浅色条或空块），不用扫光动画、不用整屏转圈。",
-      "Do 把告警与安全边界的信息写成「原因 + 恢复方式」的具体句子。"
+      "Do 把告警与安全边界的信息写成「原因 + 恢复方式」的具体句子，例如「Harness Phase 4-6 期间禁止发布：完成后可重试」。"
     ],
     "donts": [
-      "Don't 在标题上方叠加 kicker / eyebrow 文本。",
+      "Don't 在标题上方叠加 kicker / eyebrow 文本。标题自己承担层级。",
       "Don't 用 border-left 3px 以上的彩色粗条标记告警、选中或分类。",
-      "Don't 用 backdrop-filter 模糊（毛玻璃）作为装饰。",
-      "Don't 给按钮加位移、缩放或投影动画。",
+      "Don't 用 backdrop-filter 模糊（毛玻璃）作为装饰；吸顶栏用实色。",
+      "Don't 给按钮加位移、缩放或投影动画；状态变化只用颜色与描边。",
       "Don't 在界面里使用渐变文字、渐变按钮或发光效果。",
-      "Don't 把等宽字体当作「技术感」装饰用于普通标签、按钮或正文。",
+      "Don't 把等宽字体当作「技术感」装饰用于普通标签、按钮或正文；它只服务代码、ID、路径与计数。",
       "Don't 用灰色代替状态色表达状态，也不要只靠颜色表达状态。"
     ]
   }
