@@ -83,6 +83,23 @@ const activeModeByStory = computed(() => {
   return index
 })
 
+/**
+ * 该看板行是否有进行中的活跃流程（harnessActive 存在其记录）。
+ *
+ * 注意口径：看板行的 story.storyId 是 TAPD 需求 ID（如 1138260628001031789），
+ * 而 harnessActive 的 storyId 是本地 Harness Story ID（如 1102opt），两者不同。
+ * 必须经绑定工作区拿到本地 Requirement，再用 Requirement.storyId 判断活跃，
+ * 否则用 TAPD ID 直接查 activeModeByStory 永远命中不了、阶段 chip 不会渲染。
+ *
+ * 阶段 chip 与进度刻度都只在流程活跃时展示，统一用此判断避免口径分叉。
+ * @param story 看板父需求行（含 workspaceName）
+ * @returns 有活跃流程返回 true，否则 false
+ */
+function hasActiveFlow(story: { workspaceName?: string }): boolean {
+  const requirement = requirementOf(story)
+  return requirement ? activeModeByStory.value.has(requirement.storyId) : false
+}
+
 /** 看板每行 storyId → 流水线态，按绑定工作区名与流水线关联，随数据变化自动刷新 */
 const boardPipelineStates = computed(() => {
   const index = new Map<string, BoardPipelineState>()
@@ -130,10 +147,13 @@ function openStoryDetail(story: { storyId: string; workspaceName?: string }): vo
 /**
  * 看板行 chip 显示的阶段中文名：复用与流水线页共享的 P0–P6 映射。
  * fixbugs 模式下 Phase 0 显示「bug分析」，其余按 run 口径。
+ * 仅在流程活跃（harnessActive 存在该 Story）时返回阶段名；没有进行中的流程返回空串，chip 不渲染。
  * @param story 看板父需求行
- * @returns 中文阶段名；无本地 Story 时返回空串（不渲染）
+ * @returns 中文阶段名；无活跃流程 / 无本地 Story 时返回空串（不渲染）
  */
 function phaseLabelOf(story: { storyId: string; workspaceName?: string }): string {
+  // 只有活跃流程才展示阶段 chip；harnessActive 里没有该 Story 时一律不显示
+  if (!hasActiveFlow(story)) return ''
   const requirement = boardRequirements.value.get(story.storyId)
   if (!requirement) return ''
   const mode = activeModeByStory.value.get(requirement.storyId)
@@ -366,8 +386,9 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
               class="board-pipeline"
               :class="`bp-tone-${boardPipelineStates.get(story.storyId)!.tone}`"
             >
-              <!-- 中文阶段名：有本地 Story 时可点开需求详情抽屉；TAPD id 不在此行展示 -->
+              <!-- 中文阶段名：仅在流程活跃时显示，可点开需求详情抽屉；TAPD id 不在此行展示 -->
               <button
+                v-if="phaseLabelOf(story)"
                 type="button"
                 class="board-story-link"
                 :title="`打开需求详情 · ${phaseLabelOf(story)}`"
@@ -380,7 +401,10 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
                 boardPipelineStates.get(story.storyId)!.statusLabel
               }}</span>
               <span
-                v-if="boardPipelineStates.get(story.storyId)!.phase !== undefined"
+                v-if="
+                  hasActiveFlow(story) &&
+                  boardPipelineStates.get(story.storyId)!.phase !== undefined
+                "
                 class="bp-phase"
                 role="img"
                 :aria-label="`Harness 阶段 ${phaseTag(boardPipelineStates.get(story.storyId)!.phase, modeOfStory(story))}`"
