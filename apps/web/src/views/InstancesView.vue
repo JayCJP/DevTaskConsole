@@ -88,6 +88,13 @@ const {
 /** 实时输出区域的 DOM 引用，用于内容更新后滚动到底部 */
 const outputRef = ref<HTMLDivElement | null>(null)
 
+/**
+ * 是否强制把实时输出滚动到底部。
+ * 切换实例后的首屏渲染窗口内置 true（此时是全新内容，必须滚到底），
+ * 窗口过后恢复「仅当用户已在底部附近才跟随」的常规策略，避免打断用户主动上翻查看历史。
+ */
+const forceScrollToBottom = ref(false)
+
 /** 从原始 SSE 输出中解析出用户/助手对话列表 */
 const parsedOutput = computed(() => parseJobOutput(jobOutput.value))
 
@@ -102,18 +109,43 @@ function formatMessageTime(timestamp: number | null): string {
 }
 
 /**
- * 实时输出内容变化时自动滚动到底部。
- * 仅当用户原本就停留在底部附近（距底部 40px 内）时才滚动，避免打断用户主动上翻查看历史。
- * 使用 nextTick 等待 DOM 完成文本更新后再读取滚动高度。
+ * 把实时输出滚动到底部。
+ * 当 forceScrollToBottom 为 true（切换实例后的首屏窗口）时无条件滚动；
+ * 否则仅当用户原本停留在底部附近（距底部 40px 内）时才滚动，避免打断用户主动上翻查看历史。
  */
-watch(jobOutput, async () => {
-  await nextTick()
+function scrollOutputToBottom(): void {
   const el = outputRef.value
   if (!el) return
   const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-  if (distanceToBottom <= 40) {
+  if (forceScrollToBottom.value || distanceToBottom <= 40) {
     el.scrollTop = el.scrollHeight
   }
+}
+
+/**
+ * 切换左侧实例时，右侧 job-output 渲染的是全新会话内容，需要自动滚到底部。
+ * 由于输出由 SSE 异步分块填充，这里在 nextTick 后立即滚动，并开启一个短暂的首屏窗口
+ * （800ms）强制跟随新到达的 chunk，窗口过后恢复常规的条件滚动策略。
+ */
+watch(selectedJob, async () => {
+  forceScrollToBottom.value = true
+  await nextTick()
+  scrollOutputToBottom()
+  // 首屏 chunk 可能一次性追加大段内容，用 rAF 再兜底一帧确保落到最底部
+  requestAnimationFrame(() => scrollOutputToBottom())
+  window.setTimeout(() => {
+    forceScrollToBottom.value = false
+  }, 800)
+})
+
+/**
+ * 实时输出内容变化时自动滚动到底部。
+ * 使用 nextTick 等待 DOM 完成文本更新后再读取滚动高度；
+ * 是否真的滚动由 scrollOutputToBottom 按首屏窗口 / 底部距离决定。
+ */
+watch(jobOutput, async () => {
+  await nextTick()
+  scrollOutputToBottom()
 })
 </script>
 

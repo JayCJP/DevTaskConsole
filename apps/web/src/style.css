@@ -1761,6 +1761,16 @@
 .workspace-form > .workspace-form-wide {
   grid-column: 1 / -1;
 }
+/* 项目候选行标题：文案与手动刷新按钮同行排列，按钮穿透服务端缓存重新扫描 */
+.workspace-form-candidates-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.workspace-candidates-refresh {
+  margin-left: auto;
+  padding: 2px 8px;
+}
 /* 跳步选项：与上方输入项用细分隔线分组，选项左对齐紧凑排列 */
 .workspace-form > .workspace-form-checks {
   display: flex;

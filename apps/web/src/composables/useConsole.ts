@@ -2223,6 +2223,21 @@ export function useConsole() {
   }
 
   /**
+   * 确保候选项目列表可用：新建弹窗等入口调用。
+   * 已有数据直接复用（不发请求，服务端命中缓存零 readdir）；
+   * 无数据先按缓存口径请求一次，返回仍为空且无错误时再强制扫描
+   * （refresh=1 穿透服务端缓存）一次，扫描结果由服务端写盘缓存。
+   * @returns Promise<void>
+   */
+  async function ensureRepositoryCandidates(): Promise<void> {
+    if (repositoryCandidates.value.length > 0 || candidatesLoading.value) return
+    await refreshRepositoryCandidates()
+    if (repositoryCandidates.value.length === 0 && !candidatesError.value) {
+      await refreshRepositoryCandidates(true)
+    }
+  }
+
+  /**
    * 刷新工作区候选项目列表。
    * @param force 是否穿透服务端候选缓存（保存源目录配置后为 true）
    * @returns Promise<void>，错误写入 candidatesError
@@ -2701,6 +2716,8 @@ export function useConsole() {
     workspaceJob.value = null
     workspaceError.value = ''
     createDialogOpen.value = true
+    // 弹窗打开时确保项目候选可用：有数据直接复用；无数据先取缓存，仍为空则强制扫描一次
+    void ensureRepositoryCandidates()
   }
 
   /** 关闭新建弹窗；提交中或初始化任务运行中时禁止关闭，避免丢失进度。 */

@@ -231,13 +231,17 @@ export class DevOpsAdapter {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
+      // 发布只需拿到 DevOps "已接受" 回执，但 DevOps 侧按 timeout 秒处理后再回包。
+      // 客户端超时必须大于服务端 timeout（这里多给 60 秒缓冲），否则会先于回执 abort，
+      // 把一次成功的发布误报成 "The operation was aborted due to timeout"。
+      timeoutMs: (input.timeout ?? 300) * 1000 + 60_000,
     })
   }
 
   private async request(
     credentials: DevOpsCredentials,
     path: string,
-    init?: RequestInit,
+    init?: (RequestInit & { timeoutMs?: number }) | undefined,
   ): Promise<unknown> {
     const response = await fetch(new URL(path.replace(/^\/+/, ''), `${credentials.host}/`), {
       method: init?.method ?? 'GET',
@@ -250,7 +254,7 @@ export class DevOpsAdapter {
         ...(init?.headers ?? {}),
       },
       redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(init?.timeoutMs ?? 30_000),
     })
     if (response.status === 403) {
       throw new Error('DevOps session expired (HTTP 403). Refresh the browser session credentials.')

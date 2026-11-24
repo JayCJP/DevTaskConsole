@@ -597,7 +597,17 @@ async function refreshAll(): Promise<void> {
       <label>分支名<el-input v-model="branch" placeholder="默认 feat/&lt;工作区名&gt;" /></label>
       <label>基线分支<el-input v-model="baseBranch" placeholder="默认 master" /></label>
       <label class="workspace-form-wide">
-        <span>项目（可搜索、可多选）· {{ selectedRepositoryLabel }}</span>
+        <span class="workspace-form-candidates-head">
+          项目（可搜索、可多选）· {{ selectedRepositoryLabel }}
+          <el-button
+            class="workspace-candidates-refresh"
+            size="small"
+            text
+            :loading="candidatesLoading"
+            @click="refreshRepositoryCandidates(true)"
+            >刷新</el-button
+          >
+        </span>
         <el-select
           v-model="selectedRepositoryNames"
           multiple

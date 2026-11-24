@@ -399,8 +399,11 @@ export class WorkspaceInitializer {
 
 /**
  * 构造 create-workspace.ps1 的 PowerShell 参数（EncodedCommand）。
+ * 正式执行（非 DryRun）固定追加 -Async：install/graphify 转后台异步执行，
+ * 脚本启动任务后即结束，初始化任务随之完成（前端弹窗可关闭），
+ * install/graphify 由脱离脚本的后台进程继续执行，输出写工作区 .init-logs/ 日志。
  * @param request 校验后的初始化请求
- * @param dryRun 是否只做预演（-DryRun）
+ * @param dryRun 是否只做预演（-DryRun，预演保持同步打印计划）
  * @param sourceRoot 本次使用的源仓库根目录，由 validate 解析（配置优先）
  * @returns pwsh 进程参数数组
  */
@@ -420,6 +423,7 @@ function buildPowerShellArguments(
   if (request.skipInstall) parameters.push('-SkipInstall')
   if (request.skipGraphify) parameters.push('-SkipGraphify')
   if (dryRun) parameters.push('-DryRun')
+  else parameters.push('-Async') // 正式执行：install/graphify 转后台异步，脚本启动后即结束，弹窗可关闭
   const command = [
     '$utf8 = [System.Text.UTF8Encoding]::new($false)',
     '[Console]::OutputEncoding = $utf8',
