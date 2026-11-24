@@ -3,7 +3,7 @@
  * instances 页面视图。
  * 从 ConsolePage.vue 拆分而来，共享状态由 ConsoleShell 通过 provide 下发。
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useConsoleContext } from '../composables/useConsoleContext'
 import { parseJobOutput } from '../utils/job-output'
 import { renderMarkdown } from '../utils/markdown'
@@ -88,12 +88,17 @@ const {
 /** 实时输出区域的 DOM 引用，用于内容更新后滚动到底部 */
 const outputRef = ref<HTMLDivElement | null>(null)
 
-/**
- * 是否强制把实时输出滚动到底部。
- * 切换实例后的首屏渲染窗口内置 true（此时是全新内容，必须滚到底），
- * 窗口过后恢复「仅当用户已在底部附近才跟随」的常规策略，避免打断用户主动上翻查看历史。
- */
-const forceScrollToBottom = ref(false)
+/** 用户是否正在跟随实时输出底部：true 表示新内容到达时自动滚到底部 */
+const followOutput = ref(true)
+
+/** 实时输出容器的 ResizeObserver 实例，组件卸载时断开 */
+let outputResizeObserver: ResizeObserver | null = null
+
+/** 记录上一次观测到的内容高度，用于判断高度是否增长 */
+let lastObservedHeight = 0
+
+/** 标记由代码触发的滚动，避免 scroll 事件误判为用户主动上滑 */
+let programmaticScroll = false
 
 /** 从原始 SSE 输出中解析出用户/助手对话列表 */
 const parsedOutput = computed(() => parseJobOutput(jobOutput.value))
@@ -109,43 +114,72 @@ function formatMessageTime(timestamp: number | null): string {
 }
 
 /**
- * 把实时输出滚动到底部。
- * 当 forceScrollToBottom 为 true（切换实例后的首屏窗口）时无条件滚动；
- * 否则仅当用户原本停留在底部附近（距底部 40px 内）时才滚动，避免打断用户主动上翻查看历史。
+ * 把实时输出滚动到底部，并标记为代码触发以免被 scroll 事件误判为用户上滑。
  */
 function scrollOutputToBottom(): void {
   const el = outputRef.value
   if (!el) return
-  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-  if (forceScrollToBottom.value || distanceToBottom <= 40) {
-    el.scrollTop = el.scrollHeight
-  }
+  programmaticScroll = true
+  el.scrollTop = el.scrollHeight
+  // rAF 后解除标记：此时 scroll 事件已随赋值同步派发完毕
+  requestAnimationFrame(() => {
+    programmaticScroll = false
+  })
 }
 
 /**
- * 切换左侧实例时，右侧 job-output 渲染的是全新会话内容，需要自动滚到底部。
- * 由于输出由 SSE 异步分块填充，这里在 nextTick 后立即滚动，并开启一个短暂的首屏窗口
- * （800ms）强制跟随新到达的 chunk，窗口过后恢复常规的条件滚动策略。
+ * 监听用户滚动意图：仅当用户主动向上滚动离开底部时才暂停跟随，
+ * 滚回底部附近（40px 内）则自动恢复跟随。
+ */
+function handleOutputScroll(): void {
+  if (programmaticScroll) return
+  const el = outputRef.value
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  followOutput.value = distanceToBottom <= 40
+}
+
+/**
+ * 切换左侧实例时，右侧 job-output 是全新会话内容，强制恢复跟随并滚到底部。
  */
 watch(selectedJob, async () => {
-  forceScrollToBottom.value = true
+  followOutput.value = true
   await nextTick()
   scrollOutputToBottom()
-  // 首屏 chunk 可能一次性追加大段内容，用 rAF 再兜底一帧确保落到最底部
-  requestAnimationFrame(() => scrollOutputToBottom())
-  window.setTimeout(() => {
-    forceScrollToBottom.value = false
-  }, 800)
 })
 
 /**
- * 实时输出内容变化时自动滚动到底部。
- * 使用 nextTick 等待 DOM 完成文本更新后再读取滚动高度；
- * 是否真的滚动由 scrollOutputToBottom 按首屏窗口 / 底部距离决定。
+ * 实时输出内容变化时滚动到底部。
+ * 注意：SSE 文本写入与 DOM patch 由 nextTick 覆盖，
+ * 而图片加载 / 富文本导致的高度变化由 ResizeObserver 兜底（见 onMounted）。
  */
 watch(jobOutput, async () => {
   await nextTick()
-  scrollOutputToBottom()
+  if (followOutput.value) scrollOutputToBottom()
+})
+
+/** 组件挂载后创建 ResizeObserver：内容高度增长且处于跟随状态时自动滚到底部 */
+onMounted(() => {
+  const el = outputRef.value
+  if (!el) return
+  lastObservedHeight = el.scrollHeight
+  outputResizeObserver = new ResizeObserver(() => {
+    const current = outputRef.value
+    if (!current) return
+    const height = current.scrollHeight
+    const grew = height > lastObservedHeight
+    lastObservedHeight = height
+    if (grew && followOutput.value) scrollOutputToBottom()
+  })
+  outputResizeObserver.observe(el)
+  el.addEventListener('scroll', handleOutputScroll, { passive: true })
+})
+
+/** 组件卸载时断开观察并移除监听，避免内存泄露 */
+onUnmounted(() => {
+  outputResizeObserver?.disconnect()
+  outputResizeObserver = null
+  outputRef.value?.removeEventListener('scroll', handleOutputScroll)
 })
 </script>
 

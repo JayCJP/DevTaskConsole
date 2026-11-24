@@ -20,6 +20,11 @@ function makeItem(id: string): InboxItem {
   }
 }
 
+/** 构造一条带真实问题编号的 open_question 事项（id 格式同 buildInbox 输出） */
+function makeQuestionItem(questionId: string): InboxItem {
+  return makeItem(`question:STORY-1:${questionId}`)
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -64,6 +69,33 @@ describe('buildInboxAnswerText', () => {
       a: { text: 'A', updatedAt: 't' },
     }
     expect(buildInboxAnswerText(items, answers)).toBe('Q1:A\nQ2:C')
+  })
+
+  it('open_question 使用真实问题编号（如 Q-12），而非顺序编号', () => {
+    const questionItems = [
+      makeQuestionItem('Q-12'),
+      makeQuestionItem('Q-13'),
+      makeQuestionItem('Q-14'),
+      makeQuestionItem('Q-15'),
+    ]
+    const answers: Record<string, InboxAnswer> = {
+      [questionItems[0].id]: { text: '答十二', updatedAt: 't' },
+      [questionItems[2].id]: { text: '答十四', updatedAt: 't' },
+      [questionItems[3].id]: { text: '答十五', updatedAt: 't' },
+    }
+    expect(buildInboxAnswerText(questionItems, answers)).toBe(
+      'Q-12:答十二\nQ-14:答十四\nQ-15:答十五',
+    )
+  })
+
+  it('真实编号与顺序编号混用时各自取正确标号', () => {
+    const mixed = [makeQuestionItem('Q-12'), makeItem('blocked:STORY-1')]
+    mixed[1] = { ...mixed[1], kind: 'blocked_job' }
+    const answers: Record<string, InboxAnswer> = {
+      [mixed[0].id]: { text: 'A', updatedAt: 't' },
+      [mixed[1].id]: { text: 'B', updatedAt: 't' },
+    }
+    expect(buildInboxAnswerText(mixed, answers)).toBe('Q-12:A\nQ2:B')
   })
 })
 

@@ -129,14 +129,33 @@ export function boldPartsOf(text: string): EmphasisPart[] {
 }
 
 /**
- * 把用户填写的答案拼成极简汇总文本，格式为 `Qn:答案`。
+ * 从收件箱事项中提取 open question 的真实编号。
  *
- * 只对有答案（去空白后非空）的事项编号，编号从 1 递增；空答案不占位、不产生输出行。
+ * 后端把待确认项编码成 `question:<storyId>:<questionId>`（见 snapshot.ts 的 buildInbox），
+ * 其中 questionId 即 open-questions.json 里的真实 ID（如 `Q-12`）。
+ * 仅当格式严格匹配三段式且 questionId 非空时才返回，否则返回空串表示无真实编号。
+ *
+ * @param item 收件箱事项
+ * @returns 真实问题编号；非 open_question 或格式不符时返回空字符串
+ */
+function realQuestionIdOf(item: InboxItem): string {
+  if (item.kind !== 'open_question') return ''
+  const parts = item.id.split(':')
+  if (parts.length !== 3 || parts[0] !== 'question') return ''
+  return parts[2]?.trim() ? parts[2] : ''
+}
+
+/**
+ * 把用户填写的答案拼成极简汇总文本，格式为 `<编号>:答案`。
+ *
+ * open_question 事项使用 open-questions.json 里的真实编号（如 `Q-12:答案`），
+ * 与看板「需求待确认项」保持一致；无法取得真实编号的事项（如 blocked_job、
+ * 非标准 ID）才回退到按已填答案顺序从 Q1 递增。空答案不占位、不产生输出行。
  * 这是纯函数，便于单测：不读 localStorage、不触碰 DOM。
  *
  * @param items 按渲染顺序排列的收件箱事项
  * @param answers 以事项 ID 为键的答案映射
- * @returns 汇总文本，每行一条 `Qn:答案`；无答案时返回空字符串
+ * @returns 汇总文本，每行一条 `<编号>:答案`；无答案时返回空字符串
  */
 export function buildInboxAnswerText(
   items: InboxItem[],
@@ -147,7 +166,8 @@ export function buildInboxAnswerText(
     const answer = answers[item.id]
     const text = answer?.text.trim() ?? ''
     if (!text) continue
-    lines.push(`Q${lines.length + 1}:${text}`)
+    const label = realQuestionIdOf(item) || `Q${lines.length + 1}`
+    lines.push(`${label}:${text}`)
   }
   return lines.join('\n')
 }
