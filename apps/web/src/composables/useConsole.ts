@@ -1904,11 +1904,11 @@ export function useConsole() {
     resumableSessions.value = []
     selectedResumableSession.value = ''
     jobName.value = `${requirement.title} · ${mode === 'run' ? '需求开发' : 'Bug 修复'}`
-    // 修复模式在 harness 入口之后追加本次缺陷口径，避免把无关缺陷纳入本轮
+    // 修复模式在 start skill 入口文案之后追加本次缺陷口径，避免把无关缺陷纳入本轮
     jobPrompt.value =
       mode === 'run'
-        ? `/start ${requirement.storyId}`
-        : `/start fixbugs ${requirement.storyId}\n${bugFixPromptSuffix.value}`
+        ? `使用 start skill 按流程，需求开发，story id 是 ${requirement.storyId}`
+        : `使用 start skill 按流程，bug修复，story id 是 ${requirement.storyId}\n${bugFixPromptSuffix.value}`
     jobError.value = ''
   }
 
