@@ -128,6 +128,10 @@ export function boldPartsOf(text: string): EmphasisPart[] {
     }))
 }
 
+/** 汇总答复末尾附加的后续处理提示，与答案行之间空一行 */
+const answerFollowUpHint =
+  '根据答复再次分析，没问题请同步更新需求文档。如需调整AC请根据实际情况调整，如有调整给出变动的项'
+
 /**
  * 从收件箱事项中提取 open question 的真实编号。
  *
@@ -151,11 +155,12 @@ function realQuestionIdOf(item: InboxItem): string {
  * open_question 事项使用 open-questions.json 里的真实编号（如 `Q-12:答案`），
  * 与看板「需求待确认项」保持一致；无法取得真实编号的事项（如 blocked_job、
  * 非标准 ID）才回退到按已填答案顺序从 Q1 递增。空答案不占位、不产生输出行。
+ * 末尾空一行后附加后续处理提示（见 answerFollowUpHint）。
  * 这是纯函数，便于单测：不读 localStorage、不触碰 DOM。
  *
  * @param items 按渲染顺序排列的收件箱事项
  * @param answers 以事项 ID 为键的答案映射
- * @returns 汇总文本，每行一条 `<编号>:答案`；无答案时返回空字符串
+ * @returns 汇总文本，每行一条 `<编号>:答案` 加末尾提示；无答案时返回空字符串
  */
 export function buildInboxAnswerText(
   items: InboxItem[],
@@ -169,7 +174,8 @@ export function buildInboxAnswerText(
     const label = realQuestionIdOf(item) || `Q${lines.length + 1}`
     lines.push(`${label}:${text}`)
   }
-  return lines.join('\n')
+  if (!lines.length) return ''
+  return `${lines.join('\n')}\n\n${answerFollowUpHint}`
 }
 
 /**

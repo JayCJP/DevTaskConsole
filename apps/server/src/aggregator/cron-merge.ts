@@ -21,7 +21,7 @@ export interface CronRealtimeSource {
  *
  * 合并规则（逐字段）：
  * - 归属信息（storyId/workspacePath/storyTitle/mode/ownerSessionId/ownerVerifiedAt）以本地文件与映射为准；
- * - 运行期事实（cron/enabled/nextRun/expiresAt）以实时数据为准，实时数据缺省时回落到本地；
+ * - 运行期事实（cron/enabled/nextRun/lastFiredAt/expiresAt）以实时数据为准，实时数据缺省时回落到本地；
  * - 本地存在但实时没返回的任务原样保留（服务未运行或任务归属其它 Story）。
  *
  * @param local 本地文件扫出的任务（保持顺序）
@@ -59,7 +59,9 @@ export function mergeCronFacts(
         cron: remote.cron,
         ...(remote.enabled !== undefined
           ? { enabled: remote.enabled }
-          : base?.enabled !== undefined ? { enabled: base.enabled } : {}),
+          : base?.enabled !== undefined
+            ? { enabled: base.enabled }
+            : {}),
         ...(mode ? { mode } : {}),
         ...(ownerSessionId ? { ownerSessionId } : {}),
         ...(sessionId ? { sessionId } : {}),
@@ -67,14 +69,25 @@ export function mergeCronFacts(
         ...(promptFirstLine ? { promptFirstLine } : {}),
         ...(remote.durable !== undefined
           ? { durable: remote.durable }
-          : base?.durable !== undefined ? { durable: base.durable } : {}),
+          : base?.durable !== undefined
+            ? { durable: base.durable }
+            : {}),
         ...(remote.recurring !== undefined
           ? { recurring: remote.recurring }
-          : base?.recurring !== undefined ? { recurring: base.recurring } : {}),
+          : base?.recurring !== undefined
+            ? { recurring: base.recurring }
+            : {}),
         ...(remote.expiryDays !== undefined
           ? { expiryDays: remote.expiryDays }
-          : base?.expiryDays !== undefined ? { expiryDays: base.expiryDays } : {}),
+          : base?.expiryDays !== undefined
+            ? { expiryDays: base.expiryDays }
+            : {}),
         ...(remote.nextRun ? { nextRun: remote.nextRun } : {}),
+        ...(remote.lastFiredAt
+          ? { lastFiredAt: remote.lastFiredAt }
+          : base?.lastFiredAt
+            ? { lastFiredAt: base.lastFiredAt }
+            : {}),
         ...(remote.expiresAt ? { expiresAt: remote.expiresAt } : {}),
         ...(base?.lastExecution ? { lastExecution: base.lastExecution } : {}),
       }

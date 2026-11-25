@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ArrowDown } from '@element-plus/icons-vue'
-import { describeCron, type Cron } from '@devtask/shared'
+import { describeCron, nextCronRunAfterLast, type Cron } from '@devtask/shared'
 
 const props = defineProps<{
   /** 单条定时任务事实（快照 + 服务端实时字段的合并结果） */
@@ -80,14 +80,23 @@ const toggleLabel = computed(() => (props.cron.enabled === true ? '暂停任务'
 /** 是否存在需要在任务摘要下方展示的风险提示 */
 const hasWarnings = computed(() => isFixMode.value || Boolean(props.openRound))
 
-/** 下次运行时间的可读文本 */
+/**
+ * 下次运行时间的可读文本。
+ * 上游未提供 nextRun 时，前端依据 cron 表达式与上次执行时间自行推算：
+ * 先求 lastFiredAt 之后的下一次命中，若该时间已过去则以当前时间求最近的未来命中。
+ */
 const nextRunText = computed(() => {
-  if (!props.cron.nextRun) return '时间未知'
-  return new Date(props.cron.nextRun).toLocaleString()
+  const next = props.cron.nextRun
+    ? new Date(props.cron.nextRun)
+    : nextCronRunAfterLast(props.cron.cron, new Date(), props.cron.lastFiredAt)
+  if (!next || Number.isNaN(next.getTime())) return '时间未知'
+  return next.toLocaleString()
 })
 
 /** 到期日的可读文本 */
-const expiresText = computed(() => (props.cron.expiresAt ? new Date(props.cron.expiresAt).toLocaleDateString() : ''))
+const expiresText = computed(() =>
+  props.cron.expiresAt ? new Date(props.cron.expiresAt).toLocaleDateString() : '',
+)
 
 /** cron 表达式的中文描述 */
 const scheduleLabel = computed(() => describeCron(props.cron.cron))
@@ -132,7 +141,9 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
       <div class="cron-primary">
         <div class="cron-title-line">
           <span class="status-dot" :class="statusDotClass" />
-          <strong :title="props.cron.storyTitle || '未关联 Story'">{{ props.cron.storyTitle || '未关联 Story' }}</strong>
+          <strong :title="props.cron.storyTitle || '未关联 Story'">{{
+            props.cron.storyTitle || '未关联 Story'
+          }}</strong>
           <span class="tag" :class="statusClass">{{ statusLabel }}</span>
           <span class="cron-mode">{{ modeLabel }}</span>
         </div>
@@ -140,7 +151,11 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
           <code>{{ props.cron.id }}</code>
           <span>{{ props.cron.storyId || 'Story 未映射' }}</span>
         </div>
-        <p v-if="props.cron.promptFirstLine" class="cron-prompt-line" :title="props.cron.promptFirstLine">
+        <p
+          v-if="props.cron.promptFirstLine"
+          class="cron-prompt-line"
+          :title="props.cron.promptFirstLine"
+        >
           {{ props.cron.promptFirstLine }}
         </p>
       </div>
@@ -170,7 +185,9 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
       </div>
       <div class="cron-fact cron-owner-fact">
         <span>执行归属</span>
-        <strong :title="boundSessionId || '未关联实例'">{{ boundSessionId || '未关联实例' }}</strong>
+        <strong :title="boundSessionId || '未关联实例'">{{
+          boundSessionId || '未关联实例'
+        }}</strong>
         <small>{{ bindingLabel }}</small>
       </div>
     </div>
@@ -202,8 +219,13 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="renew" :disabled="!props.cron.durable">续期任务</el-dropdown-item>
-            <el-dropdown-item command="dispatch" :disabled="!props.cron.storyId || Boolean(props.openRound)">
+            <el-dropdown-item command="renew" :disabled="!props.cron.durable"
+              >续期任务</el-dropdown-item
+            >
+            <el-dropdown-item
+              command="dispatch"
+              :disabled="!props.cron.storyId || Boolean(props.openRound)"
+            >
               {{ props.openRound ? '立即派发（需先归档）' : '立即派发' }}
             </el-dropdown-item>
             <el-dropdown-item v-if="props.openRound" command="archive-succeeded">
@@ -215,7 +237,9 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
             <el-dropdown-item v-if="props.openRound" command="archive-stopped">
               归档轮次（已停止）
             </el-dropdown-item>
-            <el-dropdown-item command="remove" divided><span class="cron-danger-action">删除任务</span></el-dropdown-item>
+            <el-dropdown-item command="remove" divided
+              ><span class="cron-danger-action">删除任务</span></el-dropdown-item
+            >
           </el-dropdown-menu>
         </template>
       </el-dropdown>
@@ -236,49 +260,196 @@ function confirmArchive(outcome: 'succeeded' | 'failed' | 'stopped'): void {
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
 }
-.cron-card:hover { border-color: var(--line-strong); }
-.cron-card.is-expanded { border-color: color-mix(in oklch, var(--brand) 45%, var(--line)); box-shadow: var(--shadow-md); }
-.cron-card.is-busy { background: color-mix(in oklch, var(--brand-soft) 30%, var(--surface)); }
-.cron-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.cron-primary { display: grid; min-width: 0; flex: 1; gap: 6px; }
-.cron-title-line { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
-.cron-title-line > strong { overflow: hidden; max-width: min(100%, 520px); color: var(--text); font-size: 15px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
-.cron-title-line .status-dot { flex: 0 0 7px; }
-.status-dot.is-paused { background: var(--amber); }
-.cron-mode { color: var(--muted); font-size: 11px; }
-.cron-meta { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px 12px; color: var(--faint); font-size: 11px; }
-.cron-meta code { overflow-wrap: anywhere; color: var(--muted); }
-.cron-prompt-line { overflow: hidden; margin: 0; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.cron-history-button { flex: 0 0 auto; }
-.cron-facts { display: grid; grid-template-columns: minmax(160px, .85fr) minmax(210px, 1fr) minmax(180px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
-.cron-fact { display: grid; min-width: 0; align-content: start; gap: 4px; padding: 12px 14px; }
-.cron-fact + .cron-fact { border-left: 1px solid var(--line); }
-.cron-fact > span { color: var(--faint); font-size: 10px; }
-.cron-fact > strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.cron-fact > code, .cron-fact > small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.cron-warnings { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: -6px; color: var(--amber); font-size: 11px; }
-.cron-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.cron-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.cron-actions .el-button, .cron-footer > .el-dropdown .el-button { margin: 0; }
-.cron-danger-action { color: var(--red); }
-.cron-card :deep(.cron-executions) { margin-top: 0; }
+.cron-card:hover {
+  border-color: var(--line-strong);
+}
+.cron-card.is-expanded {
+  border-color: color-mix(in oklch, var(--brand) 45%, var(--line));
+  box-shadow: var(--shadow-md);
+}
+.cron-card.is-busy {
+  background: color-mix(in oklch, var(--brand-soft) 30%, var(--surface));
+}
+.cron-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cron-primary {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+}
+.cron-title-line {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cron-title-line > strong {
+  overflow: hidden;
+  max-width: min(100%, 520px);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-title-line .status-dot {
+  flex: 0 0 7px;
+}
+.status-dot.is-paused {
+  background: var(--amber);
+}
+.cron-mode {
+  color: var(--muted);
+  font-size: 11px;
+}
+.cron-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.cron-meta code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.cron-prompt-line {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-history-button {
+  flex: 0 0 auto;
+}
+.cron-facts {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.85fr) minmax(210px, 1fr) minmax(180px, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.cron-fact {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 4px;
+  padding: 12px 14px;
+}
+.cron-fact + .cron-fact {
+  border-left: 1px solid var(--line);
+}
+.cron-fact > span {
+  color: var(--faint);
+  font-size: 10px;
+}
+.cron-fact > strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-fact > code,
+.cron-fact > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: -6px;
+  color: var(--amber);
+  font-size: 11px;
+}
+.cron-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cron-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cron-actions .el-button,
+.cron-footer > .el-dropdown .el-button {
+  margin: 0;
+}
+.cron-danger-action {
+  color: var(--red);
+}
+.cron-card :deep(.cron-executions) {
+  margin-top: 0;
+}
 
 @media (max-width: 1050px) {
-  .cron-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cron-owner-fact { grid-column: 1 / -1; border-top: 1px solid var(--line); border-left: 0 !important; }
+  .cron-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cron-owner-fact {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+    border-left: 0 !important;
+  }
 }
 
 @media (max-width: 640px) {
-  .cron-card { gap: 14px; padding: 14px; }
-  .cron-card-heading { gap: 10px; }
-  .cron-title-line > strong { flex-basis: calc(100% - 18px); max-width: calc(100% - 18px); }
-  .cron-history-button { padding-inline: 10px; }
-  .cron-facts { grid-template-columns: minmax(0, 1fr); }
-  .cron-fact + .cron-fact, .cron-owner-fact { grid-column: auto; border-top: 1px solid var(--line); border-left: 0; }
-  .cron-fact > strong, .cron-fact > code, .cron-fact > small { white-space: normal; overflow-wrap: anywhere; }
-  .cron-footer { align-items: flex-start; }
-  .cron-actions { flex: 1; }
+  .cron-card {
+    gap: 14px;
+    padding: 14px;
+  }
+  .cron-card-heading {
+    gap: 10px;
+  }
+  .cron-title-line > strong {
+    flex-basis: calc(100% - 18px);
+    max-width: calc(100% - 18px);
+  }
+  .cron-history-button {
+    padding-inline: 10px;
+  }
+  .cron-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cron-fact + .cron-fact,
+  .cron-owner-fact {
+    grid-column: auto;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+  .cron-fact > strong,
+  .cron-fact > code,
+  .cron-fact > small {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .cron-footer {
+    align-items: flex-start;
+  }
+  .cron-actions {
+    flex: 1;
+  }
 }
 </style>

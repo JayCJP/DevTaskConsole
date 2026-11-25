@@ -52,8 +52,9 @@ export class CronMappingStore {
   async save(mapping: CronTaskMapping): Promise<void> {
     await this.serialize(async () => {
       const mappings = await this.list()
-      const next = [...mappings.filter((item) => item.taskId !== mapping.taskId), mapping]
-        .sort((left, right) => left.taskId.localeCompare(right.taskId))
+      const next = [...mappings.filter((item) => item.taskId !== mapping.taskId), mapping].sort(
+        (left, right) => left.taskId.localeCompare(right.taskId),
+      )
       await this.writeAll(next)
     })
   }
@@ -73,7 +74,10 @@ export class CronMappingStore {
    * @param patch 待合并字段
    * @returns 更新后的映射；任务不存在时返回 undefined
    */
-  async update(taskId: string, patch: Partial<Omit<CronTaskMapping, 'taskId'>>): Promise<CronTaskMapping | undefined> {
+  async update(
+    taskId: string,
+    patch: Partial<Omit<CronTaskMapping, 'taskId'>>,
+  ): Promise<CronTaskMapping | undefined> {
     return this.serialize(async () => {
       const mappings = await this.list()
       const current = mappings.find((mapping) => mapping.taskId === taskId)
@@ -120,7 +124,9 @@ export class CronMappingStore {
   private async serialize<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.queue
     let release: () => void = () => {}
-    this.queue = new Promise((resolveQueue) => { release = resolveQueue })
+    this.queue = new Promise((resolveQueue) => {
+      release = resolveQueue
+    })
     await previous
     try {
       return await operation()
@@ -253,7 +259,8 @@ export async function readLocalCrons(
         continue
       }
       const storyId = mapping?.storyId ?? source.story?.storyId
-      const taskMode = task.mode === 'query_only' || task.mode === 'query_fix' ? task.mode : undefined
+      const taskMode =
+        task.mode === 'query_only' || task.mode === 'query_fix' ? task.mode : undefined
       crons.push({
         id: task.id,
         ...(storyId ? { storyId } : {}),
@@ -261,7 +268,7 @@ export async function readLocalCrons(
         workspacePath: source.relativePath,
         cron: task.cron,
         ...(task.enabled !== undefined ? { enabled: task.enabled } : {}),
-        ...(mapping?.mode ?? taskMode ? { mode: mapping?.mode ?? taskMode } : {}),
+        ...((mapping?.mode ?? taskMode) ? { mode: mapping?.mode ?? taskMode } : {}),
         ...(mapping?.ownerSessionId ? { ownerSessionId: mapping.ownerSessionId } : {}),
         ...(task.sessionId ? { sessionId: task.sessionId } : {}),
         ...(mapping?.ownerVerifiedAt ? { ownerVerifiedAt: mapping.ownerVerifiedAt } : {}),
@@ -269,8 +276,11 @@ export async function readLocalCrons(
         ...(task.recurring !== undefined ? { recurring: task.recurring } : {}),
         ...(task.expiryDays !== undefined ? { expiryDays: task.expiryDays } : {}),
         ...(task.nextRun ? { nextRun: task.nextRun } : {}),
+        ...(task.lastFiredAt ? { lastFiredAt: task.lastFiredAt } : {}),
         ...(task.expiresAt ? { expiresAt: task.expiresAt } : {}),
-        ...(task.prompt ? { promptFirstLine: task.prompt.split(/\r?\n/, 1)[0]?.slice(0, 200) } : {}),
+        ...(task.prompt
+          ? { promptFirstLine: task.prompt.split(/\r?\n/, 1)[0]?.slice(0, 200) }
+          : {}),
       })
     }
   }
@@ -285,6 +295,7 @@ interface ParsedTask {
   enabled?: boolean
   mode?: string
   nextRun?: string
+  lastFiredAt?: string
   expiresAt?: string
   durable?: boolean
   recurring?: boolean
@@ -293,29 +304,35 @@ interface ParsedTask {
 
 function parseTask(value: unknown): ParsedTask | undefined {
   if (
-    !isRecord(value)
-    || typeof value.id !== 'string'
-    || !value.id.trim()
-    || typeof value.cron !== 'string'
-    || !value.cron.trim()
-    || (value.prompt !== undefined && typeof value.prompt !== 'string')
-    || (value.sessionId !== undefined && typeof value.sessionId !== 'string')
-    || (value.enabled !== undefined && typeof value.enabled !== 'boolean')
-    || (value.mode !== undefined && typeof value.mode !== 'string')
-  ) return undefined
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    !value.id.trim() ||
+    typeof value.cron !== 'string' ||
+    !value.cron.trim() ||
+    (value.prompt !== undefined && typeof value.prompt !== 'string') ||
+    (value.sessionId !== undefined && typeof value.sessionId !== 'string') ||
+    (value.enabled !== undefined && typeof value.enabled !== 'boolean') ||
+    (value.mode !== undefined && typeof value.mode !== 'string')
+  )
+    return undefined
   const nextRun = normalizeDate(value.nextRun)
+  const lastFiredAt = normalizeDate(value.lastFiredAt)
   const expiresAt = normalizeDate(value.expiresAt)
   // 字段存在却无法解析时视为非法任务，避免把错误配置当成“无到期时间”
   if (value.nextRun !== undefined && !nextRun) return undefined
+  if (value.lastFiredAt !== undefined && !lastFiredAt) return undefined
   if (value.expiresAt !== undefined && !expiresAt) return undefined
   return {
     id: value.id,
     cron: value.cron,
     ...(typeof value.prompt === 'string' ? { prompt: value.prompt } : {}),
-    ...(typeof value.sessionId === 'string' && value.sessionId ? { sessionId: value.sessionId } : {}),
+    ...(typeof value.sessionId === 'string' && value.sessionId
+      ? { sessionId: value.sessionId }
+      : {}),
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
     ...(typeof value.mode === 'string' ? { mode: value.mode } : {}),
     ...(nextRun ? { nextRun } : {}),
+    ...(lastFiredAt ? { lastFiredAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
     ...(typeof value.durable === 'boolean' ? { durable: value.durable } : {}),
     ...(typeof value.recurring === 'boolean' ? { recurring: value.recurring } : {}),
@@ -348,24 +365,34 @@ function normalizeDate(value: unknown): string | undefined {
 
 function isCronTaskMapping(value: unknown): value is CronTaskMapping {
   if (!isRecord(value)) return false
-  const baseValid = typeof value.taskId === 'string'
-    && value.taskId.length > 0
-    && typeof value.storyId === 'string'
-    && value.storyId.length > 0
-    && typeof value.ownerSessionId === 'string'
-    && value.ownerSessionId.length > 0
-    && (value.mode === 'query_only' || value.mode === 'query_fix')
+  const baseValid =
+    typeof value.taskId === 'string' &&
+    value.taskId.length > 0 &&
+    typeof value.storyId === 'string' &&
+    value.storyId.length > 0 &&
+    typeof value.ownerSessionId === 'string' &&
+    value.ownerSessionId.length > 0 &&
+    (value.mode === 'query_only' || value.mode === 'query_fix')
   if (!baseValid) return false
   // 新字段全部可选，保证早期仅含四个必填字段的映射文件仍可读取
-  if (value.ownerVerifiedAt !== undefined && !dateTimeSchema.safeParse(value.ownerVerifiedAt).success) return false
-  if (value.pausedByServiceStop !== undefined && typeof value.pausedByServiceStop !== 'boolean') return false
+  if (
+    value.ownerVerifiedAt !== undefined &&
+    !dateTimeSchema.safeParse(value.ownerVerifiedAt).success
+  )
+    return false
+  if (value.pausedByServiceStop !== undefined && typeof value.pausedByServiceStop !== 'boolean')
+    return false
   return true
 }
 
 function isInside(root: string, candidate: string): boolean {
   if (!isAbsolute(root) || !isAbsolute(candidate)) return false
   const fromRoot = relative(resolve(root), resolve(candidate))
-  return !isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+  return (
+    !isAbsolute(fromRoot) &&
+    fromRoot !== '..' &&
+    !fromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

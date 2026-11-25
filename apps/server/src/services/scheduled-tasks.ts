@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { cronExecutionStatusSchema, type CronCreateRequest, type CronUpdateRequest } from '@devtask/shared'
+import {
+  cronExecutionStatusSchema,
+  type CronCreateRequest,
+  type CronUpdateRequest,
+} from '@devtask/shared'
 import { CodeBuddyApi, CodeBuddyApiError } from './codebuddy-api.js'
 
 /**
@@ -26,6 +30,8 @@ export interface RemoteScheduledTask {
   agentId?: string
   /** 下次运行时间（ISO UTC） */
   nextRun?: string
+  /** 上次执行时间（ISO UTC）；上游 lastFiredAt 为毫秒时间戳或 ISO 字符串 */
+  lastFiredAt?: string
   /** 到期时间（ISO UTC） */
   expiresAt?: string
   /** 有效期天数；null 表示永不过期 */
@@ -112,7 +118,8 @@ export class ScheduledTaskClient {
     const path = `/api/v1/scheduled-tasks${search.size ? `?${search}` : ''}`
     const payload = await this.api.request(port, path, 'GET')
     const tasks = extractArray(payload, ['tasks', 'scheduledTasks'])
-    if (!tasks) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid scheduled task list.')
+    if (!tasks)
+      throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid scheduled task list.')
     const parsed: RemoteScheduledTask[] = []
     for (const task of tasks) {
       const normalized = toRemoteTask(task)
@@ -155,7 +162,12 @@ export class ScheduledTaskClient {
     if (body.enabled !== undefined) payload.enabled = body.enabled
     if (body.expiryDays !== undefined) payload.expiryDays = body.expiryDays
     if (body.ownerSessionId) payload.sessionId = body.ownerSessionId
-    return this.api.request(port, `/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`, 'PATCH', payload)
+    return this.api.request(
+      port,
+      `/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`,
+      'PATCH',
+      payload,
+    )
   }
 
   /**
@@ -193,7 +205,11 @@ export class ScheduledTaskClient {
    * @param query 过滤与分页条件
    * @returns 归一后的执行记录分页结果
    */
-  async listExecutions(port: number, taskId: string, query: ExecutionQuery = {}): Promise<RemoteExecutionPage> {
+  async listExecutions(
+    port: number,
+    taskId: string,
+    query: ExecutionQuery = {},
+  ): Promise<RemoteExecutionPage> {
     const search = new URLSearchParams()
     if (query.sessionId) search.set('sessionId', query.sessionId)
     if (query.status) search.set('status', query.status)
@@ -240,16 +256,19 @@ export class ScheduledTaskClient {
     const payload = await this.api.request(port, `/api/v1/sessions?${search}`, 'GET')
     const container = extractRecord(payload, 'data') ?? payload
     const sessions = isRecord(container) ? container.sessions : undefined
-    if (!Array.isArray(sessions)) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid session list.')
+    if (!Array.isArray(sessions))
+      throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid session list.')
     return sessions.flatMap((session) => {
       if (!isRecord(session) || typeof session.id !== 'string' || !session.id) return []
       const updatedAt = timestampOf(session.updatedAt)
       const createdAt = timestampOf(session.createdAt)
-      return [{
-        id: session.id,
-        ...(updatedAt !== undefined ? { updatedAt } : {}),
-        ...(createdAt !== undefined ? { createdAt } : {}),
-      }]
+      return [
+        {
+          id: session.id,
+          ...(updatedAt !== undefined ? { updatedAt } : {}),
+          ...(createdAt !== undefined ? { createdAt } : {}),
+        },
+      ]
     })
   }
 
@@ -286,18 +305,24 @@ export class ScheduledTaskClient {
    */
   async resolveSessionId(port: number, cwd: string, preferredSessionId?: string): Promise<string> {
     const sessions = await this.listSessions(port, cwd)
-    if (preferredSessionId && sessions.some((session) => session.id === preferredSessionId)) return preferredSessionId
+    if (preferredSessionId && sessions.some((session) => session.id === preferredSessionId))
+      return preferredSessionId
     try {
       const liveSessionId = await this.getLiveSessionId(port)
-      if (liveSessionId && sessions.some((session) => session.id === liveSessionId)) return liveSessionId
+      if (liveSessionId && sessions.some((session) => session.id === liveSessionId))
+        return liveSessionId
     } catch {
       // 活会话探测属于增强能力，不可用时仍能按最近活跃会话完成绑定
     }
-    const [latest] = [...sessions].sort((left, right) => (
-      (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
-    ))
+    const [latest] = [...sessions].sort(
+      (left, right) =>
+        (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0),
+    )
     if (!latest) {
-      throw new CodeBuddyApiError(409, '当前 Story 实例没有可用会话，请先在实例页创建一个实例后再操作定时任务。')
+      throw new CodeBuddyApiError(
+        409,
+        '当前 Story 实例没有可用会话，请先在实例页创建一个实例后再操作定时任务。',
+      )
     }
     return latest.id
   }
@@ -344,9 +369,15 @@ function extractRecord(payload: unknown, key: string): Record<string, unknown> |
  */
 function toRemoteTask(value: unknown): RemoteScheduledTask | undefined {
   if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
-  const cron = typeof value.cron === 'string' ? value.cron : typeof value.schedule === 'string' ? value.schedule : undefined
+  const cron =
+    typeof value.cron === 'string'
+      ? value.cron
+      : typeof value.schedule === 'string'
+        ? value.schedule
+        : undefined
   if (!cron) return undefined
   const nextRun = toIso(value.nextRun)
+  const lastFiredAt = toIso(value.lastFiredAt)
   const expiresAt = toIso(value.expiresAt)
   return {
     id: value.id,
@@ -358,6 +389,7 @@ function toRemoteTask(value: unknown): RemoteScheduledTask | undefined {
     ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
     ...(typeof value.agentId === 'string' ? { agentId: value.agentId } : {}),
     ...(nextRun ? { nextRun } : {}),
+    ...(lastFiredAt ? { lastFiredAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
     ...(typeof value.expiryDays === 'number' || value.expiryDays === null
       ? { expiryDays: value.expiryDays as number | null }
@@ -374,7 +406,8 @@ function parseExecutionPage(payload: unknown): RemoteExecutionPage {
   const container = extractRecord(payload, 'data') ?? (isRecord(payload) ? payload : undefined)
   if (!container) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid execution list.')
   const rawExecutions = container.executions
-  if (!Array.isArray(rawExecutions)) throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid execution list.')
+  if (!Array.isArray(rawExecutions))
+    throw new CodeBuddyApiError(502, 'CodeBuddy returned an invalid execution list.')
   const executions: RemoteExecution[] = []
   for (const raw of rawExecutions) {
     const parsed = executionSchema.safeParse(raw)

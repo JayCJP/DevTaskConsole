@@ -222,7 +222,10 @@ export class DevOpsAdapter {
   }): Promise<unknown> {
     const credentials = await this.requireCredentials()
     const payload: Record<string, unknown> = {
-      urls: input.urls,
+      // DevOps /deploy/deploy_multiple 要求 urls 为「换行分隔的字符串」，
+      // 而非 JSON 数组；参考 mcp-server.js 的 urls.join('\n') 口径。
+      // 传数组会导致服务端无法正确解析制品地址，发布流程挂起直至网关 504。
+      urls: input.urls.join('\n'),
       env: input.env,
       force: input.force ?? '0',
       timeout: input.timeout ?? 300,
@@ -259,7 +262,12 @@ export class DevOpsAdapter {
     if (response.status === 403) {
       throw new Error('DevOps session expired (HTTP 403). Refresh the browser session credentials.')
     }
-    if (!response.ok) throw new Error(`DevOps request failed with HTTP ${response.status}.`)
+    if (!response.ok) {
+      // 5xx（如 504 网关超时）常由参数格式或 DevOps 侧处理异常引起，
+      // 把实际请求的完整 URL 带进错误信息，便于定位是地址还是参数问题。
+      const targetUrl = new URL(path.replace(/^\/+/, ''), `${credentials.host}/`).toString()
+      throw new Error(`DevOps request failed with HTTP ${response.status} (${targetUrl}).`)
+    }
     try {
       return (await response.json()) as unknown
     } catch {

@@ -526,6 +526,8 @@ export const cronSchema = z.object({
   enabled: z.boolean().optional(),
   cron: z.string(),
   nextRun: z.string().datetime().optional(),
+  /** 上次执行时间（ISO UTC）；上游缺省时前端可用它推算下次运行 */
+  lastFiredAt: z.string().datetime().optional(),
   ownerSessionId: z.string().optional(),
   /** CodeBuddy 任务原生绑定的 session；与本地人工 owner 映射分开保存 */
   sessionId: z.string().optional(),
@@ -1335,6 +1337,42 @@ export function nextCronRuns(expression: string, from: Date, count: number): Dat
     cursor.setMinutes(cursor.getMinutes() + 1)
   }
   return runs
+}
+
+/**
+ * 结合上次执行时间推算下一次运行时间。
+ *
+ * 优先以 lastFiredAt 为起点求其后第一次命中；若该命中已早于/等于 now
+ * （任务长期未执行或上游时间滞后），则改以 now 为起点求最近的未来命中。
+ * 上游未提供 nextRun 时，前端据此补齐「下次运行」的展示。
+ *
+ * @param expression 5 字段 cron 表达式
+ * @param now 当前时间
+ * @param lastFiredAt 上次执行时间（ISO 字符串、Date 或毫秒/秒时间戳），可选
+ * @returns 严格晚于 now 的下一次运行时间；表达式非法或一年内无命中时返回 undefined
+ */
+export function nextCronRunAfterLast(
+  expression: string,
+  now: Date,
+  lastFiredAt?: string | Date | number,
+): Date | undefined {
+  const nowMs = now.getTime()
+  let from = now
+  if (lastFiredAt !== undefined && lastFiredAt !== '') {
+    const fired =
+      lastFiredAt instanceof Date
+        ? lastFiredAt
+        : typeof lastFiredAt === 'number'
+          ? new Date(lastFiredAt < 1e12 ? lastFiredAt * 1000 : lastFiredAt)
+          : new Date(lastFiredAt)
+    if (!Number.isNaN(fired.getTime()) && fired.getTime() <= nowMs) from = fired
+  }
+  const [candidate] = nextCronRuns(expression, from, 1)
+  if (!candidate) return undefined
+  if (candidate.getTime() > nowMs) return candidate
+  // 起点早于 now 时算出的命中可能已经过去，改从 now 取最近的未来命中
+  const [future] = nextCronRuns(expression, now, 1)
+  return future && future.getTime() > nowMs ? future : undefined
 }
 
 /**

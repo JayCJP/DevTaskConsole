@@ -178,7 +178,8 @@ describe('DevOps read adapter', () => {
     expect(requestPath).toBe('/deploy/deploy_multiple')
     expect(method).toBe('POST')
     expect(body).toEqual({
-      urls: ['https://artifacts.example/a.zip', 'https://artifacts.example/b.zip'],
+      // DevOps 接口要求 urls 为换行分隔的字符串，而非数组（见 mcp-server.js 的 join('\n') 口径）
+      urls: 'https://artifacts.example/a.zip\nhttps://artifacts.example/b.zip',
       env: 'pre-txnj',
       force: '0',
       timeout: 300,

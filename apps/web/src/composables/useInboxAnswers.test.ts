@@ -25,6 +25,12 @@ function makeQuestionItem(questionId: string): InboxItem {
   return makeItem(`question:STORY-1:${questionId}`)
 }
 
+/** 汇总答复末尾附加的后续处理提示，期望值据此拼接 */
+const HINT =
+  '根据答复再次分析，没问题请同步更新需求文档。如需调整AC请根据实际情况调整，如有调整给出变动的项'
+/** 把答案正文与末尾提示拼成期望的完整汇总文本 */
+const withHint = (body: string) => `${body}\n\n${HINT}`
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -42,12 +48,12 @@ describe('flattenInboxGroups', () => {
 describe('buildInboxAnswerText', () => {
   const items = [makeItem('a'), makeItem('b'), makeItem('c')]
 
-  it('只为有答案的事项编号，格式为 Qn:答案', () => {
+  it('只为有答案的事项编号，格式为 Qn:答案，末尾附提示', () => {
     const answers: Record<string, InboxAnswer> = {
       a: { text: '第一个答案', updatedAt: '2026-01-01T00:00:00Z' },
       c: { text: '第二个答案', updatedAt: '2026-01-01T00:00:00Z' },
     }
-    expect(buildInboxAnswerText(items, answers)).toBe('Q1:第一个答案\nQ2:第二个答案')
+    expect(buildInboxAnswerText(items, answers)).toBe(withHint('Q1:第一个答案\nQ2:第二个答案'))
   })
 
   it('跳过空答案与纯空白答案，且编号连续', () => {
@@ -55,7 +61,7 @@ describe('buildInboxAnswerText', () => {
       a: { text: '   ', updatedAt: '2026-01-01T00:00:00Z' },
       b: { text: '保留这个', updatedAt: '2026-01-01T00:00:00Z' },
     }
-    expect(buildInboxAnswerText(items, answers)).toBe('Q1:保留这个')
+    expect(buildInboxAnswerText(items, answers)).toBe(withHint('Q1:保留这个'))
   })
 
   it('没有答案时返回空字符串', () => {
@@ -68,7 +74,7 @@ describe('buildInboxAnswerText', () => {
       c: { text: 'C', updatedAt: 't' },
       a: { text: 'A', updatedAt: 't' },
     }
-    expect(buildInboxAnswerText(items, answers)).toBe('Q1:A\nQ2:C')
+    expect(buildInboxAnswerText(items, answers)).toBe(withHint('Q1:A\nQ2:C'))
   })
 
   it('open_question 使用真实问题编号（如 Q-12），而非顺序编号', () => {
@@ -84,7 +90,7 @@ describe('buildInboxAnswerText', () => {
       [questionItems[3].id]: { text: '答十五', updatedAt: 't' },
     }
     expect(buildInboxAnswerText(questionItems, answers)).toBe(
-      'Q-12:答十二\nQ-14:答十四\nQ-15:答十五',
+      withHint('Q-12:答十二\nQ-14:答十四\nQ-15:答十五'),
     )
   })
 
@@ -95,7 +101,16 @@ describe('buildInboxAnswerText', () => {
       [mixed[0].id]: { text: 'A', updatedAt: 't' },
       [mixed[1].id]: { text: 'B', updatedAt: 't' },
     }
-    expect(buildInboxAnswerText(mixed, answers)).toBe('Q-12:A\nQ2:B')
+    expect(buildInboxAnswerText(mixed, answers)).toBe(withHint('Q-12:A\nQ2:B'))
+  })
+
+  it('末尾追加后续处理提示，且与答案之间空一行', () => {
+    const result = buildInboxAnswerText(items, {
+      a: { text: '答案', updatedAt: 't' },
+    })
+    expect(result).toBe(`Q1:答案\n\n${HINT}`)
+    expect(result).toContain('同步更新需求文档')
+    expect(result).toContain('如有调整给出变动的项')
   })
 })
 

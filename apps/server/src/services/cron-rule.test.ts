@@ -4,6 +4,7 @@ import {
   describeCron,
   forbiddenMinutesOf,
   matchesPreset,
+  nextCronRunAfterLast,
   nextCronRuns,
   parseCron,
   validateCronExpression,
@@ -55,7 +56,9 @@ describe('cron-rule', () => {
   })
 
   it('命中 0 分或 30 分时给出可读原因', () => {
-    expect(forbiddenMinutesOf('*/20 * * * *')).toEqual([0, 20, 40].filter((minute) => minute === 0 || minute === 30))
+    expect(forbiddenMinutesOf('*/20 * * * *')).toEqual(
+      [0, 20, 40].filter((minute) => minute === 0 || minute === 30),
+    )
     const result = validateCronExpression('0,30 9-18 * * 1-5')
     expect(result.ok).toBe(false)
     expect(result.ok ? '' : result.message).toContain('0 或 30')
@@ -69,7 +72,39 @@ describe('cron-rule', () => {
   })
 
   it('对不可能命中的表达式返回空数组而不是死循环', () => {
-    expect(nextCronRuns('15 5 30 2 *', new Date('2026-11-14T10:00:00'), 2).length).toBeLessThanOrEqual(2)
+    expect(
+      nextCronRuns('15 5 30 2 *', new Date('2026-11-14T10:00:00'), 2).length,
+    ).toBeLessThanOrEqual(2)
+  })
+
+  it('结合上次执行时间推算下一次运行', () => {
+    const now = new Date('2026-11-14T10:00:00')
+    const next = nextCronRunAfterLast('7 */6 * * *', now, '2026-11-14T06:07:00')
+    expect(next?.getHours()).toBe(12)
+    expect(next?.getMinutes()).toBe(7)
+    expect(next?.getTime()).toBeGreaterThan(now.getTime())
+  })
+
+  it('上次执行推算已过期时回落为当前时间之后的下一次', () => {
+    const now = new Date('2026-11-14T10:00:00')
+    const next = nextCronRunAfterLast('7 */6 * * *', now, '2026-11-01T06:07:00')
+    expect(next?.getHours()).toBe(12)
+    expect(next?.getTime()).toBeGreaterThan(now.getTime())
+  })
+
+  it('没有上次执行时间时按当前时间推算未来命中', () => {
+    const now = new Date('2026-11-14T10:00:00')
+    const next = nextCronRunAfterLast('7 */6 * * *', now)
+    expect(next?.getHours()).toBe(12)
+    expect(next?.getMinutes()).toBe(7)
+  })
+
+  it('支持上游毫秒时间戳形式的上次执行时间', () => {
+    const now = new Date('2026-11-14T10:00:00')
+    const lastFiredAt = new Date('2026-11-14T06:07:00').getTime()
+    const next = nextCronRunAfterLast('7 */6 * * *', now, lastFiredAt)
+    expect(next?.getHours()).toBe(12)
+    expect(next?.getMinutes()).toBe(7)
   })
 
   it('生成中文描述', () => {
