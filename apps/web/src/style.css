@@ -756,6 +756,21 @@
   align-items: center;
   gap: 8px;
 }
+.inbox-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.inbox-question-id {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
 .inbox-copy p {
   margin: 3px 0;
   color: var(--muted);
@@ -1392,7 +1407,21 @@
   gap: 20px;
   align-items: start;
 }
-.split-list,
+/*
+ * 实例页左栏独立滚动：
+ * 列表最高只占满视口剩余高度，超出时自身出现纵向滚动条。
+ * overscroll-behavior: contain 阻止滚到底后把滚动传递给外层 .page-scroll，
+ * 因此滚动左侧列表不会带动右侧详情内容。
+ * 高度基准 100dvh 减去：顶栏 64 + 页面标题区约 96 + 页面上下 padding 94 + 安全余量 24。
+ */
+.split-list {
+  --instance-list-chrome: 278px;
+  min-height: 420px;
+  max-height: calc(100dvh - var(--instance-list-chrome));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  align-self: start;
+}
 .instance-workspace {
   min-height: 420px;
 }
@@ -2387,6 +2416,10 @@
   }
   .split-list {
     min-height: 200px;
+    /* 单列布局下恢复自然高度，由整页统一滚动 */
+    max-height: none;
+    overflow-y: visible;
+    overscroll-behavior-y: auto;
   }
   .instance-workspace {
     min-height: 270px;

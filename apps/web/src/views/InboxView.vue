@@ -20,6 +20,7 @@ const {
   inboxAnswerMap,
   suggestionSegmentsOf,
   inboxAnswerText,
+  inboxQuestionIdOf,
 } = useConsoleContext()
 </script>
 
@@ -98,9 +99,13 @@ const {
                 }}</span>
                 <div class="inbox-copy">
                   <div class="inbox-title-line">
-                    <strong>{{ item.title }}</strong><span class="kind-label">{{
-                      item.kind.replaceAll('_', ' ')
-                    }}</span>
+                    <strong>{{ item.title }}</strong>
+                  </div>
+                  <div class="inbox-meta-line">
+                    <code v-if="inboxQuestionIdOf(item)" class="inbox-question-id">{{
+                      inboxQuestionIdOf(item)
+                    }}</code>
+                    <span class="kind-label">{{ item.kind.replaceAll('_', ' ') }}</span>
                   </div>
                   <p v-if="inboxReasonOf(item)">{{ inboxReasonOf(item) }}</p>
                 </div>

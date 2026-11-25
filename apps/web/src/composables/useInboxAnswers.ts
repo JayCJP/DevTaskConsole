@@ -135,9 +135,9 @@ const answerFollowUpHint =
 /**
  * 从收件箱事项中提取 open question 的真实编号。
  *
- * 后端把待确认项编码成 `question:<storyId>:<questionId>`（见 snapshot.ts 的 buildInbox），
- * 其中 questionId 即 open-questions.json 里的真实 ID（如 `Q-12`）。
- * 仅当格式严格匹配三段式且 questionId 非空时才返回，否则返回空串表示无真实编号。
+ * 后端把待确认项编码成 `question:<storyId>:<questionId>:<标题指纹>`（见 snapshot.ts 的 buildInbox），
+ * 其中 questionId 即 open-questions.json 里的真实 ID（如 `Q-12`），第四段为标题前 8 字符指纹。
+ * 兼容旧三段式 id；仅当 questionId 非空时才返回，否则返回空串表示无真实编号。
  *
  * @param item 收件箱事项
  * @returns 真实问题编号；非 open_question 或格式不符时返回空字符串
@@ -145,7 +145,7 @@ const answerFollowUpHint =
 function realQuestionIdOf(item: InboxItem): string {
   if (item.kind !== 'open_question') return ''
   const parts = item.id.split(':')
-  if (parts.length !== 3 || parts[0] !== 'question') return ''
+  if ((parts.length !== 3 && parts.length !== 4) || parts[0] !== 'question') return ''
   return parts[2]?.trim() ? parts[2] : ''
 }
 

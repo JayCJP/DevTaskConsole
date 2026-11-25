@@ -20,9 +20,9 @@ function makeItem(id: string): InboxItem {
   }
 }
 
-/** 构造一条带真实问题编号的 open_question 事项（id 格式同 buildInbox 输出） */
-function makeQuestionItem(questionId: string): InboxItem {
-  return makeItem(`question:STORY-1:${questionId}`)
+/** 构造一条带真实问题编号的 open_question 事项（id 格式同 buildInbox 输出：四段含标题指纹） */
+function makeQuestionItem(questionId: string, titlePrefix = '默认标题'): InboxItem {
+  return makeItem(`question:STORY-1:${questionId}:${titlePrefix.slice(0, 8)}`)
 }
 
 /** 汇总答复末尾附加的后续处理提示，期望值据此拼接 */
@@ -92,6 +92,18 @@ describe('buildInboxAnswerText', () => {
     expect(buildInboxAnswerText(questionItems, answers)).toBe(
       withHint('Q-12:答十二\nQ-14:答十四\nQ-15:答十五'),
     )
+  })
+
+  it('同 questionId 但标题指纹不同的事项各自独立回答，不串答案', () => {
+    const first = makeQuestionItem('Q-1', '第一轮的问题')
+    const second = makeQuestionItem('Q-1', '第二轮的问题')
+    expect(first.id).not.toBe(second.id)
+    const answers: Record<string, InboxAnswer> = {
+      [first.id]: { text: '旧答案', updatedAt: 't' },
+      [second.id]: { text: '新答案', updatedAt: 't' },
+    }
+    expect(buildInboxAnswerText([first], answers)).toBe(withHint('Q-1:旧答案'))
+    expect(buildInboxAnswerText([second], answers)).toBe(withHint('Q-1:新答案'))
   })
 
   it('真实编号与顺序编号混用时各自取正确标号', () => {

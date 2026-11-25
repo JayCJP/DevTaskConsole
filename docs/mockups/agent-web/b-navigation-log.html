@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Console · 方向 B 航行日志</title>
+<style>
+  /* ============ 方向 B：Navigation Log 航行日志 ============ */
+  :root{
+    --bg: oklch(15% 0.025 245);
+    --bg-2: oklch(19% 0.03 245);
+    --panel: oklch(21% 0.032 245);
+    --panel-2: oklch(25% 0.035 245);
+    --line: oklch(34% 0.04 245);
+    --line-soft: oklch(28% 0.035 245);
+    --accent: oklch(80% 0.13 180);        /* 冷青绿 · 航线 */
+    --accent-soft: oklch(35% 0.07 180);
+    --amber: oklch(82% 0.13 75);          /* 锚点 · 审批 */
+    --coral: oklch(70% 0.16 20);
+    --text: oklch(95% 0.01 230);
+    --text-2: oklch(82% 0.015 230);
+    --text-3: oklch(66% 0.02 235);
+    --text-4: oklch(64% 0.02 235);
+    --font: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --r: 10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text-2);font-family:var(--font);font-size:14px;line-height:1.55;height:100vh;overflow:hidden}
+  ::-webkit-scrollbar{width:9px}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:2px solid var(--bg)}
+  .shell{display:flex;height:100vh}
+  /* 左轨 */
+  .rail{width:64px;flex:none;background:var(--bg-2);border-right:1px solid var(--line-soft);display:flex;flex-direction:column;align-items:center;padding:18px 0;gap:6px}
+  .mark{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font-weight:800;font-size:16px;margin-bottom:22px}
+  .nav{width:42px;height:42px;border-radius:9px;display:grid;place-items:center;color:var(--text-4);cursor:pointer;position:relative;transition:background .15s,color .15s}
+  .nav:hover{background:var(--panel-2);color:var(--text-2)}
+  .nav.on{background:var(--accent-soft);color:oklch(92% 0.03 180)}
+  .nav.on::before{content:"";position:absolute;left:-11px;top:11px;bottom:11px;width:3px;background:var(--accent);border-radius:3px}
+  .nav svg{width:19px;height:19px;stroke:currentColor;stroke-width:1.7;fill:none}
+  .nav .badge{position:absolute;top:5px;right:4px;min-width:15px;height:15px;border-radius:999px;background:var(--amber);color:var(--bg);font-size:9px;font-weight:800;display:grid;place-items:center;padding:0 3px}
+  .rail-bot{margin-top:auto;display:flex;flex-direction:column;gap:8px;align-items:center}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px oklch(80% 0.13 180 / 14%)}
+  /* 主 */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .top{height:58px;flex:none;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:16px;padding:0 30px;background:var(--bg-2)}
+  .route{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-3)}
+  .route b{color:var(--text);font-weight:600}
+  .route .sep{color:var(--text-4)}
+  .voice{margin-left:auto;flex:1;max-width:520px;height:34px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);display:flex;align-items:center;gap:10px;padding:0 12px;color:var(--text-4)}
+  .voice:hover{border-color:var(--accent)}
+  .voice svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.8;fill:none}
+  .voice .kbd{margin-left:auto;font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .page{flex:1;overflow:auto;padding:28px 30px 50px}
+  h1{font-size:23px;font-weight:650;color:var(--text);letter-spacing:-0.02em}
+  .sub{font-size:12px;color:var(--text-3);margin-top:4px}
+  /* 航线图 */
+  .route-map{margin:22px 0 24px;background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--r);padding:20px 22px}
+  .rm-head{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+  .rm-title{font-size:13px;font-weight:600;color:var(--text);letter-spacing:.02em}
+  .rm-id{font-family:var(--mono);font-size:11px;color:var(--text-3)}
+  .rm-legend{margin-left:auto;display:flex;gap:14px;font-size:10px;color:var(--text-4)}
+  .rm-legend span{display:flex;align-items:center;gap:5px}
+  .rm-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
+  .waypoints{display:flex;align-items:flex-start;position:relative;padding:0 6px}
+  .wp{display:flex;flex-direction:column;align-items:center;flex:1;position:relative;z-index:1}
+  .wp-dot{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);background:var(--panel);display:grid;place-items:center;transition:all .2s}
+  .wp-dot span{font-size:10px;color:var(--text-4)}
+  .wp.done .wp-dot{border-color:var(--accent);background:var(--accent);color:var(--bg)}
+  .wp.done .wp-dot span{color:var(--bg);font-weight:800}
+  .wp.now .wp-dot{border-color:var(--amber);background:var(--bg);box-shadow:0 0 0 5px oklch(82% 0.13 75 / 12%)}
+  .wp.now .wp-dot span{color:var(--amber)}
+  .wp.todo .wp-dot{border-color:var(--line);border-style:dashed}
+  .wp-label{font-size:11px;color:var(--text-3);margin-top:10px;text-align:center;max-width:110px;line-height:1.4}
+  .wp.now .wp-label{color:var(--amber);font-weight:600}
+  .wp.done .wp-label{color:var(--text-2)}
+  .track{position:absolute;left:8%;right:8%;top:10px;height:2px;background:var(--line-soft);z-index:0}
+  .track .fill{height:100%;width:55%;background:var(--accent)}
+  /* 日志 */
+  .cols{display:grid;grid-template-columns:1fr 320px;gap:20px;align-items:start}
+  .log{background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--r);padding:20px 22px;max-height:calc(100vh - 320px);overflow:auto}
+  .log-title{font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .log-title::before{content:"";width:8px;height:8px;border:2px solid var(--accent);border-radius:2px;transform:rotate(45deg)}
+  .log-sub{font-size:10px;color:var(--text-4);margin-bottom:18px}
+  .entry{display:grid;grid-template-columns:74px 18px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-soft);position:relative}
+  .entry:last-child{border-bottom:none}
+  .etime{font-family:var(--mono);font-size:10.5px;color:var(--text-4);text-align:right;padding-top:2px}
+  .emark{display:grid;place-items:center;position:relative}
+  .emark::after{content:"";position:absolute;top:18px;bottom:-14px;width:1px;background:var(--line-soft)}
+  .entry:last-child .emark::after{display:none}
+  .emark i{width:9px;height:9px;border-radius:50%;border:2px solid var(--line);background:var(--panel);display:block;z-index:1}
+  .entry.done .emark i{background:var(--accent);border-color:var(--accent)}
+  .entry.anchor .emark i{background:var(--amber);border-color:var(--amber);box-shadow:0 0 0 4px oklch(82% 0.13 75 / 14%)}
+  .entry.active .emark i{border-color:var(--accent);animation:blink 1.4s ease-in-out infinite}
+  @keyframes blink{50%{box-shadow:0 0 0 5px oklch(80% 0.13 180 / 16%)}}
+  .ebody{min-width:0}
+  .etitle{font-size:13px;font-weight:550;color:var(--text-2)}
+  .entry.done .etitle{color:var(--text)}
+  .entry.anchor .etitle{color:var(--amber)}
+  .edesc{font-size:11px;color:var(--text-3);margin-top:3px}
+  .out{margin-top:9px;background:var(--bg);border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--text-3);max-height:120px;overflow:auto}
+  .out .g{color:var(--accent)} .out .a{color:var(--amber)} .out .d{color:var(--text-4)}
+  .anchor-card{margin-top:10px;border:1px solid var(--amber);border-radius:8px;padding:12px 14px;background:oklch(82% 0.13 75 / 7%)}
+  .anchor-card .ah{font-size:12px;font-weight:650;color:var(--amber);display:flex;align-items:center;gap:7px}
+  .anchor-card p{font-size:11px;color:var(--text-2);margin-top:7px;line-height:1.6}
+  .anchor-card p b{color:var(--text)}
+  .acts{display:flex;gap:8px;margin-top:11px}
+  .btn{height:28px;padding:0 12px;border-radius:7px;font-family:inherit;font-size:11px;font-weight:600;cursor:pointer;border:1px solid transparent}
+  .btn-a{background:var(--amber);color:var(--bg)}
+  .btn-g{background:var(--panel-2);border-color:var(--line);color:var(--text-2)}
+  .btn-g:hover{border-color:var(--accent);color:var(--accent)}
+  /* 右栏仪表 */
+  .side{display:flex;flex-direction:column;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--r);padding:18px}
+  .card h3{font-size:12px;font-weight:600;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .card h3::before{content:"";width:3px;height:11px;background:var(--accent);border-radius:2px}
+  .gauge{display:flex;align-items:baseline;gap:8px}
+  .gauge .big{font-size:30px;font-weight:700;color:var(--text);letter-spacing:-0.03em;font-variant-numeric:tabular-nums}
+  .gauge .unit{font-size:11px;color:var(--text-4)}
+  .bars{display:flex;gap:3px;margin-top:14px;height:26px;align-items:flex-end}
+  .bars i{flex:1;background:var(--accent-soft);border-radius:2px 2px 0 0}
+  .bars i.hi{background:var(--accent)}
+  .kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line-soft);font-size:11px}
+  .kv:last-child{border-bottom:none}
+  .kv span{color:var(--text-3)}
+  .kv b{color:var(--text-2);font-weight:550;font-variant-numeric:tabular-nums}
+  .art{display:flex;align-items:center;gap:9px;padding:8px 0;font-size:11px;color:var(--text-2)}
+  .art svg{width:14px;height:14px;stroke:var(--accent);stroke-width:1.8;fill:none;flex:none}
+  .art code{font-family:var(--mono);font-size:10px;color:var(--text-3)}
+  .sess-mini{padding:9px 10px;border:1px solid var(--line-soft);border-radius:8px;margin-bottom:8px;cursor:pointer}
+  .sess-mini:hover{border-color:var(--accent)}
+  .sess-mini.on{border-color:var(--accent);background:var(--accent-soft)}
+  .sess-mini.on .sm-top,.sess-mini.on .sm-title{color:oklch(90% 0.02 180)}
+  .sm-top{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:var(--text-3)}
+  .sm-title{font-size:11px;color:var(--text-2);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill{font-size:9px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--text-3)}
+  .pill.a{color:var(--amber);border-color:var(--amber)}
+  .pill.g{color:var(--accent);border-color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="mark">B</div>
+    <div class="nav on" title="航行日志">
+      <span class="badge">2</span>
+      <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+    </div>
+    <div class="nav" title="任务库"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+    <div class="nav" title="实例管理"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="6" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><circle cx="6" cy="7" r="1"/><circle cx="6" cy="17" r="1"/></svg></div>
+    <div class="nav" title="工作区"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"/></svg></div>
+    <div class="rail-bot"><div class="pulse" title="通道已连接"></div></div>
+  </aside>
+
+  <div class="main">
+    <div class="top">
+      <div class="route"><b>Agent Console</b><span class="sep">/</span>航行日志<span class="sep">/</span><b>#a7f3</b></div>
+      <div class="voice">
+        <svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 013 3v6a3 3 0 01-6 0V6a3 3 0 013-3zM5 11a7 7 0 0014 0M12 18v3"/></svg>
+        <span>说出目标，agent 规划航线</span><span class="kbd">⌘ K</span>
+      </div>
+    </div>
+
+    <div class="page">
+      <h1>航行日志</h1>
+      <div class="sub">agent #a7f3 · 目标：为 story-123 建工作区并创建 MR 到 dev</div>
+
+      <!-- 航线图 -->
+      <div class="route-map">
+        <div class="rm-head">
+          <span class="rm-title">航线 · 执行计划</span>
+          <span class="rm-id">#a7f3</span>
+          <div class="rm-legend">
+            <span><i style="background:var(--accent)"></i>已航过</span>
+            <span><i style="background:var(--amber)"></i>锚点待确认</span>
+            <span><i style="background:var(--line)"></i>未到达</span>
+          </div>
+        </div>
+        <div class="waypoints">
+          <div class="track"><div class="fill"></div></div>
+          <div class="wp done"><div class="wp-dot"><span>✓</span></div><div class="wp-label">解析目标</div></div>
+          <div class="wp done"><div class="wp-dot"><span>✓</span></div><div class="wp-label">创建工作区</div></div>
+          <div class="wp done"><div class="wp-dot"><span>✓</span></div><div class="wp-label">安装并构建</div></div>
+          <div class="wp now"><div class="wp-dot"><span>⚓</span></div><div class="wp-label">创建 MR · 锚点</div></div>
+          <div class="wp todo"><div class="wp-dot"><span></span></div><div class="wp-label">回写 TAPD</div></div>
+        </div>
+      </div>
+
+      <div class="cols">
+        <!-- 日志流 -->
+        <div class="log">
+          <div class="log-title">航行日志</div>
+          <div class="log-sub">每条记录带时刻与来源 · 点击展开原始输出</div>
+
+          <div class="entry done">
+            <div class="etime">14:31:02</div>
+            <div class="emark"><i></i></div>
+            <div class="ebody">
+              <div class="etitle">解析目标 · 读取 TAPD Story 123</div>
+              <div class="edesc">状态「开发中」· 关联工作区候选 2 个</div>
+            </div>
+          </div>
+
+          <div class="entry done">
+            <div class="etime">14:31:09</div>
+            <div class="emark"><i></i></div>
+            <div class="ebody">
+              <div class="etitle">创建工作区 · git worktree</div>
+              <div class="edesc">D:\workfile\story-123 · 基于 master</div>
+              <div class="out"><span class="d">$</span> git worktree add -b feature/agent-console ..\story-123 master
+<span class="g">✓</span> Preparing worktree (new branch 'feature/agent-console')
+<span class="g">✓</span> HEAD is now at 8f3c21a feat: 候选缓存体系</div>
+            </div>
+          </div>
+
+          <div class="entry done">
+            <div class="etime">14:31:15</div>
+            <div class="emark"><i></i></div>
+            <div class="ebody">
+              <div class="etitle">安装依赖并构建</div>
+              <div class="edesc">pnpm install → pnpm build · 42.6s</div>
+              <div class="out"><span class="g">✓</span> Lockfile is up to date
+<span class="g">✓</span> apps/agent-web build: dist/  (1.2 MB)
+<span class="d">build #2841 · test 环境</span></div>
+            </div>
+          </div>
+
+          <div class="entry anchor">
+            <div class="etime">14:32:01</div>
+            <div class="emark"><i></i></div>
+            <div class="ebody">
+              <div class="etitle">⚓ 锚点 · 创建 MR 到 dev</div>
+              <div class="edesc">feature/agent-console → dev · 等待船长确认</div>
+              <div class="anchor-card">
+                <div class="ah">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                  锚点已抛下 · 航线暂停
+                </div>
+                <p>即将向 GitLab 创建合并请求 <b>「feat: Agent Console 会话台与执行轨迹」</b>。这是写操作，agent 不会在得到确认前继续。拒绝则停在此处，<b>不产生任何远端改动</b>。</p>
+                <div class="acts">
+                  <button class="btn btn-a">确认起航</button>
+                  <button class="btn btn-g">调整航向</button>
+                  <button class="btn btn-g">返航</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="entry">
+            <div class="etime">—</div>
+            <div class="emark"><i></i></div>
+            <div class="ebody">
+              <div class="etitle" style="color:var(--text-4)">回写 TAPD 状态</div>
+              <div class="edesc" style="color:var(--text-4)">锚点解除后继续</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右栏 -->
+        <div class="side">
+          <div class="card">
+            <h3>航速与负载</h3>
+            <div class="gauge"><span class="big">42.6</span><span class="unit">s · 本段耗时</span></div>
+            <div class="bars">
+              <i style="height:30%"></i><i style="height:55%"></i><i style="height:80%"></i>
+              <i class="hi" style="height:100%"></i><i style="height:65%"></i><i style="height:40%"></i>
+              <i style="height:25%"></i>
+            </div>
+          </div>
+          <div class="card">
+            <h3>航迹产物</h3>
+            <div class="art"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"/></svg>工作区 <code>story-123</code></div>
+            <div class="art"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8M12 8v8"/></svg>构建 <code>#2841</code></div>
+            <div class="art"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6zM15 3v5h5"/></svg>MR <code>待创建</code></div>
+          </div>
+          <div class="card">
+            <h3>在航会话</h3>
+            <div class="sess-mini on"><div class="sm-top">#a7f3 <span class="pill a">锚点</span></div><div class="sm-title">建工作区并创建 MR 到 dev</div></div>
+            <div class="sess-mini"><div class="sm-top">#a7ec <span class="pill g">抵达</span></div><div class="sm-title">构建并部署到 test</div></div>
+            <div class="sess-mini"><div class="sm-top">#a7e8 <span class="pill">偏航</span></div><div class="sm-title">重启卡住的实例</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

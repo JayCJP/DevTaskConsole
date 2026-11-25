@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Console · 方向 A 仪表台</title>
+<style>
+  /* ============ 方向 A：Instrument Deck 仪表台延续 ============ */
+  :root{
+    --brand: oklch(72% 0.14 255);
+    --brand-hover: oklch(77% 0.14 255);
+    --brand-strong: oklch(58% 0.17 258);
+    --brand-soft: oklch(30% 0.06 255);
+    --success: oklch(76% 0.13 160);
+    --warning: oklch(80% 0.13 82);
+    --danger: oklch(70% 0.16 22);
+    --info: oklch(74% 0.08 235);
+    --deck: oklch(18.5% 0.012 252);
+    --panel: oklch(22.5% 0.014 252);
+    --raised: oklch(26% 0.016 252);
+    --hover: oklch(30% 0.018 252);
+    --inset: oklch(16% 0.012 252);
+    --hairline: oklch(32% 0.016 252);
+    --hairline-subtle: oklch(27% 0.014 252);
+    --t-strong: oklch(96% 0.008 250);
+    --t-body: oklch(90% 0.012 250);
+    --t-muted: oklch(73% 0.018 252);
+    --t-faint: oklch(66% 0.018 252);
+    --radius-xs:4px; --radius-sm:6px; --radius-md:9px; --radius-lg:12px; --radius-xl:16px;
+    --font: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--deck);color:var(--t-body);font-family:var(--font);font-size:13px;line-height:1.55;height:100vh;overflow:hidden}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:var(--hairline);border-radius:6px;border:2px solid var(--deck)}
+  ::selection{background:var(--brand-soft);color:var(--t-strong)}
+  /* 外壳 */
+  .shell{display:flex;height:100vh}
+  .rail{width:216px;flex:none;background:var(--panel);border-right:1px solid var(--hairline-subtle);display:flex;flex-direction:column;padding:16px 12px}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 8px 18px}
+  .brand-mark{width:26px;height:26px;border-radius:var(--radius-sm);background:var(--brand);display:grid;place-items:center;color:var(--deck);font-weight:750;font-size:14px}
+  .brand-name{font-size:13px;font-weight:650;color:var(--t-strong);letter-spacing:-0.01em}
+  .brand-name span{display:block;font-size:10px;color:var(--t-faint);font-weight:400;letter-spacing:0}
+  .nav-label{font-size:10px;color:var(--t-faint);padding:14px 10px 6px;letter-spacing:0.05em}
+  .nav-item{height:38px;display:flex;align-items:center;gap:11px;padding:0 11px;border-radius:var(--radius-sm);color:var(--t-muted);font-size:13px;cursor:pointer;margin-bottom:2px;position:relative}
+  .nav-item:hover{background:var(--hover);color:var(--t-body)}
+  .nav-item.active{background:var(--brand-soft);color:var(--brand);font-weight:600}
+  .nav-item.active::before{content:"";position:absolute;left:-12px;top:9px;bottom:9px;width:2px;background:var(--brand);border-radius:2px}
+  .nav-ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fill:none}
+  .nav-count{margin-left:auto;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--danger);color:var(--deck);font-size:10px;font-weight:700;display:grid;place-items:center}
+  .rail-foot{margin-top:auto;border-top:1px solid var(--hairline-subtle);padding-top:12px}
+  .conn{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:11px;color:var(--t-muted)}
+  .conn .dot{width:6px;height:6px;border-radius:50%;background:var(--success)}
+  .conn.warn .dot{background:var(--warning)}
+  /* 主区 */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{height:54px;flex:none;border-bottom:1px solid var(--hairline-subtle);background:var(--panel);display:flex;align-items:center;gap:16px;padding:0 32px}
+  .cmd{flex:1;max-width:560px;height:32px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--inset);display:flex;align-items:center;gap:9px;padding:0 11px;color:var(--t-faint);cursor:text}
+  .cmd:hover{border-color:var(--brand);color:var(--t-muted)}
+  .cmd .kbd{margin-left:auto;font-family:var(--mono);font-size:10px;border:1px solid var(--hairline);border-radius:var(--radius-xs);padding:1px 5px;color:var(--t-faint)}
+  .top-meta{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:11px;color:var(--t-muted)}
+  .top-meta strong{color:var(--t-body);font-weight:500;font-variant-numeric:tabular-nums}
+  .snapshot{display:flex;align-items:center;gap:7px}
+  .snapshot .dot{width:6px;height:6px;border-radius:50%;background:var(--success)}
+  .page{flex:1;overflow:auto;padding:30px 34px 60px}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+  h1{font-size:22px;font-weight:640;color:var(--t-strong);letter-spacing:-0.02em;line-height:1.2}
+  .sub{font-size:12px;color:var(--t-muted);margin-top:5px}
+  .btn{height:32px;padding:0 15px;border-radius:var(--radius-sm);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:background 150ms,border-color 150ms,color 150ms}
+  .btn-primary{background:var(--brand);color:var(--deck)}
+  .btn-primary:hover{background:var(--brand-hover)}
+  .btn-secondary{background:var(--panel);border-color:var(--hairline);color:var(--t-body)}
+  .btn-secondary:hover{background:var(--hover);border-color:var(--hairline);color:var(--brand)}
+  /* 指标条 */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .stat{background:var(--panel);border:1px solid var(--hairline-subtle);border-radius:var(--radius-md);padding:14px 16px;transition:border-color 150ms}
+  .stat:hover{border-color:var(--hairline)}
+  .stat-top{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--t-muted)}
+  .stat-top .sdot{width:6px;height:6px;border-radius:50%}
+  .stat-val{font-size:24px;font-weight:650;color:var(--t-strong);letter-spacing:-0.03em;font-variant-numeric:tabular-nums;line-height:1.1;margin-top:8px}
+  .stat-note{font-size:10px;color:var(--t-faint);margin-top:3px}
+  /* 两栏 */
+  .cols{display:grid;grid-template-columns:300px 1fr;gap:18px;align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--hairline-subtle);border-radius:var(--radius-lg);padding:18px;box-shadow:0 1px 2px oklch(0% 0 0 / 30%)}
+  .panel-title{font-size:15px;font-weight:620;color:var(--t-strong);display:flex;align-items:center;gap:9px;margin-bottom:14px}
+  .panel-title::before{content:"";width:3px;height:12px;background:var(--brand);border-radius:2px}
+  .panel-title .count{font-size:10px;color:var(--t-faint);font-weight:400;margin-left:auto;font-variant-numeric:tabular-nums}
+  /* 会话列表 */
+  .sess{display:flex;flex-direction:column;gap:8px}
+  .sess-item{border:1px solid var(--hairline-subtle);border-radius:var(--radius-sm);padding:10px 12px;cursor:pointer;transition:border-color 150ms,background 150ms}
+  .sess-item:hover{background:var(--hover)}
+  .sess-item.active{background:var(--brand-soft);border-color:var(--brand)}
+  .sess-row{display:flex;align-items:center;gap:8px}
+  .sess-id{font-family:var(--mono);font-size:10.5px;color:var(--t-muted)}
+  .sess-item.active .sess-id{color:var(--brand)}
+  .sess-title{font-size:12px;color:var(--t-body);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess-meta{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:10px;color:var(--t-faint)}
+  /* 标签 */
+  .tag{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--hairline);border-radius:999px;padding:1px 7px;height:16px;font-size:10px;font-weight:550;color:var(--t-muted);line-height:1}
+  .tag::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+  .tag.run{color:var(--brand);border-color:var(--brand)}
+  .tag.wait{color:var(--warning);border-color:var(--warning)}
+  .tag.ok{color:var(--success);border-color:var(--success)}
+  .tag.err{color:var(--danger);border-color:var(--danger)}
+  /* 执行轨迹 */
+  .trace-head{display:flex;align-items:center;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--hairline-subtle);margin-bottom:6px}
+  .trace-head .sess-id{font-size:11px;color:var(--t-muted)}
+  .trace-head .plan{margin-left:auto;font-size:11px;color:var(--t-faint)}
+  .step{display:grid;grid-template-columns:22px 1fr;gap:12px;padding:14px 0;position:relative}
+  .step:not(:last-child)::after{content:"";position:absolute;left:10.5px;top:34px;bottom:-6px;width:1px;background:var(--hairline)}
+  .snode{width:21px;height:21px;border-radius:50%;border:1px solid var(--hairline);display:grid;place-items:center;background:var(--panel);z-index:1}
+  .snode .i{font-size:11px;line-height:1;color:var(--t-faint)}
+  .step.run .snode{border-color:var(--brand);background:var(--brand-soft)}
+  .step.run .snode .i{color:var(--brand);animation:spin 1.2s linear infinite}
+  .step.ok .snode{border-color:var(--success)}
+  .step.ok .snode .i{color:var(--success)}
+  .step.wait .snode{border-color:var(--warning);background:oklch(80% 0.13 82 / 12%)}
+  .step.wait .snode .i{color:var(--warning)}
+  .step.err .snode{border-color:var(--danger)}
+  .step.err .snode .i{color:var(--danger)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .sbody{min-width:0}
+  .srow{display:flex;align-items:center;gap:10px}
+  .stitle{font-size:13px;font-weight:550;color:var(--t-body)}
+  .step.run .stitle{color:var(--t-strong)}
+  .sdur{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--t-faint);font-variant-numeric:tabular-nums}
+  .sdesc{font-size:11px;color:var(--t-muted);margin-top:3px}
+  .inset{margin-top:10px;background:var(--inset);border:1px solid var(--hairline-subtle);border-radius:var(--radius-md);padding:10px 12px;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--t-muted);max-height:150px;overflow:auto}
+  .inset .ok{color:var(--success)} .inset .dim{color:var(--t-faint)} .inset .b{color:var(--brand)}
+  .artifacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+  .art{display:inline-flex;align-items:center;gap:7px;background:var(--raised);border:1px solid var(--hairline);border-radius:var(--radius-sm);padding:5px 9px;font-size:11px;color:var(--t-body)}
+  .art .ai{width:13px;height:13px;stroke:var(--brand);stroke-width:1.8;fill:none}
+  .art .mono{font-family:var(--mono);font-size:10px;color:var(--t-muted)}
+  /* 审批卡 */
+  .approval{margin-top:10px;background:oklch(80% 0.13 82 / 8%);border:1px solid var(--warning);border-radius:var(--radius-md);padding:12px 14px}
+  .approval-h{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--warning)}
+  .approval-p{font-size:11px;color:var(--t-body);margin-top:7px;line-height:1.6}
+  .approval-p b{color:var(--t-strong);font-weight:550}
+  .approval-acts{display:flex;gap:8px;margin-top:11px}
+  .btn-sm{height:26px;padding:0 11px;font-size:11px;border-radius:var(--radius-xs)}
+  .btn-warn{background:var(--warning);color:var(--deck)}
+  .btn-warn:hover{filter:brightness(1.08)}
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- 左侧导航 -->
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div class="brand-name">Agent Console<span>Instrument Deck · 方向 A</span></div>
+    </div>
+    <div class="nav-label">工作区</div>
+    <div class="nav-item active">
+      <svg class="nav-ico" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+      会话台<span class="nav-count">2</span>
+    </div>
+    <div class="nav-item">
+      <svg class="nav-ico" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      任务库
+    </div>
+    <div class="nav-item">
+      <svg class="nav-ico" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="6" rx="1"/><rect x="2" y="14" width="20" height="6" rx="1"/><circle cx="6" cy="7" r="1"/><circle cx="6" cy="17" r="1"/></svg>
+      实例管理
+    </div>
+    <div class="nav-item">
+      <svg class="nav-ico" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>
+      工作区与发布
+    </div>
+    <div class="nav-item">
+      <svg class="nav-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.6V21h-4v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.6-1H3v-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 001.9.3 1.7 1.7 0 001-1.6V3h4v.1a1.7 1.7 0 001 1.6 1.7 1.7 0 001.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 00-.3 1.9 1.7 1.7 0 001.6 1H21v4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+      工具与连接
+    </div>
+    <div class="rail-foot">
+      <div class="conn"><span class="dot"></span>TAPD · GitLab · DevOps 已连接</div>
+      <div class="conn warn"><span class="dot"></span>1 项待审批</div>
+    </div>
+  </aside>
+
+  <!-- 主内容 -->
+  <div class="main">
+    <div class="topbar">
+      <div class="cmd">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span>给 agent 下指令，例如：为 story-123 建工作区并创建 MR 到 dev</span>
+        <span class="kbd">⌘ K</span>
+      </div>
+      <div class="top-meta">
+        <div class="snapshot"><span class="dot"></span>快照 14:32:07</div>
+        <div>3 个实例运行中 <strong>·</strong> 1 待审批</div>
+      </div>
+    </div>
+
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h1>会话台</h1>
+          <div class="sub">agent 正在执行 1 个任务 · 1 个任务等待你的审批</div>
+        </div>
+        <button class="btn btn-primary">+ 新建任务</button>
+      </div>
+
+      <!-- 指标条 -->
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-top"><span class="sdot" style="background:var(--brand)"></span>执行中</div>
+          <div class="stat-val">1</div>
+          <div class="stat-note">当前活跃会话</div>
+        </div>
+        <div class="stat">
+          <div class="stat-top"><span class="sdot" style="background:var(--warning)"></span>待审批</div>
+          <div class="stat-val">1</div>
+          <div class="stat-note">需人工拍板</div>
+        </div>
+        <div class="stat">
+          <div class="stat-top"><span class="sdot" style="background:var(--success)"></span>今日完成</div>
+          <div class="stat-val">7</div>
+          <div class="stat-note">含 3 个 MR · 4 次构建</div>
+        </div>
+        <div class="stat">
+          <div class="stat-top"><span class="sdot" style="background:var(--danger)"></span>失败</div>
+          <div class="stat-val">1</div>
+          <div class="stat-note">近 24 小时</div>
+        </div>
+      </div>
+
+      <div class="cols">
+        <!-- 会话列表 -->
+        <div class="panel">
+          <div class="panel-title">会话 <span class="count">4</span></div>
+          <div class="sess">
+            <div class="sess-item active">
+              <div class="sess-row"><span class="sess-id">#a7f3</span><span class="tag run">执行中</span></div>
+              <div class="sess-title">为 story-123 建工作区并创建 MR 到 dev</div>
+              <div class="sess-meta"><span>5 步</span><span>·</span><span>14:31</span></div>
+            </div>
+            <div class="sess-item">
+              <div class="sess-row"><span class="sess-id">#a7f1</span><span class="tag wait">待审批</span></div>
+              <div class="sess-title">推送 feature/agent-console 到远端</div>
+              <div class="sess-meta"><span>3 步</span><span>·</span><span>14:28</span></div>
+            </div>
+            <div class="sess-item">
+              <div class="sess-row"><span class="sess-id">#a7ec</span><span class="tag ok">已完成</span></div>
+              <div class="sess-title">构建 agent-web 并部署到 test</div>
+              <div class="sess-meta"><span>4 步</span><span>·</span><span>13:56</span></div>
+            </div>
+            <div class="sess-item">
+              <div class="sess-row"><span class="sess-id">#a7e8</span><span class="tag err">失败</span></div>
+              <div class="sess-title">重启卡住的 CodeBuddy 实例</div>
+              <div class="sess-meta"><span>2 步</span><span>·</span><span>13:40</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 执行轨迹 -->
+        <div class="panel">
+          <div class="trace-head">
+            <span class="sess-id">#a7f3</span>
+            <span class="tag run">执行中</span>
+            <span class="plan">执行计划 · 5 步</span>
+          </div>
+
+          <div class="step ok">
+            <div class="snode"><span class="i">✓</span></div>
+            <div class="sbody">
+              <div class="srow"><span class="stitle">解析目标 · 读取 TAPD Story</span><span class="sdur">1.2s</span></div>
+              <div class="sdesc">story-123 · Agent 工作台需求 · 状态：开发中</div>
+            </div>
+          </div>
+
+          <div class="step ok">
+            <div class="snode"><span class="i">✓</span></div>
+            <div class="sbody">
+              <div class="srow"><span class="stitle">创建工作区（git worktree）</span><span class="sdur">3.8s</span></div>
+              <div class="sdesc">基于 master 检出到 D:\workfile\story-123</div>
+              <div class="artifacts">
+                <span class="art"><svg class="ai" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"/></svg>工作区 <span class="mono">story-123</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="step ok">
+            <div class="snode"><span class="i">✓</span></div>
+            <div class="sbody">
+              <div class="srow"><span class="stitle">安装依赖并构建</span><span class="sdur">42.6s</span></div>
+              <div class="sdesc">pnpm install + pnpm build · 通过</div>
+              <div class="artifacts">
+                <span class="art"><svg class="ai" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM8 8h8v8H8z"/></svg>构建号 <span class="mono">#2841</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="step wait">
+            <div class="snode"><span class="i">!</span></div>
+            <div class="sbody">
+              <div class="srow"><span class="stitle">创建 MR 到 dev</span><span class="tag wait">待审批</span><span class="sdur">—</span></div>
+              <div class="sdesc">源分支 feature/agent-console → 目标 dev · 写操作需人工确认</div>
+              <div class="approval">
+                <div class="approval-h">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>
+                  此操作将创建合并请求
+                </div>
+                <div class="approval-p">agent 已准备好 <b>feature/agent-console → dev</b> 的 MR，标题「feat: Agent Console 会话台与执行轨迹」。创建后可在 GitLab 审阅；<b>拒绝</b>则本任务停在此步，不产生任何远端改动。</div>
+                <div class="approval-acts">
+                  <button class="btn btn-warn btn-sm">通过并继续</button>
+                  <button class="btn btn-secondary btn-sm">修改参数</button>
+                  <button class="btn btn-secondary btn-sm">拒绝</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="snode"><span class="i">·</span></div>
+            <div class="sbody">
+              <div class="srow"><span class="stitle" style="color:var(--t-faint)">回写 TAPD 状态</span><span class="sdur">—</span></div>
+              <div class="sdesc" style="color:var(--t-faint)">等待前一步完成后执行</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

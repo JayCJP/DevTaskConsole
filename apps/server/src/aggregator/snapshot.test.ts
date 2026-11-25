@@ -58,8 +58,16 @@ describe('snapshot channel status', () => {
     const snapshot = await buildSnapshot(workspacesRoot)
 
     expect(snapshot.channels.localHarness).toMatchObject({ ok: true, stale: false })
-    expect(snapshot.channels.gitlab).toMatchObject({ ok: false, fetchedAt: null, error: 'GitLab is not configured.' })
-    expect(snapshot.channels.devops).toMatchObject({ ok: false, fetchedAt: null, error: 'DevOps is not configured.' })
+    expect(snapshot.channels.gitlab).toMatchObject({
+      ok: false,
+      fetchedAt: null,
+      error: 'GitLab is not configured.',
+    })
+    expect(snapshot.channels.devops).toMatchObject({
+      ok: false,
+      fetchedAt: null,
+      error: 'DevOps is not configured.',
+    })
     expect(snapshot.channels.tapd).toMatchObject({ ok: false, error: 'TAPD is not configured.' })
   })
 
@@ -71,31 +79,52 @@ describe('snapshot channel status', () => {
     const statePath = join(storyDirectory, 'e2e-state.json')
     await mkdir(dirname(statePath), { recursive: true })
     // 收件箱以工作区列表为骨架：Story 必须先被工作区认领，才会被提取事项
-    await writeFile(join(workspace, 'feature-x.code-workspace'), JSON.stringify({ folders: [{ path: '.' }] }))
-    await writeFile(statePath, JSON.stringify({
-      storyId: 'STORY-INBOX',
-      title: 'Inbox requirement',
-      phase: 1,
-      status: 'running',
-    }))
-    await writeFile(join(storyDirectory, 'open-questions.json'), JSON.stringify({
-      questions: [
-        { id: 'Q-1', question: 'Needs an answer?', resolved: true, resolution: 'Draft only' },
-        { id: 'Q-2', question: 'Already confirmed?', resolution: 'Yes', confirmation: { answer: 'Yes', confirmedVia: 'accept', confirmedAt: '2026-01-01T00:00:00Z' } },
-      ],
-    }))
+    await writeFile(
+      join(workspace, 'feature-x.code-workspace'),
+      JSON.stringify({ folders: [{ path: '.' }] }),
+    )
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        storyId: 'STORY-INBOX',
+        title: 'Inbox requirement',
+        phase: 1,
+        status: 'running',
+      }),
+    )
+    await writeFile(
+      join(storyDirectory, 'open-questions.json'),
+      JSON.stringify({
+        questions: [
+          { id: 'Q-1', question: 'Needs an answer?', resolved: true, resolution: 'Draft only' },
+          {
+            id: 'Q-2',
+            question: 'Already confirmed?',
+            resolution: 'Yes',
+            confirmation: {
+              answer: 'Yes',
+              confirmedVia: 'accept',
+              confirmedAt: '2026-01-01T00:00:00Z',
+            },
+          },
+        ],
+      }),
+    )
 
     const snapshot = await buildSnapshot(workspacesRoot)
 
-    expect(snapshot.inbox).toEqual([expect.objectContaining({
-      kind: 'open_question',
-      title: 'Needs an answer?',
-      requirementId: 'STORY-INBOX',
-      // 归属来自工作区流水线，不是从 plans 目录路径反推
-      workspaceName: 'feature-x',
-      workspacePath: 'feature-x',
-      priority: 'high',
-    })])
+    expect(snapshot.inbox).toEqual([
+      expect.objectContaining({
+        id: 'question:STORY-INBOX:Q-1:Needs an',
+        kind: 'open_question',
+        title: 'Needs an answer?',
+        requirementId: 'STORY-INBOX',
+        // 归属来自工作区流水线，不是从 plans 目录路径反推
+        workspaceName: 'feature-x',
+        workspacePath: 'feature-x',
+        priority: 'high',
+      }),
+    ])
     expect(snapshot.openQuestions.map((question) => question.state)).toEqual([
       'pending_confirmation',
       'confirmed',
@@ -108,39 +137,53 @@ describe('snapshot channel status', () => {
     const workspace = join(workspacesRoot, 'feature-sync')
     await mkdir(workspace, { recursive: true })
     // folders[0] 是流水线锚点：只有它下面的 Story 会被工作区认领
-    await writeFile(join(workspace, 'feature-sync.code-workspace'), JSON.stringify({ folders: [{ path: 'repo-a' }] }))
+    await writeFile(
+      join(workspace, 'feature-sync.code-workspace'),
+      JSON.stringify({ folders: [{ path: 'repo-a' }] }),
+    )
 
     const primaryDirectory = join(workspace, 'repo-a', '.codebuddy', 'plans', 'STORY-PRIMARY')
     await mkdir(primaryDirectory, { recursive: true })
-    await writeFile(join(primaryDirectory, 'e2e-state.json'), JSON.stringify({
-      storyId: 'STORY-PRIMARY',
-      title: 'Primary requirement',
-      phase: 2,
-      status: 'blocked',
-    }))
+    await writeFile(
+      join(primaryDirectory, 'e2e-state.json'),
+      JSON.stringify({
+        storyId: 'STORY-PRIMARY',
+        title: 'Primary requirement',
+        phase: 2,
+        status: 'blocked',
+      }),
+    )
 
     const secondaryDirectory = join(workspace, 'repo-b', '.codebuddy', 'plans', 'STORY-SECONDARY')
     await mkdir(secondaryDirectory, { recursive: true })
-    await writeFile(join(secondaryDirectory, 'e2e-state.json'), JSON.stringify({
-      storyId: 'STORY-SECONDARY',
-      title: 'Secondary requirement',
-      phase: 1,
-      status: 'running',
-    }))
-    await writeFile(join(secondaryDirectory, 'open-questions.json'), JSON.stringify({
-      questions: [{ id: 'Q-1', question: 'Secondary question?' }],
-    }))
+    await writeFile(
+      join(secondaryDirectory, 'e2e-state.json'),
+      JSON.stringify({
+        storyId: 'STORY-SECONDARY',
+        title: 'Secondary requirement',
+        phase: 1,
+        status: 'running',
+      }),
+    )
+    await writeFile(
+      join(secondaryDirectory, 'open-questions.json'),
+      JSON.stringify({
+        questions: [{ id: 'Q-1', question: 'Secondary question?' }],
+      }),
+    )
 
     const snapshot = await buildSnapshot(workspacesRoot)
 
     expect(snapshot.workspacePipelines?.[0]?.story?.requirement.storyId).toBe('STORY-PRIMARY')
     // 一个工作区只认 folders[0] 的 Story：repo-b 的 Story 不进入收件箱
-    expect(snapshot.inbox).toEqual([expect.objectContaining({
-      kind: 'blocked_job',
-      requirementId: 'STORY-PRIMARY',
-      workspaceName: 'feature-sync',
-      workspacePath: 'feature-sync/repo-a',
-    })])
+    expect(snapshot.inbox).toEqual([
+      expect.objectContaining({
+        kind: 'blocked_job',
+        requirementId: 'STORY-PRIMARY',
+        workspaceName: 'feature-sync',
+        workspacePath: 'feature-sync/repo-a',
+      }),
+    ])
     // 待确认项本身仍被采集，只是没有工作区归属时不进收件箱
     expect(snapshot.openQuestions.map((question) => question.storyId)).toEqual(['STORY-SECONDARY'])
   })
@@ -153,15 +196,21 @@ describe('snapshot channel status', () => {
     const workspace = join(workspacesRoot, 'feature-cron')
     const plansDirectory = join(workspace, '.codebuddy', 'plans', 'STORY-CRON')
     await mkdir(plansDirectory, { recursive: true })
-    await writeFile(join(plansDirectory, 'e2e-state.json'), JSON.stringify({
-      storyId: 'STORY-CRON',
-      title: 'Scheduled requirement',
-      phase: 1,
-      status: 'running',
-    }))
-    await writeFile(join(workspace, '.codebuddy', 'scheduled_tasks.json'), JSON.stringify({
-      tasks: [{ id: 'task-cron', cron: '13 * * * *', prompt: 'Check the TAPD bugs.' }],
-    }))
+    await writeFile(
+      join(plansDirectory, 'e2e-state.json'),
+      JSON.stringify({
+        storyId: 'STORY-CRON',
+        title: 'Scheduled requirement',
+        phase: 1,
+        status: 'running',
+      }),
+    )
+    await writeFile(
+      join(workspace, '.codebuddy', 'scheduled_tasks.json'),
+      JSON.stringify({
+        tasks: [{ id: 'task-cron', cron: '13 * * * *', prompt: 'Check the TAPD bugs.' }],
+      }),
+    )
     await new CronMappingStore(dataDirectory).save({
       taskId: 'task-cron',
       storyId: 'STORY-CRON',
@@ -171,13 +220,15 @@ describe('snapshot channel status', () => {
 
     const snapshot = await buildSnapshot(workspacesRoot)
 
-    expect(snapshot.crons).toEqual([expect.objectContaining({
-      id: 'task-cron',
-      storyId: 'STORY-CRON',
-      storyTitle: 'Scheduled requirement',
-      ownerSessionId: 'cron-owner-session',
-      mode: 'query_only',
-    })])
+    expect(snapshot.crons).toEqual([
+      expect.objectContaining({
+        id: 'task-cron',
+        storyId: 'STORY-CRON',
+        storyTitle: 'Scheduled requirement',
+        ownerSessionId: 'cron-owner-session',
+        mode: 'query_only',
+      }),
+    ])
     expect(snapshot.channels.crons).toMatchObject({ ok: true, stale: false })
   })
 })
@@ -219,6 +270,9 @@ describe('snapshot segment refresh', () => {
     expect(result.rebuilt.local).toBe(false)
     // TAPD 无 MCP 配置时会回退到缓存段（仍标记 rebuilt=false 的语义由 build 决定）
     expect(result.segments.local.channel.stale).toBe(true)
-    expect(result.segments.local).toEqual({ ...cached.segments.local, channel: { ...cached.segments.local.channel, stale: true } })
+    expect(result.segments.local).toEqual({
+      ...cached.segments.local,
+      channel: { ...cached.segments.local.channel, stale: true },
+    })
   })
 })

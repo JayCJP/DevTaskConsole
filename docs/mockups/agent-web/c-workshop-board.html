@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Console · 方向 C 工坊看板</title>
+<style>
+  /* ============ 方向 C：Workshop Board 工坊看板 ============ */
+  :root{
+    --paper: oklch(94% 0.012 75);        /* 暖灰纸底 */
+    --paper-2: oklch(90% 0.014 75);
+    --card: oklch(98% 0.008 75);
+    --ink: oklch(24% 0.02 60);
+    --ink-2: oklch(38% 0.02 60);
+    --ink-3: oklch(40% 0.018 60);
+    --line: oklch(80% 0.015 70);
+    --line-2: oklch(86% 0.012 70);
+    --clay: oklch(52% 0.11 48);          /* 沉稳橙棕 · 主色 */
+    --clay-dark: oklch(42% 0.12 48);
+    --clay-soft: oklch(88% 0.04 48);
+    --stamp-green: oklch(48% 0.10 150);
+    --stamp-red: oklch(50% 0.14 25);
+    --stamp-amber: oklch(46% 0.12 75);
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --font: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --r: 8px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink-2);font-family:var(--font);font-size:14px;line-height:1.55;height:100vh;overflow:hidden}
+  ::-webkit-scrollbar{width:9px}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:2px solid var(--paper)}
+  .shell{display:flex;height:100vh}
+  /* 左侧工坊栏 */
+  .rail{width:212px;flex:none;background:var(--paper-2);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:20px 14px}
+  .logo{display:flex;align-items:center;gap:9px;padding:0 6px 22px}
+  .logo-mark{width:28px;height:28px;border-radius:6px;background:var(--clay);color:var(--card);display:grid;place-items:center;font-weight:800;font-size:13px}
+  .logo b{font-size:13px;color:var(--ink)}
+  .logo small{display:block;font-size:10px;color:var(--ink-3);font-weight:400}
+  .nav{height:36px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:6px;color:var(--ink-3);cursor:pointer;margin-bottom:3px;font-size:13px}
+  .nav:hover{background:var(--card);color:var(--ink-2)}
+  .nav.on{background:var(--clay-soft);color:var(--clay-dark);font-weight:650}
+  .nav svg{width:17px;height:17px;stroke:currentColor;stroke-width:1.7;fill:none}
+  .nav .n{margin-left:auto;font-size:10px;background:var(--stamp-red);color:#fff;border-radius:999px;padding:1px 6px;font-weight:700}
+  .rail-bot{margin-top:auto;padding:14px 8px 0;border-top:1px solid var(--line);font-size:11px;color:var(--ink-3)}
+  .rail-bot .l{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .rail-bot i{width:7px;height:7px;border-radius:50%;background:var(--stamp-green)}
+  /* 主 */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .top{height:56px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 28px;background:var(--paper-2)}
+  .voice{flex:1;max-width:540px;height:32px;border:1px solid var(--line);border-radius:6px;background:var(--card);display:flex;align-items:center;gap:9px;padding:0 11px;color:var(--ink-3);font-size:12px}
+  .voice:hover{border-color:var(--clay)}
+  .voice svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.8;fill:none}
+  .voice .kbd{margin-left:auto;font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .top-r{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:11px;color:var(--ink-3)}
+  .btn{height:30px;padding:0 13px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent}
+  .btn-p{background:var(--clay);color:var(--card)}
+  .btn-p:hover{background:var(--clay-dark)}
+  .page{flex:1;overflow:auto;padding:24px 458px 50px 28px}
+  h1{font-size:21px;font-weight:680;color:var(--ink);letter-spacing:-0.02em}
+  .sub{font-size:12px;color:var(--ink-3);margin-top:3px}
+  /* 四列看板 */
+  .board{display:grid;grid-template-columns:repeat(4,minmax(170px,1fr));gap:12px;margin-top:22px;align-items:start}
+  .col{background:var(--paper-2);border:1px solid var(--line);border-radius:var(--r);padding:12px;min-height:300px}
+  .col-h{display:flex;align-items:center;gap:8px;padding:2px 4px 12px;border-bottom:1px solid var(--line-2);margin-bottom:10px}
+  .col-h .bar{width:4px;height:12px;border-radius:2px;background:var(--ink-3)}
+  .col-h b{font-size:12px;color:var(--ink);font-weight:650}
+  .col-h .c{margin-left:auto;font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  .col.todo .bar{background:var(--ink-3)}
+  .col.run .bar{background:var(--clay)}
+  .col.wait .bar{background:var(--stamp-amber)}
+  .col.done .bar{background:var(--stamp-green)}
+  /* 工单卡 */
+  .ticket{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:13px;margin-bottom:10px;box-shadow:0 1px 2px oklch(30% 0.03 60 / 8%);cursor:pointer;transition:border-color .15s,transform .15s}
+  .ticket:hover{border-color:var(--clay);transform:translateY(-1px)}
+  .ticket.sel{border-color:var(--clay);box-shadow:0 0 0 2px var(--clay-soft)}
+  .t-top{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .t-id{font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+  .t-kind{font-size:9px;padding:1px 6px;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);color:var(--ink-2);letter-spacing:.02em}
+  .t-title{font-size:12.5px;font-weight:600;color:var(--ink);line-height:1.45}
+  .t-desc{font-size:11px;color:var(--ink-3);margin-top:5px}
+  .t-foot{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--line-2);font-size:10px;color:var(--ink-3)}
+  .t-foot .who{display:flex;align-items:center;gap:5px}
+  .avatar{width:18px;height:18px;border-radius:50%;background:var(--clay-soft);color:var(--clay-dark);display:grid;place-items:center;font-size:9px;font-weight:800}
+  .stamp{margin-left:auto;font-size:9px;font-weight:750;padding:1px 6px;border:1.5px solid;border-radius:3px;transform:rotate(-4deg);letter-spacing:.04em}
+  .stamp.g{color:var(--stamp-green);border-color:var(--stamp-green)}
+  .stamp.r{color:var(--stamp-red);border-color:var(--stamp-red)}
+  .stamp.a{color:var(--stamp-amber);border-color:var(--stamp-amber)}
+  .progress{height:3px;background:var(--line-2);border-radius:2px;margin-top:10px;overflow:hidden}
+  .progress i{display:block;height:100%;background:var(--clay)}
+  /* 详情抽屉 */
+  .drawer{position:fixed;right:0;top:0;bottom:0;width:430px;background:var(--card);border-left:1px solid var(--line);box-shadow:-10px 0 40px oklch(30% 0.03 60 / 14%);z-index:20;display:flex;flex-direction:column;transform:translateX(0);transition:transform .2s}
+  .d-head{padding:20px 22px;border-bottom:1px solid var(--line)}
+  .d-head .dh-top{display:flex;align-items:center;gap:8px}
+  .d-head h2{font-size:16px;color:var(--ink);font-weight:680;margin-top:8px}
+  .d-head .dh-sub{font-size:11px;color:var(--ink-3);margin-top:5px}
+  .d-close{margin-left:auto;width:26px;height:26px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink-3);cursor:pointer;font-size:15px}
+  .d-body{flex:1;overflow:auto;padding:18px 22px}
+  .sec-t{font-size:11px;font-weight:700;color:var(--ink-3);letter-spacing:.06em;margin-bottom:10px}
+  .flow-item{display:grid;grid-template-columns:16px 1fr;gap:10px;padding:9px 0;position:relative}
+  .flow-item::after{content:"";position:absolute;left:7px;top:24px;bottom:-6px;width:1px;background:var(--line)}
+  .flow-item:last-child::after{display:none}
+  .fi{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--line);background:var(--card);display:grid;place-items:center;font-size:9px;color:var(--ink-3);z-index:1}
+  .flow-item.done .fi{background:var(--stamp-green);border-color:var(--stamp-green);color:#fff}
+  .flow-item.now .fi{border-color:var(--stamp-amber);color:var(--stamp-amber)}
+  .ft{font-size:12px;color:var(--ink-2)}
+  .flow-item.now .ft{color:var(--stamp-amber);font-weight:600}
+  .fd{font-size:10.5px;color:var(--ink-3);margin-top:2px}
+  .out{margin-top:8px;background:var(--paper-2);border:1px solid var(--line);border-radius:5px;padding:8px 10px;font-family:var(--mono);font-size:10px;color:var(--ink-2);max-height:110px;overflow:auto}
+  .out .g{color:var(--stamp-green)}
+  .approve{margin-top:12px;border:1.5px solid var(--stamp-amber);border-radius:6px;padding:12px 14px;background:oklch(58% 0.12 75 / 8%)}
+  .approve .ah{font-size:12px;font-weight:750;color:var(--stamp-amber)}
+  .approve p{font-size:11px;color:var(--ink-2);margin-top:6px;line-height:1.6}
+  .approve p b{color:var(--ink)}
+  .approve .acts{display:flex;gap:7px;margin-top:10px}
+  .btn-sm{height:26px;padding:0 10px;font-size:11px}
+  .btn-a{background:var(--stamp-amber);color:#fff}
+  .btn-g{background:var(--card);border-color:var(--line);color:var(--ink-2)}
+  .d-foot{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:8px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="logo"><div class="logo-mark">C</div><div><b>Agent Console</b><small>Workshop Board · 方向 C</small></div></div>
+    <div class="nav">任务看板<span class="n">4</span></div>
+    <div class="nav">工单队列</div>
+    <div class="nav">实例工位</div>
+    <div class="nav">工作区档案</div>
+    <div class="nav">发布台</div>
+    <div class="nav">工具</div>
+    <div class="rail-bot">
+      <div class="l"><i></i>TAPD / GitLab / DevOps</div>
+      <div class="l">本机单用户 · 桌面优先</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="top">
+      <div class="voice">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span>写下要交给 agent 的工单，例如：为 story-123 建工作区并创建 MR</span>
+        <span class="kbd">⌘ K</span>
+      </div>
+      <div class="top-r"><span>今日完成 7 单</span><button class="btn btn-p">+ 开工单</button></div>
+    </div>
+
+    <div class="page">
+      <h1>任务看板</h1>
+      <div class="sub">每张工单是一次 agent 任务 · 推动卡片流转，或在右侧展开执行详情与审批</div>
+
+      <div class="board">
+        <!-- 待办 -->
+        <div class="col todo">
+          <div class="col-h"><span class="bar"></span><b>待领工单</b><span class="c">2</span></div>
+          <div class="ticket">
+            <div class="t-top"><span class="t-id">#1042</span><span class="t-kind">构建</span></div>
+            <div class="t-title">构建并部署 agent-web 到 test</div>
+            <div class="t-desc">源分支 feature/agent-console</div>
+            <div class="t-foot"><span class="who"><span class="avatar">A</span>自然语言下达</span><span>2m 前</span></div>
+          </div>
+          <div class="ticket">
+            <div class="t-top"><span class="t-id">#1041</span><span class="t-kind">实例</span></div>
+            <div class="t-title">重启无响应的 CodeBuddy 实例</div>
+            <div class="t-desc">端口 4317 · story-089</div>
+            <div class="t-foot"><span class="who"><span class="avatar">A</span>表单任务卡</span><span>8m 前</span></div>
+          </div>
+        </div>
+
+        <!-- 进行中 -->
+        <div class="col run">
+          <div class="col-h"><span class="bar"></span><b>执行中</b><span class="c">1</span></div>
+          <div class="ticket sel">
+            <div class="t-top"><span class="t-id">#1040</span><span class="t-kind">复合任务</span></div>
+            <div class="t-title">为 story-123 建工作区并创建 MR 到 dev</div>
+            <div class="t-desc">5 步 · 已完成 3 步</div>
+            <div class="progress"><i style="width:60%"></i></div>
+            <div class="t-foot"><span class="who"><span class="avatar">A</span>agent 执行中</span><span>14:31</span></div>
+          </div>
+        </div>
+
+        <!-- 待审批 -->
+        <div class="col wait">
+          <div class="col-h"><span class="bar"></span><b>待盖章</b><span class="c">1</span></div>
+          <div class="ticket">
+            <div class="t-top"><span class="t-id">#1039</span><span class="t-kind">发布</span></div>
+            <div class="t-title">推送 feature/agent-console 到远端</div>
+            <div class="t-desc">写操作 · 等待人工确认</div>
+            <div class="t-foot"><span class="stamp a">待盖章</span><span>14:28</span></div>
+          </div>
+        </div>
+
+        <!-- 完成 -->
+        <div class="col done">
+          <div class="col-h"><span class="bar"></span><b>已归档</b><span class="c">2</span></div>
+          <div class="ticket">
+            <div class="t-top"><span class="t-id">#1038</span><span class="t-kind">构建</span></div>
+            <div class="t-title">构建并部署到 test</div>
+            <div class="t-desc">构建号 #2841 · 成功</div>
+            <div class="t-foot"><span class="stamp g">已完成</span><span>13:56</span></div>
+          </div>
+          <div class="ticket">
+            <div class="t-top"><span class="t-id">#1037</span><span class="t-kind">MR</span></div>
+            <div class="t-title">创建 MR 到 dev</div>
+            <div class="t-desc">!284 · 已合并</div>
+            <div class="t-foot"><span class="stamp g">已完成</span><span>13:42</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 工单详情抽屉 -->
+<div class="drawer">
+  <div class="d-head">
+    <div class="dh-top"><span class="t-id">#1040</span><span class="t-kind">复合任务</span><span class="stamp a" style="margin-left:auto">执行中</span><button class="d-close">×</button></div>
+    <h2>为 story-123 建工作区并创建 MR 到 dev</h2>
+    <div class="dh-sub">来源：自然语言下达 · 创建于 14:31 · 5 步计划</div>
+  </div>
+  <div class="d-body">
+    <div class="sec-t">工单流转</div>
+    <div class="flow-item done"><div class="fi">✓</div><div><div class="ft">解析目标 · 读取 TAPD Story</div><div class="fd">story-123 · 开发中 · 1.2s</div></div></div>
+    <div class="flow-item done"><div class="fi">✓</div><div><div class="ft">创建工作区（git worktree）</div><div class="fd">D:\workfile\story-123 · 3.8s</div></div></div>
+    <div class="flow-item done"><div class="fi">✓</div><div><div class="ft">安装依赖并构建</div><div class="fd">pnpm build · 42.6s · #2841</div><div class="out"><span class="g">✓</span> dist/ built (1.2 MB)</div></div></div>
+    <div class="flow-item now"><div class="fi">!</div><div><div class="ft">创建 MR 到 dev · 待盖章</div><div class="fd">feature/agent-console → dev</div>
+      <div class="approve">
+        <div class="ah">需盖章：创建合并请求</div>
+        <p>即将向 GitLab 创建 MR <b>「feat: Agent Console 会话台」</b>。此为写操作，盖章前 agent 不会继续。<b>驳回</b>则工单停在本步，无远端改动。</p>
+        <div class="acts"><button class="btn btn-a btn-sm">盖章通过</button><button class="btn btn-g btn-sm">改参数</button><button class="btn btn-g btn-sm">驳回</button></div>
+      </div>
+    </div></div>
+    <div class="flow-item"><div class="fi"></div><div><div class="ft" style="color:var(--ink-3)">回写 TAPD 状态</div><div class="fd">等待前序步骤</div></div></div>
+  </div>
+  <div class="d-foot"><button class="btn btn-p">查看工单产物</button><button class="btn btn-g">复制执行日志</button></div>
+</div>
+</body>
+</html>

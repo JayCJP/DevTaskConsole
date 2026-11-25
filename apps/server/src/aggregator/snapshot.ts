@@ -27,7 +27,12 @@ import { StoryServiceSupervisor } from '../services/story-service-supervisor.js'
 import { CronMappingStore, readLocalCrons } from './cron-data.js'
 import { mergeCronFacts, type CronRealtimeSource } from './cron-merge.js'
 import { buildWorkspacePipelines } from './workspace-pipelines.js'
-import { SNAPSHOT_CACHE_VERSION, type LocalSegment, type SnapshotCacheFile, type TapdSegment } from './snapshot-cache.js'
+import {
+  SNAPSHOT_CACHE_VERSION,
+  type LocalSegment,
+  type SnapshotCacheFile,
+  type TapdSegment,
+} from './snapshot-cache.js'
 
 const tapd = new TapdAdapter()
 const gitLab = new GitLabAdapter()
@@ -167,10 +172,16 @@ async function loadTapdSegment(
   requirements: Snapshot['requirements'],
   force: boolean,
 ): Promise<TapdSegment> {
-  const storyIds = [...new Set(requirements
-    .filter((item): item is Requirement & { tapdStoryId: string } =>
-      typeof item.tapdStoryId === 'string' && item.tapdStoryId.trim().length > 0)
-    .map((item) => item.tapdStoryId))]
+  const storyIds = [
+    ...new Set(
+      requirements
+        .filter(
+          (item): item is Requirement & { tapdStoryId: string } =>
+            typeof item.tapdStoryId === 'string' && item.tapdStoryId.trim().length > 0,
+        )
+        .map((item) => item.tapdStoryId),
+    ),
+  ]
   // 通道健康只取决于 TAPD MCP 是否连接成功：
   // 只要 checkConnection() 通过，就视为「链接正常」，与后续能否取到数据无关。
   // 取数失败仅记日志，不再把通道标红——连接通但某次聚合偶发失败不等于链接异常。
@@ -253,7 +264,10 @@ async function loadRuntimeSegment(
  * @param force 是否强制刷新内存缓存
  * @returns 连通性段
  */
-async function loadConnectivitySegment(fetchedAt: string, force: boolean): Promise<ConnectivitySegment> {
+async function loadConnectivitySegment(
+  fetchedAt: string,
+  force: boolean,
+): Promise<ConnectivitySegment> {
   const now = Date.now()
   if (!force && connectivityMemory && now - connectivityMemory.at < CONNECTIVITY_TTL_MS) {
     return connectivityMemory.value
@@ -376,7 +390,14 @@ export async function buildSnapshotResult(
     loadConnectivitySegment(snapshotAt, force),
   ])
 
-  const snapshot = assembleSnapshot({ workspacesRoot, snapshotAt, local, tapd, runtime, connectivity })
+  const snapshot = assembleSnapshot({
+    workspacesRoot,
+    snapshotAt,
+    local,
+    tapd,
+    runtime,
+    connectivity,
+  })
   return {
     snapshot,
     segments: { local, tapd },
@@ -443,7 +464,9 @@ export function createCachedSnapshotProvider(options: {
         })
       } catch (error) {
         // 缓存是加速手段，写盘失败不阻断刷新，只记日志（评审 Q3）
-        options.logError?.(`Failed to write snapshot cache: ${error instanceof Error ? error.message : String(error)}`)
+        options.logError?.(
+          `Failed to write snapshot cache: ${error instanceof Error ? error.message : String(error)}`,
+        )
       }
     }
     return result.snapshot
@@ -505,12 +528,25 @@ export async function buildCronFacts(workspacesRoot = getWorkspacesRoot()): Prom
  * @param facts 本地 Harness 只读事实（需求状态与待确认项）
  * @returns 收件箱事项，每条都带上所属工作区
  */
+/**
+ * 用问题标题前 8 个字符生成 id 指纹，隔离同 Story 跨轮复用的相同 questionId。
+ * 冒号是 id 的分段符，替换成下划线避免破坏 `question:<storyId>:<questionId>:<fingerprint>` 的四段结构。
+ * @param title 问题标题原文
+ * @returns 指纹字符串；空标题返回占位符 `empty`
+ */
+function questionTitleFingerprint(title: string): string {
+  const prefix = title.slice(0, 8).replaceAll(':', '_').replaceAll('：', '_').trim()
+  return prefix || 'empty'
+}
+
 function buildInbox(
   pipelines: WorkspacePipeline[],
   facts: { requirements: Requirement[]; openQuestions: OpenQuestion[] },
 ): Snapshot['inbox'] {
   /** Story → 本地运行期需求（status 未被 TAPD 覆盖，blocked 只认这里） */
-  const localByStory = new Map(facts.requirements.map((requirement) => [requirement.storyId, requirement]))
+  const localByStory = new Map(
+    facts.requirements.map((requirement) => [requirement.storyId, requirement]),
+  )
   /** Story → 待人工确认的 open question */
   const questionsByStory = new Map<string, OpenQuestion[]>()
   for (const question of facts.openQuestions) {
@@ -545,10 +581,13 @@ function buildInbox(
 
     for (const question of questionsByStory.get(requirement.storyId) ?? []) {
       inbox.push({
-        id: `question:${requirement.storyId}:${question.id}`,
+        id: `question:${requirement.storyId}:${question.id}:${questionTitleFingerprint(question.question)}`,
         kind: 'open_question',
         title: question.question,
-        reason: question.state === 'pending_confirmation' ? '待用户确认。' : '缺少建议稿，需要先补充分析。',
+        reason:
+          question.state === 'pending_confirmation'
+            ? '待用户确认。'
+            : '缺少建议稿，需要先补充分析。',
         requirementId: requirement.storyId,
         ...ownership,
         priority: 'high',
@@ -624,40 +663,52 @@ async function loadRealtimeCrons(
   } catch (error) {
     return {
       sources,
-      errors: [error instanceof Error ? error.message : 'Story service registry could not be read.'],
+      errors: [
+        error instanceof Error ? error.message : 'Story service registry could not be read.',
+      ],
     }
   }
-  await Promise.all(services.map(async (service) => {
-    if (service.status !== 'running') return
-    const inspected = await storyServiceSupervisor.inspect(service.storyId)
-    if (!inspected || inspected.status !== 'running') {
-      errors.push(inspected?.error ?? `Story service ${service.storyId} is unavailable.`)
-      return
-    }
-    const workspacePath = requirements.find((item) => item.storyId === service.storyId)?.workspacePath
-    if (workspacePath && !sameWorkspace(inspected.cwd, resolve(workspacesRoot, workspacePath))) {
-      errors.push(`Story service ${service.storyId} workspace mapping no longer matches the snapshot.`)
-      return
-    }
-    try {
-      const bound = localCrons.find((cron) => (
-        cron.storyId === service.storyId && (cron.ownerSessionId || cron.sessionId)
-      ))
-      const sessionId = await runtimeCronClient.resolveSessionId(
-        inspected.port,
-        inspected.cwd,
-        bound?.ownerSessionId ?? bound?.sessionId,
-      )
-      const tasks = await runtimeCronClient.list(inspected.port, { sessionId })
-      sources.push({
-        storyId: service.storyId,
-        ...(workspacePath ? { workspacePath } : {}),
-        tasks,
-      })
-    } catch (error) {
-      errors.push(error instanceof Error ? `${service.storyId}: ${error.message}` : `${service.storyId}: task listing failed.`)
-    }
-  }))
+  await Promise.all(
+    services.map(async (service) => {
+      if (service.status !== 'running') return
+      const inspected = await storyServiceSupervisor.inspect(service.storyId)
+      if (!inspected || inspected.status !== 'running') {
+        errors.push(inspected?.error ?? `Story service ${service.storyId} is unavailable.`)
+        return
+      }
+      const workspacePath = requirements.find(
+        (item) => item.storyId === service.storyId,
+      )?.workspacePath
+      if (workspacePath && !sameWorkspace(inspected.cwd, resolve(workspacesRoot, workspacePath))) {
+        errors.push(
+          `Story service ${service.storyId} workspace mapping no longer matches the snapshot.`,
+        )
+        return
+      }
+      try {
+        const bound = localCrons.find(
+          (cron) => cron.storyId === service.storyId && (cron.ownerSessionId || cron.sessionId),
+        )
+        const sessionId = await runtimeCronClient.resolveSessionId(
+          inspected.port,
+          inspected.cwd,
+          bound?.ownerSessionId ?? bound?.sessionId,
+        )
+        const tasks = await runtimeCronClient.list(inspected.port, { sessionId })
+        sources.push({
+          storyId: service.storyId,
+          ...(workspacePath ? { workspacePath } : {}),
+          tasks,
+        })
+      } catch (error) {
+        errors.push(
+          error instanceof Error
+            ? `${service.storyId}: ${error.message}`
+            : `${service.storyId}: task listing failed.`,
+        )
+      }
+    }),
+  )
   return { sources, errors }
 }
 
@@ -724,39 +775,63 @@ async function loadCodeBuddySnapshot(
       return { channel, jobs: [] }
     }
     // 并发拉取所有服务，单服务耗时不再累加；短超时实例把最坏等待封顶在 3s
-    const results = await Promise.all(services.map(async (service) => {
-      const requirement = requirements.find((item) => item.storyId === service.storyId)
-      if (!requirement?.workspacePath) {
-        return { jobs: [] as Job[], error: `Story service ${service.storyId} has no associated workspace in the current snapshot.` }
-      }
-      const expectedCwd = resolve(workspacesRoot, requirement.workspacePath)
-      const isSameWorkspace = process.platform === 'win32'
-        ? resolve(service.cwd).toLowerCase() === expectedCwd.toLowerCase()
-        : resolve(service.cwd) === expectedCwd
-      if (!isSameWorkspace) {
-        return { jobs: [] as Job[], error: `Story service ${service.storyId} workspace mapping no longer matches the snapshot.` }
-      }
-      const inspected = await storyServiceSupervisor.inspect(service.storyId)
-      if (!inspected || inspected.status !== 'running') {
-        return { jobs: [] as Job[], error: inspected?.error ?? `Story service ${service.storyId} is unavailable.` }
-      }
-      try {
-        const query = new URLSearchParams({ all: '1', cwd: inspected.cwd })
-        // 显式传单次超时（方案 §3.8）：runtime 链路封顶 3s，不影响其它 30s 调用方
-        const result = await codeBuddyApi.request(inspected.port, `/api/v1/jobs?${query}`, 'GET', undefined, RUNTIME_TIMEOUT_MS)
-        const parsed = jobSchema.array().safeParse(result)
-        if (!parsed.success) throw new Error('CodeBuddy returned an invalid jobs response.')
-        return { jobs: parsed.data.map((job) => ({ ...job, storyId: service.storyId })) as Job[], error: undefined }
-      } catch (error) {
-        return {
-          jobs: [] as Job[],
-          error: error instanceof Error ? `${service.storyId}: ${error.message}` : `${service.storyId}: job listing failed.`,
+    const results = await Promise.all(
+      services.map(async (service) => {
+        const requirement = requirements.find((item) => item.storyId === service.storyId)
+        if (!requirement?.workspacePath) {
+          return {
+            jobs: [] as Job[],
+            error: `Story service ${service.storyId} has no associated workspace in the current snapshot.`,
+          }
         }
-      }
-    }))
+        const expectedCwd = resolve(workspacesRoot, requirement.workspacePath)
+        const isSameWorkspace =
+          process.platform === 'win32'
+            ? resolve(service.cwd).toLowerCase() === expectedCwd.toLowerCase()
+            : resolve(service.cwd) === expectedCwd
+        if (!isSameWorkspace) {
+          return {
+            jobs: [] as Job[],
+            error: `Story service ${service.storyId} workspace mapping no longer matches the snapshot.`,
+          }
+        }
+        const inspected = await storyServiceSupervisor.inspect(service.storyId)
+        if (!inspected || inspected.status !== 'running') {
+          return {
+            jobs: [] as Job[],
+            error: inspected?.error ?? `Story service ${service.storyId} is unavailable.`,
+          }
+        }
+        try {
+          const query = new URLSearchParams({ all: '1', cwd: inspected.cwd })
+          // 显式传单次超时（方案 §3.8）：runtime 链路封顶 3s，不影响其它 30s 调用方
+          const result = await codeBuddyApi.request(
+            inspected.port,
+            `/api/v1/jobs?${query}`,
+            'GET',
+            undefined,
+            RUNTIME_TIMEOUT_MS,
+          )
+          const parsed = jobSchema.array().safeParse(result)
+          if (!parsed.success) throw new Error('CodeBuddy returned an invalid jobs response.')
+          return {
+            jobs: parsed.data.map((job) => ({ ...job, storyId: service.storyId })) as Job[],
+            error: undefined,
+          }
+        } catch (error) {
+          return {
+            jobs: [] as Job[],
+            error:
+              error instanceof Error
+                ? `${service.storyId}: ${error.message}`
+                : `${service.storyId}: job listing failed.`,
+          }
+        }
+      }),
+    )
     const jobs = results.flatMap((result) => result.jobs)
     // jobs 拉取的失败原因仅记录日志，不再作为「CLI 是否安装」的判定依据
-    const errors = results.flatMap((result) => result.error ? [result.error] : [])
+    const errors = results.flatMap((result) => (result.error ? [result.error] : []))
     if (errors.length) {
       console.error(`[snapshot] CodeBuddy jobs listing partial failures: ${errors.join(' ')}`)
     }

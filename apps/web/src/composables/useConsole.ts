@@ -706,7 +706,7 @@ export function useConsole() {
   /**
    * 建议稿索引：以 `storyId:questionId` 为键，值为建议稿文本。
    * 来源与看板「需求待确认项」一致（store.snapshot.openQuestions），只取有 resolution 的条目。
-   * 收件箱 open_question 事项的 id 形如 `question:<storyId>:<questionId>`，据此关联。
+   * 收件箱 open_question 事项的 id 形如 `question:<storyId>:<questionId>:<标题指纹>`，据此关联。
    */
   const questionSuggestions = computed<Map<string, string>>(() => {
     const map = new Map<string, string>()
@@ -725,13 +725,24 @@ export function useConsole() {
    */
   function suggestionOf(item: InboxItem): string {
     const storyId = item.requirementId ?? ''
-    const separator = item.id.lastIndexOf(':')
-    const questionId = separator >= 0 ? item.id.slice(separator + 1) : ''
+    const parts = item.id.split(':')
+    const questionId = parts.length >= 3 ? parts[2] : ''
     return questionSuggestions.value.get(`${storyId}:${questionId}`) ?? ''
   }
 
-  /** 把建议稿按圈号切成分段，供面板分行展示（纯函数，模板不重复解析） */
+  /** 把建议稿按圈号切分成段，供面板分行展示（纯函数，模板不重复解析） */
   const suggestionSegmentsOf = (item: InboxItem) => splitSuggestion(suggestionOf(item))
+
+  /**
+   * 读取 open_question 事项的原始 question id（收件箱 id 形如 `question:<storyId>:<questionId>:<标题指纹>`）。
+   * @param item 收件箱事项
+   * @returns question id；非 question 类型或无有效 id 时返回空字符串
+   */
+  function inboxQuestionIdOf(item: InboxItem): string {
+    if (item.kind !== 'open_question') return ''
+    const parts = item.id.split(':')
+    return parts.length >= 3 ? (parts[2] ?? '') : ''
+  }
 
   /**
    * 统计一组事项中已填写答案的数量，用于单个 Story 的汇总按钮计数胶囊。
@@ -3423,6 +3434,7 @@ export function useConsole() {
     questionSuggestions,
     suggestionOf,
     suggestionSegmentsOf,
+    inboxQuestionIdOf,
     storyAnswerCount,
     redundantInboxReason,
     inboxReasonOf,
