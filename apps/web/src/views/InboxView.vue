@@ -3,10 +3,15 @@
  * inbox 页面视图。
  * 从 ConsolePage.vue 拆分而来，共享状态由 ConsoleShell 通过 provide 下发。
  */
+import { ref } from 'vue'
 import { useConsoleContext } from '../composables/useConsoleContext'
 import { boldPartsOf } from '../composables/useInboxAnswers'
 
 const {
+  refreshSegments,
+  cronDispatches,
+  refreshWorkspaces,
+  actionToasts,
   inbox,
   setInboxAnswer,
   jobs,
@@ -22,6 +27,28 @@ const {
   inboxAnswerText,
   inboxQuestionIdOf,
 } = useConsoleContext()
+
+/** Story 状态刷新进行中（重扫本地数据，不查 TAPD） */
+const storyRefreshing = ref(false)
+
+/**
+ * 刷新 Story 状态：一次同步所有本地数据，不查询 TAPD。
+ * 与看板页同款实现——重扫 local 段快照、定时任务派发、本地工作区列表。
+ * @returns Promise<void>
+ */
+async function refreshStoryState(): Promise<void> {
+  if (storyRefreshing.value) return
+  storyRefreshing.value = true
+  try {
+    await Promise.all([refreshSegments(['local']), cronDispatches.refresh(), refreshWorkspaces()])
+    actionToasts.notify('Story 状态已刷新。', 'success')
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    actionToasts.notify(`Story 状态刷新失败：${reason}`, 'error')
+  } finally {
+    storyRefreshing.value = false
+  }
+}
 </script>
 
 <template>
@@ -49,7 +76,15 @@ const {
         <h2>待你处理</h2>
         <p>只显示阻塞流程或需要判断的事项；每个 Story 独立汇总答复</p>
       </div>
-      <span class="count-pill">{{ inbox.length }} 项</span>
+      <div class="inbox-heading-actions">
+        <el-tooltip
+          content="重扫本地工作区、Harness 阶段与收件箱定时任务；不查询 TAPD"
+          placement="bottom"
+        >
+          <el-button :loading="storyRefreshing" @click="refreshStoryState()">刷新</el-button>
+        </el-tooltip>
+        <span class="count-pill">{{ inbox.length }} 项</span>
+      </div>
     </div>
     <div v-if="inboxGroups.length" class="inbox-groups">
       <section v-for="group in inboxGroups" :key="group.key" class="inbox-workspace">
@@ -187,3 +222,13 @@ const {
     </div>
   </section>
 </template>
+
+<style scoped>
+/** 标题栏右侧操作区：刷新按钮与计数徽标横向对齐 */
+.inbox-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+</style>
