@@ -144,7 +144,7 @@ export function useConsole() {
       return
     }
     if (current === 'workspaces') {
-      await Promise.all([refreshWorkspaces(), refreshRepositoryCandidates()])
+      await Promise.all([refreshWorkspacesAndBoard(), refreshRepositoryCandidates()])
       return
     }
     if (current === 'instances') {
@@ -1540,7 +1540,7 @@ export function useConsole() {
     ([value]) => {
       if (value === 'workspaces') {
         void refreshRepositoryCandidates()
-        void refreshWorkspaces()
+        void refreshWorkspacesAndBoard()
       }
       if (value === 'instances') void refreshStoryServices()
       // 发布页按工作区列出项目，并按需拉取每个项目的 DevOps 只读数据
@@ -2537,6 +2537,7 @@ export function useConsole() {
     await board.load(true)
     const results = await Promise.allSettled([
       store.refresh(true),
+      // 此处 board 已由上方 board.load(true) 刷新，无需再同步下拉，只需工作区列表本身
       refreshWorkspaces(),
       loadApplicationMappings(),
     ])
@@ -2625,9 +2626,9 @@ export function useConsole() {
 
   /**
    * 拉取工作区列表（含每个工作区包含的项目及其分支）。
-   * @returns Promise<void>，失败信息写入 workspacesError
+   * @returns Promise<boolean> 是否拉取成功；失败信息同时写入 workspacesError
    */
-  async function refreshWorkspaces(): Promise<void> {
+  async function refreshWorkspaces(): Promise<boolean> {
     workspacesLoading.value = true
     workspacesError.value = ''
     try {
@@ -2639,11 +2640,30 @@ export function useConsole() {
         selectedWorkspace.value =
           workspaces.value.find((item) => item.name === current.name) ?? null
       }
+      return true
     } catch (cause) {
       workspacesError.value = cause instanceof Error ? cause.message : '工作区列表加载失败。'
+      return false
     } finally {
       workspacesLoading.value = false
     }
+  }
+
+  /**
+   * 刷新工作区列表，并同步看板的工作区下拉选项（不查询 TAPD）。
+   *
+   * 发布页/看板的「刷新」按钮都要走这里：看板「选择本地工作区」下拉的数据源是
+   * board.workspaces，与发布页的 workspaces 相互独立。只刷 workspaces 会导致
+   * 新建工作区在看板下拉中不可见、无法绑定 TAPD。
+   * refreshWorkspaces() 走 /api/v1/workspaces（纯 listWorkspaces，零 TAPD 请求），
+   * 成功后把同一份结果注入 board.setWorkspaces；失败时保持旧值不动，避免用旧数据
+   * 冒充「已刷新」。TAPD 数据由看板「刷新 TAPD」按钮单独负责。
+   * @returns Promise<void>，永不 reject
+   */
+  async function refreshWorkspacesAndBoard(): Promise<void> {
+    // 用返回值判断成败，不读 workspacesError：并发刷新时该 ref 可能被其它请求清空
+    const ok = await refreshWorkspaces()
+    if (ok) board.setWorkspaces(workspaces.value)
   }
 
   /**
@@ -2792,7 +2812,8 @@ export function useConsole() {
       )
       deleteResult.value = workspaceDeleteResultSchema.parse(result)
       if (selectedWorkspace.value?.name === workspace.name) selectedWorkspace.value = null
-      await refreshWorkspaces()
+      // 删除后同步看板下拉，避免已删除的工作区仍可被选择
+      await refreshWorkspacesAndBoard()
     } catch (cause) {
       deleteError.value = cause instanceof Error ? cause.message : '工作区删除失败。'
     } finally {
@@ -3234,11 +3255,11 @@ export function useConsole() {
   }
 
   /**
-   * 进入发布页时加载差异映射与工作区列表。
+   * 进入发布页时加载差异映射与工作区列表（同时同步看板工作区下拉，不查询 TAPD）。
    * @returns Promise<void>
    */
   async function prepareReleasePage(): Promise<void> {
-    await Promise.all([loadApplicationMappings(), refreshWorkspaces()])
+    await Promise.all([loadApplicationMappings(), refreshWorkspacesAndBoard()])
   }
 
   /**
@@ -3554,6 +3575,7 @@ export function useConsole() {
     canResumeWorkspaceJob,
     resumeWorkspaceJob,
     refreshWorkspaces,
+    refreshWorkspacesAndBoard,
     openWorkspaceDetail,
     createWorkspaceMergeRequest,
     openCreateDialog,

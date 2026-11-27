@@ -1,0 +1,71 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "tiny-text",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.066Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "undersized-ui-text",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.152Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.228Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "design-system-radius",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.308Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.398Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "overused-font",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.488Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "nested-cards",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.574Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "marquee",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.685Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      },
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": ["docs/mockups/agent-web/html/**"],
+        "createdAt": "2026-11-27T06:49:45.769Z",
+        "reason": "原型遵循 DevTask Console DESIGN.md：10px 数据字阶、999px 状态胶囊、Inter 主字体、OKLCH 令牌计算色、面板嵌套与骨架微光均为该系统明确规则"
+      }
+    ]
+  }
+}

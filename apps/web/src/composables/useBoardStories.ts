@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import {
   boardResponseSchema,
   defaultTapdOwner,
+  workspaceBindingSchema,
   type BoardStory,
   type WorkspaceSummary,
 } from '@devtask/shared'
@@ -88,6 +89,49 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
   }
 
   /**
+   * 用外部扫描结果覆盖看板的工作区选项列表。
+   *
+   * 供「刷新工作区」类按钮调用：只更新下拉候选，不查询 TAPD、不改写 stories
+   * 与 workspaceDraft，避免打断用户未保存的下拉编辑。
+   * @param list 最新工作区摘要列表（复制后保存，避免与调用方共享同一数组引用）
+   */
+  function setWorkspaces(list: WorkspaceSummary[]): void {
+    workspaces.value = [...list]
+  }
+
+  /**
+   * 绑定变更后就地更新看板状态，不重新查询 TAPD。
+   *
+   * 绑定操作只改变 workspaceName/workspacePath/workspaceFile/boundAt 等关联字段，
+   * 需求本身（标题/状态/缺陷数/子需求）不受影响，因此无需重拉整个看板列表。
+   * 路径类字段从本地 workspaces 推导，boundAt 使用服务端返回的权威时间。
+   * @param storyId 目标需求 ID
+   * @param workspaceName 新绑定的工作区名；空串表示解绑
+   * @param boundAt 服务端绑定记录中的 updatedAt（解绑时无需传）
+   */
+  function applyBindingLocally(storyId: string, workspaceName: string, boundAt?: string): void {
+    const workspace = workspaceName
+      ? workspaces.value.find((item) => item.name === workspaceName)
+      : undefined
+    stories.value = stories.value.map((story) => {
+      if (story.storyId !== storyId) return story
+      // 先剔除全部关联字段，避免解绑时残留旧的 workspacePath/workspaceFile/boundAt
+      const { workspacePath: _path, workspaceFile: _file, boundAt: _boundAt, ...rest } = story
+      return workspaceName
+        ? {
+            ...rest,
+            workspaceName,
+            ...(workspace?.path ? { workspacePath: workspace.path } : {}),
+            ...(workspace?.workspaceFile ? { workspaceFile: workspace.workspaceFile } : {}),
+            ...(boundAt ? { boundAt } : {}),
+          }
+        : { ...rest, workspaceName: '' }
+    })
+    // 草稿与已保存绑定保持一致；只改单行，避免打断其它行未保存的编辑
+    workspaceDraft.value = { ...workspaceDraft.value, [storyId]: workspaceName }
+  }
+
+  /**
    * 计算某一行可选的工作区：排除已绑定给其他父需求的工作区，保留自身当前绑定。
    * @param story 看板父行（工作区只绑定在父需求上）
    * @returns 可选项工作区列表
@@ -102,8 +146,11 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
   }
 
   /**
-   * 拉取看板数据。
-   * @param force 是否穿透服务端文件缓存强制回源；写操作后用 true 保证刚保存的绑定立即可见
+   * 拉取看板数据（含 TAPD 需求列表与工作区绑定）。
+   *
+   * 注意：绑定/解绑不再调用本函数，而是就地更新关联字段，避免消耗 TAPD 配额。
+   * 只有「刷新 TAPD」按钮、owner/includeReleased 变化等场景才需要调用。
+   * @param force 是否穿透服务端文件缓存强制回源重新查询 TAPD
    * @returns Promise<void>，失败信息写入 error
    */
   async function load(force = false): Promise<void> {
@@ -147,7 +194,10 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
   }
 
   /**
-   * 保存一条绑定关系并刷新列表。
+   * 保存一条绑定关系并就地更新看板状态。
+   *
+   * 服务端 PUT 返回保存后的完整绑定列表（含权威 updatedAt），据此更新对应行，
+   * 不重新拉取 TAPD 需求列表——绑定只改变关联字段，不影响需求本身。
    * @param input TAPD 需求与其要绑定的工作区
    * @returns Promise<boolean> 是否保存成功
    */
@@ -160,12 +210,19 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
     savingStoryId.value = input.tapdStoryId
     rowErrors.value = { ...rowErrors.value, [input.tapdStoryId]: '' }
     try {
-      await apiRequest('/api/v1/workspace-bindings', {
-        method: 'PUT',
-        body: JSON.stringify(input),
-      })
-      // 绑定关系已变更，穿透文件缓存强制回源，避免刚保存的绑定被缓存挡住
-      await load(true)
+      const bindings = workspaceBindingSchema.array().parse(
+        await apiRequest('/api/v1/workspace-bindings', {
+          method: 'PUT',
+          body: JSON.stringify(input),
+        }),
+      )
+      // 服务端会把子需求归一化为父需求 ID，取返回记录里的实际 ID 与时间，避免本地不一致
+      const saved = bindings.find((binding) => binding.workspaceName === input.workspaceName)
+      applyBindingLocally(
+        saved?.tapdStoryId ?? input.tapdStoryId,
+        input.workspaceName,
+        saved?.updatedAt,
+      )
       return true
     } catch (cause) {
       rowErrors.value = {
@@ -211,8 +268,8 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
       await apiRequest(`/api/v1/workspace-bindings/${encodeURIComponent(storyId)}`, {
         method: 'DELETE',
       })
-      // 解绑改变了绑定关系，穿透文件缓存强制回源
-      await load(true)
+      // 解绑只清空关联字段，就地更新即可，无需重拉 TAPD
+      applyBindingLocally(storyId, '')
     } catch (cause) {
       rowErrors.value = {
         ...rowErrors.value,
@@ -291,6 +348,7 @@ export function useBoardStories(initialOwner = defaultBoardOwner) {
     manualError,
     manualSaving,
     workspaceOptionsFor,
+    setWorkspaces,
     load,
     setIncludeReleased,
     bindSelected,

@@ -23,7 +23,7 @@ const {
   workspaces,
   workspacesLoading,
   workspacesError,
-  refreshWorkspaces,
+  refreshWorkspacesAndBoard,
   formatWorkspaceTime,
   // 构建
   buildConfirmItems,
@@ -146,11 +146,13 @@ const deployHint = computed(() => {
 })
 
 /**
- * 刷新发布页数据：工作区列表与仓库候选一起重取，口径与原工作区页刷新按钮一致。
+ * 刷新发布页数据：工作区列表与仓库候选一起重取，不查询 TAPD。
+ * 工作区列表经 refreshWorkspacesAndBoard 刷新，同时同步看板的工作区下拉选项，
+ * 避免新建工作区在看板「选择本地工作区」下拉中不可见、无法绑定 TAPD。
  * @returns Promise<void>
  */
 async function refreshAll(): Promise<void> {
-  await Promise.all([refreshWorkspaces(), refreshRepositoryCandidates()])
+  await Promise.all([refreshWorkspacesAndBoard(), refreshRepositoryCandidates()])
 }
 </script>
 

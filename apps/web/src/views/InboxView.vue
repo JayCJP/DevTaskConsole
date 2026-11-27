@@ -10,7 +10,7 @@ import { boldPartsOf } from '../composables/useInboxAnswers'
 const {
   refreshSegments,
   cronDispatches,
-  refreshWorkspaces,
+  refreshWorkspacesAndBoard,
   actionToasts,
   inbox,
   setInboxAnswer,
@@ -33,14 +33,18 @@ const storyRefreshing = ref(false)
 
 /**
  * 刷新 Story 状态：一次同步所有本地数据，不查询 TAPD。
- * 与看板页同款实现——重扫 local 段快照、定时任务派发、本地工作区列表。
+ * 与看板页同款实现——重扫 local 段快照、定时任务派发、本地工作区列表 + 看板工作区选项。
  * @returns Promise<void>
  */
 async function refreshStoryState(): Promise<void> {
   if (storyRefreshing.value) return
   storyRefreshing.value = true
   try {
-    await Promise.all([refreshSegments(['local']), cronDispatches.refresh(), refreshWorkspaces()])
+    await Promise.all([
+      refreshSegments(['local']),
+      cronDispatches.refresh(),
+      refreshWorkspacesAndBoard(),
+    ])
     actionToasts.notify('Story 状态已刷新。', 'success')
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -78,7 +82,7 @@ async function refreshStoryState(): Promise<void> {
       </div>
       <div class="inbox-heading-actions">
         <el-tooltip
-          content="重扫本地工作区、Harness 阶段与收件箱定时任务；不查询 TAPD"
+          content="重扫本地工作区、Harness 阶段与收件箱定时任务，不查询 TAPD"
           placement="bottom"
         >
           <el-button :loading="storyRefreshing" @click="refreshStoryState()">刷新</el-button>

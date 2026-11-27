@@ -19,7 +19,7 @@ const {
   activeWorkflows,
   goCrons,
   refreshSegments,
-  refreshWorkspaces,
+  refreshWorkspacesAndBoard,
   cronDispatches,
   actionToasts,
 } = ctx
@@ -31,15 +31,20 @@ const storyRefreshing = ref(false)
  * 刷新 Story 状态：一次同步所有本地数据，不查询 TAPD。
  * - local 段快照：工作区扫描 + Harness 阶段 / 活跃流程 + 收件箱条目；
  * - 定时任务派发（收件箱的 cron 轮次数据）；
- * - 本地工作区列表。
- * 顶栏全局刷新已移除，此按钮承担看板及跨页本地状态的刷新入口。
+ * - 本地工作区列表，并同步看板工作区下拉选项（新建工作区后立即可见）。
+ * 顶栏全局刷新已移除，此按钮承担看板及跨页本地状态的刷新入口；
+ * TAPD 数据由「刷新 TAPD」按钮单独负责。
  * @returns Promise<void>
  */
 async function refreshStoryState(): Promise<void> {
   if (storyRefreshing.value) return
   storyRefreshing.value = true
   try {
-    await Promise.all([refreshSegments(['local']), cronDispatches.refresh(), refreshWorkspaces()])
+    await Promise.all([
+      refreshSegments(['local']),
+      cronDispatches.refresh(),
+      refreshWorkspacesAndBoard(),
+    ])
     actionToasts.notify('Story 状态已刷新。', 'success')
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -47,6 +52,23 @@ async function refreshStoryState(): Promise<void> {
   } finally {
     storyRefreshing.value = false
   }
+}
+
+/**
+ * 打开「手动添加需求」弹窗，先刷新工作区下拉选项。
+ *
+ * 手动添加入口读的是 board.workspaces；若不先刷新，新建的工作区在弹窗里选不到。
+ * 刷新失败不阻断打开弹窗，工作区列表保持上一次的结果。
+ * @returns Promise<void>
+ */
+async function openManualDialog(): Promise<void> {
+  try {
+    await refreshWorkspacesAndBoard()
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    actionToasts.notify(`工作区列表刷新失败：${reason}`, 'error')
+  }
+  board.openManual()
 }
 
 /**
@@ -296,14 +318,14 @@ const phaseTicks = [0, 1, 2, 3, 4, 5, 6]
           <el-button :loading="board.loading" @click="board.load(true)">刷新 TAPD</el-button>
         </el-tooltip>
         <el-tooltip
-          content="重扫本地工作区、Harness 阶段与收件箱定时任务；不查询 TAPD"
+          content="重扫本地工作区、Harness 阶段与收件箱定时任务，不查询 TAPD"
           placement="bottom"
         >
           <el-button :loading="storyRefreshing" @click="refreshStoryState()"
             >刷新 Story 状态</el-button
           >
         </el-tooltip>
-        <el-button type="primary" @click="board.openManual()">手动添加</el-button>
+        <el-button type="primary" @click="openManualDialog()">手动添加</el-button>
       </div>
     </div>
     <div class="board-meta">
